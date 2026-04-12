@@ -432,7 +432,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 
     <div class="sb-spacer"></div>
 
-    <button class="action-btn" onclick="deleteAllWaypoints()">Delete All Waypoints</button>
+    <button class="action-btn" onclick="clearWaypoints()">Clear Waypoints</button>
     <button class="action-btn danger" onclick="clearAll()">Reset All</button>
     <button class="action-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;margin-top:2px;">✦ Convert Track Image</button>
     <button class="action-btn primary" onclick="openExport()">Export Track →</button>
@@ -556,7 +556,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 <!-- ══ MOBILE ACTION BUTTONS ══ -->
 <div id="mobile-actions">
   <div class="ma-btn" onclick="undoPaint()" title="Undo">↩️</div>
-  <div class="ma-btn" onclick="mobileDeleteLast()" title="Delete last waypoint">🗑️</div>
+  <div class="ma-btn" onclick="deleteEverything()" title="Delete all">🗑️</div>
 </div>
 
 <!-- ══ EXPORT MODAL ══ -->
@@ -862,13 +862,11 @@ function paintAt(wx, wy) {
 function eraseAt(wx, wy) {
   const r2 = (brushSize * 1.5) ** 2;
 
-  // Remove paint
   paintLayers = paintLayers.filter(p => {
     const dx = p.x - wx, dy = p.y - wy;
     return (dx * dx + dy * dy) > r2;
   });
 
-  // Remove nearby waypoints
   waypoints = waypoints.filter(wp => {
     const dx = wp.x - wx, dy = wp.y - wy;
     return (dx * dx + dy * dy) > r2;
@@ -1167,17 +1165,16 @@ function clearWaypoints() {
   updateWPList(); render();
 }
 
-function deleteAllWaypoints() {
-  if (waypoints.length === 0) {
-    showToast('No waypoints to delete');
-    return;
-  }
-  if (!confirm('Delete ALL waypoints?')) return;
+function deleteEverything() {
+  if (!confirm('Delete EVERYTHING? (waypoints, paint, image)')) return;
   waypoints = [];
+  paintLayers = [];
+  undoStack = [];
   selectedWP = -1;
+  bgImage = null;
   updateWPList();
   render();
-  showToast('All waypoints deleted');
+  showToast('Everything cleared');
 }
 
 function clearAll() {
@@ -1534,3 +1531,10 @@ setTimeout(() => {
 </script>
 </body>
 </html>
+
+
+function autoThreshold(gray) {
+  let sum = 0;
+  for (let i = 0; i < gray.length; i++) sum += gray[i];
+  return sum / gray.length; // simple global threshold (better than fixed)
+}
