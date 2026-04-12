@@ -304,6 +304,38 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 .seg-row label { font-size: 11px; color: var(--text3); min-width: 90px; }
 .seg-row input[type=range] { flex: 1; accent-color: var(--accent); }
 .seg-val { font-family: 'Barlow Condensed', sans-serif; font-size: 13px; font-weight: 700; color: var(--accent); min-width: 20px; }
+
+/* ── AI CONVERT MODAL ── */
+#ai-modal { position: fixed; inset: 0; background: rgba(0,0,0,0.88); z-index: 110; display: none; align-items: center; justify-content: center; }
+#ai-modal.open { display: flex; }
+.ai-box { background: var(--bg2); border: 1px solid rgba(167,139,250,0.35); border-radius: 10px; width: 500px; max-width: 96vw; max-height: 90vh; display: flex; flex-direction: column; }
+.ai-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+.ai-title { font-family: 'Barlow Condensed', sans-serif; font-weight: 900; font-size: 18px; letter-spacing: 2px; color: #a78bfa; }
+.ai-body { padding: 16px 20px; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+#ai-drop { border: 2px dashed rgba(167,139,250,0.4); border-radius: 8px; padding: 32px 16px; text-align: center; cursor: pointer; transition: all 0.2s; background: var(--bg3); }
+#ai-drop:hover, #ai-drop.drag-over { border-color: #a78bfa; background: rgba(167,139,250,0.07); }
+#ai-drop .ad-icon { font-size: 28px; margin-bottom: 6px; }
+#ai-drop .ad-text { font-size: 11px; color: var(--text3); letter-spacing: 1px; line-height: 1.6; }
+#ai-drop .ad-accent { color: #a78bfa; font-weight: 600; }
+#ai-file { display: none; }
+#ai-preview-wrap { display: none; position: relative; text-align: center; }
+#ai-preview { max-width: 100%; max-height: 180px; border-radius: 6px; border: 1px solid var(--border2); display: inline-block; }
+.ai-options { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.ai-opt-row { display: flex; flex-direction: column; gap: 4px; }
+.ai-opt-label { font-size: 9px; letter-spacing: 2px; text-transform: uppercase; color: var(--text3); font-family: 'Barlow Condensed', sans-serif; font-weight: 600; }
+.ai-opt-row input[type=range] { accent-color: #a78bfa; width: 100%; }
+.ai-opt-val { font-family: 'Barlow Condensed', sans-serif; font-size: 12px; font-weight: 700; color: #a78bfa; }
+#ai-status { font-size: 11px; color: var(--text3); text-align: center; min-height: 16px; font-family: 'Barlow Condensed', sans-serif; letter-spacing: 1px; }
+#ai-status.ok { color: #4ade80; } #ai-status.err { color: var(--accent2); }
+.ai-footer { padding: 12px 20px; border-top: 1px solid var(--border); display: flex; gap: 8px; justify-content: flex-end; }
+.ai-btn { padding: 9px 20px; border-radius: 4px; cursor: pointer; font-family: 'Barlow Condensed', sans-serif; font-size: 12px; font-weight: 700; letter-spacing: 1.5px; text-transform: uppercase; transition: all 0.15s; }
+.ai-btn.run { background: #a78bfa; color: #000; border: none; }
+.ai-btn.run:hover { background: #c4b5fd; }
+.ai-btn.run:disabled { background: #555; color: #888; cursor: not-allowed; }
+.ai-btn.cancel { background: transparent; color: var(--text2); border: 1px solid var(--border2); }
+.ai-btn.cancel:hover { border-color: var(--text); color: var(--text); }
+.ai-progress { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; display: none; }
+.ai-progress-bar { height: 100%; background: #a78bfa; border-radius: 2px; width: 0%; transition: width 0.3s; }
 </style>
 </head>
 <body>
@@ -402,6 +434,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 
     <button class="action-btn" onclick="clearWaypoints()">Clear Waypoints</button>
     <button class="action-btn danger" onclick="clearAll()">Reset All</button>
+    <button class="action-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;margin-top:2px;">✦ Convert Track Image</button>
     <button class="action-btn primary" onclick="openExport()">Export Track →</button>
     <div style="height:10px;"></div>
   </div>
@@ -487,6 +520,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
   <div class="mb-btn" onclick="openExport()">
     <span class="mb-icon">💾</span>Export
   </div>
+  <div class="mb-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;flex-shrink:0;">
+    <span class="mb-icon">✦</span>Convert
+  </div>
 </div>
 
 <!-- ══ MOBILE SURFACE OVERLAY ══ -->
@@ -541,28 +577,74 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
   </div>
 </div>
 
+<!-- ══ AI CONVERT MODAL ══ -->
+<div id="ai-modal">
+  <div class="ai-box">
+    <div class="ai-header">
+      <div class="ai-title">✦ Convert Track Image</div>
+      <button class="modal-close" onclick="closeAIConvert()">✕</button>
+    </div>
+    <div class="ai-body">
+      <div id="ai-drop" onclick="document.getElementById('ai-file').click()"
+           ondragover="event.preventDefault();this.classList.add('drag-over')"
+           ondragleave="this.classList.remove('drag-over')"
+           ondrop="aiHandleDrop(event)">
+        <div class="ad-icon">🗺️</div>
+        <div class="ad-text"><span class="ad-accent">Drop or click</span> to upload a track image<br>Works best with 2-colour images (track vs background)</div>
+      </div>
+      <input type="file" id="ai-file" accept="image/*" onchange="aiLoadFile(this)">
+      <div id="ai-preview-wrap">
+        <img id="ai-preview" src="" alt="Track preview">
+      </div>
+      <div class="ai-options">
+        <div class="ai-opt-row">
+          <span class="ai-opt-label">Waypoints <span class="ai-opt-val" id="ai-wp-val">50</span></span>
+          <input type="range" min="20" max="120" value="50" oninput="document.getElementById('ai-wp-val').textContent=this.value" id="ai-wp-count">
+        </div>
+        <div class="ai-opt-row">
+          <span class="ai-opt-label">Threshold <span class="ai-opt-val" id="ai-thresh-val">128</span></span>
+          <input type="range" min="10" max="245" value="128" oninput="document.getElementById('ai-thresh-val').textContent=this.value;aiPreviewThresh()" id="ai-thresh">
+        </div>
+        <div class="ai-opt-row">
+          <span class="ai-opt-label">Smoothing <span class="ai-opt-val" id="ai-smooth-val">3</span></span>
+          <input type="range" min="1" max="8" value="3" oninput="document.getElementById('ai-smooth-val').textContent=this.value" id="ai-smooth">
+        </div>
+        <div class="ai-opt-row">
+          <span class="ai-opt-label">Track is <span class="ai-opt-val" id="ai-dark-val">Dark</span></span>
+          <input type="range" min="0" max="1" value="0" step="1" oninput="document.getElementById('ai-dark-val').textContent=this.value=='0'?'Dark':'Light';aiPreviewThresh()" id="ai-invert">
+        </div>
+      </div>
+      <div class="ai-progress" id="ai-progress"><div class="ai-progress-bar" id="ai-progress-bar"></div></div>
+      <div id="ai-status">Upload an image to begin</div>
+    </div>
+    <div class="ai-footer">
+      <button class="ai-btn cancel" onclick="closeAIConvert()">Cancel</button>
+      <button class="ai-btn run" id="ai-run-btn" onclick="runAIConvert()" disabled>Extract Waypoints</button>
+    </div>
+  </div>
+</div>
+
 <div id="toast">Copied!</div>
 
 <script>
 // ═══════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════
-const bgCanvas  = document.getElementById('bg-canvas');
-const mainCanvas= document.getElementById('main-canvas');
-const bgCtx     = bgCanvas.getContext('2d');
-const ctx       = mainCanvas.getContext('2d');
-const wrap      = document.getElementById('canvas-wrap');
+const bgCanvas   = document.getElementById('bg-canvas');
+const mainCanvas = document.getElementById('main-canvas');
+const bgCtx      = bgCanvas.getContext('2d');
+const ctx        = mainCanvas.getContext('2d');
+const wrap       = document.getElementById('canvas-wrap');
 
 let cam = { x: 0, y: 0, zoom: 1 };
 let tool = 'waypoint';
 let surface = 'flat_kerb';
 let brushSize = 12;
 let waypoints = [];
-let paintLayers = []; // [{surface, x, y, r}] in world coords
+let paintLayers = [];
 let undoStack = [];
 let bgImage = null;
 let bgImageBounds = { x: 0, y: 0, w: 0, h: 0 };
-
 let isPainting = false;
 let isPanning = false;
 let spaceDown = false;
@@ -575,7 +657,7 @@ let mouseWorld = { x: 0, y: 0 };
 // ═══════════════════════════════════════════════════
 function resize() {
   const r = wrap.getBoundingClientRect();
-  bgCanvas.width  = mainCanvas.width  = r.width;
+  bgCanvas.width = mainCanvas.width = r.width;
   bgCanvas.height = mainCanvas.height = r.height;
   render();
 }
@@ -602,14 +684,14 @@ function screenToWorld(sx, sy) {
 // SURFACE CONFIG
 // ═══════════════════════════════════════════════════
 const SURFACES = {
-  flat_kerb:  { color: 'rgba(232,57,42,0.55)',  label: 'Flat Kerb',     dot: '#e8392a' },
-  sausage:    { color: 'rgba(245,197,24,0.65)',  label: 'Sausage Kerb',  dot: '#f5c518' },
-  rumble:     { color: 'rgba(200,50,50,0.50)',   label: 'Rumble Strip',  dot: '#d44444' },
-  gravel:     { color: 'rgba(200,184,154,0.60)', label: 'Gravel/Sand',   dot: '#c8b89a' },
-  grass:      { color: 'rgba(40,110,40,0.55)',   label: 'Grass',         dot: '#3a7a3a' },
-  armco:      { color: 'rgba(180,180,180,0.70)', label: 'Armco Wall',    dot: '#aaaaaa' },
-  tecpro:     { color: 'rgba(40,80,180,0.65)',   label: 'Tecpro',        dot: '#3a5fa8' },
-  tyrewall:   { color: 'rgba(30,30,30,0.80)',    label: 'Tyre Wall',     dot: '#333333' },
+  flat_kerb: { color: 'rgba(232,57,42,0.55)',  label: 'Flat Kerb',    dot: '#e8392a' },
+  sausage:   { color: 'rgba(245,197,24,0.65)',  label: 'Sausage Kerb', dot: '#f5c518' },
+  rumble:    { color: 'rgba(200,50,50,0.50)',   label: 'Rumble Strip', dot: '#d44444' },
+  gravel:    { color: 'rgba(200,184,154,0.60)', label: 'Gravel/Sand',  dot: '#c8b89a' },
+  grass:     { color: 'rgba(40,110,40,0.55)',   label: 'Grass',        dot: '#3a7a3a' },
+  armco:     { color: 'rgba(180,180,180,0.70)', label: 'Armco Wall',   dot: '#aaaaaa' },
+  tecpro:    { color: 'rgba(40,80,180,0.65)',   label: 'Tecpro',       dot: '#3a5fa8' },
+  tyrewall:  { color: 'rgba(30,30,30,0.80)',    label: 'Tyre Wall',    dot: '#333333' },
 };
 
 // ═══════════════════════════════════════════════════
@@ -618,17 +700,15 @@ const SURFACES = {
 function render() {
   const W = mainCanvas.width, H = mainCanvas.height;
 
-  // BG canvas — grid + image
   bgCtx.clearRect(0, 0, W, H);
-
   // Grid
   bgCtx.strokeStyle = 'rgba(255,255,255,0.04)';
   bgCtx.lineWidth = 1;
   const gridSize = 50 * cam.zoom;
-  const offX = (-cam.x * cam.zoom + W/2) % gridSize;
-  const offY = (-cam.y * cam.zoom + H/2) % gridSize;
-  for (let x = offX; x < W; x += gridSize) { bgCtx.beginPath(); bgCtx.moveTo(x,0); bgCtx.lineTo(x,H); bgCtx.stroke(); }
-  for (let y = offY; y < H; y += gridSize) { bgCtx.beginPath(); bgCtx.moveTo(0,y); bgCtx.lineTo(W,y); bgCtx.stroke(); }
+  const offX = (-cam.x * cam.zoom + W / 2) % gridSize;
+  const offY = (-cam.y * cam.zoom + H / 2) % gridSize;
+  for (let x = offX; x < W; x += gridSize) { bgCtx.beginPath(); bgCtx.moveTo(x, 0); bgCtx.lineTo(x, H); bgCtx.stroke(); }
+  for (let y = offY; y < H; y += gridSize) { bgCtx.beginPath(); bgCtx.moveTo(0, y); bgCtx.lineTo(W, y); bgCtx.stroke(); }
 
   // Background image
   if (bgImage) {
@@ -638,7 +718,6 @@ function render() {
     bgCtx.globalAlpha = 1;
   }
 
-  // Main canvas — paint layers + waypoints
   ctx.clearRect(0, 0, W, H);
 
   // Paint layers
@@ -651,10 +730,8 @@ function render() {
     ctx.fill();
   }
 
-  // Centreline preview (Catmull-Rom)
-  if (waypoints.length >= 2) {
-    drawCentreline();
-  }
+  // Centreline
+  if (waypoints.length >= 2) drawCentreline();
 
   // Waypoints
   for (let i = 0; i < waypoints.length; i++) {
@@ -662,17 +739,13 @@ function render() {
     const s = worldToScreen(wp.x, wp.y);
     const isFirst = i === 0;
     const isSel = i === selectedWP;
-
-    // Node
     ctx.beginPath();
     ctx.arc(s.x, s.y, isSel ? 9 : 6, 0, Math.PI * 2);
-    ctx.fillStyle = isFirst ? '#ff4747' : (isSel ? '#e8ff47' : '#e8ff47');
+    ctx.fillStyle = isFirst ? '#ff4747' : '#e8ff47';
     ctx.fill();
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 1.5;
     ctx.stroke();
-
-    // Index label
     ctx.fillStyle = '#000';
     ctx.font = 'bold 8px Barlow Condensed';
     ctx.textAlign = 'center';
@@ -681,30 +754,28 @@ function render() {
   }
 }
 
-// Catmull-Rom preview
 function catmullPoint(p0, p1, p2, p3, t) {
-  const t2 = t*t, t3 = t2*t;
+  const t2 = t * t, t3 = t2 * t;
   return {
-    x: 0.5*((2*p1.x)+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
-    y: 0.5*((2*p1.y)+(-p0.y+p2.y)*t+(2*p0.y-5*p1.y+4*p2.y-p3.y)*t2+(-p0.y+3*p1.y-3*p2.y+p3.y)*t3)
+    x: 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
+    y: 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3)
   };
 }
 
 function drawCentreline() {
   const n = waypoints.length;
-  if (n < 2) return;
   ctx.strokeStyle = 'rgba(232,255,71,0.35)';
   ctx.lineWidth = 1.5;
   ctx.setLineDash([6, 6]);
   ctx.beginPath();
   const segs = 8;
   for (let i = 0; i < n; i++) {
-    const p0 = waypoints[(i-1+n)%n];
+    const p0 = waypoints[(i - 1 + n) % n];
     const p1 = waypoints[i];
-    const p2 = waypoints[(i+1)%n];
-    const p3 = waypoints[(i+2)%n];
+    const p2 = waypoints[(i + 1) % n];
+    const p3 = waypoints[(i + 2) % n];
     for (let j = 0; j < segs; j++) {
-      const pt = catmullPoint(p0, p1, p2, p3, j/segs);
+      const pt = catmullPoint(p0, p1, p2, p3, j / segs);
       const s = worldToScreen(pt.x, pt.y);
       if (i === 0 && j === 0) ctx.moveTo(s.x, s.y);
       else ctx.lineTo(s.x, s.y);
@@ -716,9 +787,53 @@ function drawCentreline() {
 }
 
 // ═══════════════════════════════════════════════════
-// TOOL MANAGEMENT
+// TOOL & SURFACE MANAGEMENT (single canonical versions)
 // ═══════════════════════════════════════════════════
-// setTool and setSurface defined below (mobile-aware versions)
+function setTool(t) {
+  tool = t;
+  // Desktop sidebar
+  document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
+  const tb = document.getElementById('tool-' + t);
+  if (tb) tb.classList.add('active');
+  // Mobile bar
+  document.querySelectorAll('.mb-btn').forEach(b => b.classList.remove('active'));
+  const mb = document.getElementById('mb-' + t);
+  if (mb) mb.classList.add('active');
+
+  const hudMap = {
+    waypoint: 'Waypoint — click to place',
+    paint:    'Paint — drag to paint surface',
+    erase:    'Erase — drag to erase',
+    pan:      'Pan — drag to move · scroll/pinch zoom'
+  };
+  document.getElementById('tool-hud').textContent = hudMap[t] || t;
+
+  const showBrush = t === 'paint' || t === 'erase';
+  const sSection = document.getElementById('surface-section');
+  const bSection = document.getElementById('brush-section');
+  if (sSection) sSection.style.display = t === 'paint' ? '' : 'none';
+  if (bSection) bSection.style.display = showBrush ? '' : 'none';
+
+  mainCanvas.style.cursor = t === 'pan' ? 'grab' : (showBrush ? 'none' : 'crosshair');
+  const ring = document.getElementById('brush-ring');
+  if (ring) ring.style.display = showBrush ? '' : 'none';
+}
+
+function setSurface(s) {
+  surface = s;
+  // Desktop sidebar
+  document.querySelectorAll('.surf-btn').forEach(b => b.classList.remove('active'));
+  const sb = document.getElementById('surf-' + s.replaceAll('_', '-'));
+  if (sb) sb.classList.add('active');
+  // Mobile overlay
+  document.querySelectorAll('.so-btn').forEach(b => b.classList.remove('active'));
+  const so = document.getElementById('so-' + s);
+  if (so) so.classList.add('active');
+  // Mobile dot emoji
+  const dotMap = { flat_kerb: '🟥', sausage: '🟨', rumble: '🟧', gravel: '🟫', grass: '🟩', armco: '⬜', tecpro: '🟦', tyrewall: '⬛' };
+  const mbDot = document.getElementById('mb-surf-dot');
+  if (mbDot) mbDot.textContent = dotMap[s] || '🔲';
+}
 
 function updateBrush() {
   brushSize = parseInt(document.getElementById('brush-size').value);
@@ -728,6 +843,7 @@ function updateBrush() {
 
 function updateBrushRing(sx, sy) {
   const ring = document.getElementById('brush-ring');
+  if (!ring) return;
   const r = brushSize * cam.zoom;
   ring.style.width  = r * 2 + 'px';
   ring.style.height = r * 2 + 'px';
@@ -735,7 +851,36 @@ function updateBrushRing(sx, sy) {
 }
 
 // ═══════════════════════════════════════════════════
-// INPUT — unified mouse + touch
+// PAINT / ERASE
+// ═══════════════════════════════════════════════════
+function paintAt(wx, wy) {
+  paintLayers.push({ surface, x: wx, y: wy, r: brushSize });
+  const el = document.getElementById('stat-paint');
+  if (el) el.textContent = paintLayers.length;
+}
+
+function eraseAt(wx, wy) {
+  const r2 = (brushSize * 1.5) ** 2;
+  paintLayers = paintLayers.filter(p => {
+    const dx = p.x - wx, dy = p.y - wy;
+    return (dx * dx + dy * dy) > r2;
+  });
+  const el = document.getElementById('stat-paint');
+  if (el) el.textContent = paintLayers.length;
+}
+
+function undoPaint() {
+  if (undoStack.length === 0) { showToast('Nothing to undo'); return; }
+  const prevLen = undoStack.pop();
+  paintLayers = paintLayers.slice(0, prevLen);
+  const el = document.getElementById('stat-paint');
+  if (el) el.textContent = paintLayers.length;
+  render();
+  showToast('Undone');
+}
+
+// ═══════════════════════════════════════════════════
+// INPUT HELPERS
 // ═══════════════════════════════════════════════════
 function getCanvasPos(clientX, clientY) {
   const r = mainCanvas.getBoundingClientRect();
@@ -745,18 +890,18 @@ function getCanvasPos(clientX, clientY) {
 // ── MOUSE ──
 mainCanvas.addEventListener('mousedown', e => {
   const pos = getCanvasPos(e.clientX, e.clientY);
-  handleDown(pos);
+  handleDown(pos, false);
 });
 mainCanvas.addEventListener('mousemove', e => {
   const pos = getCanvasPos(e.clientX, e.clientY);
   mouseWorld = screenToWorld(pos.x, pos.y);
-  document.getElementById('coords-hud').textContent =
-    `x: ${Math.round(mouseWorld.x)}  y: ${Math.round(mouseWorld.y)}`;
+  const ch = document.getElementById('coords-hud');
+  if (ch) ch.textContent = `x: ${Math.round(mouseWorld.x)}  y: ${Math.round(mouseWorld.y)}`;
   updateBrushRing(pos.x, pos.y);
   handleMove(pos);
 });
-mainCanvas.addEventListener('mouseup',   () => handleUp());
-mainCanvas.addEventListener('mouseleave',() => handleUp());
+mainCanvas.addEventListener('mouseup', () => handleUp());
+mainCanvas.addEventListener('mouseleave', () => handleUp());
 mainCanvas.addEventListener('wheel', e => {
   e.preventDefault();
   const pos = getCanvasPos(e.clientX, e.clientY);
@@ -764,7 +909,7 @@ mainCanvas.addEventListener('wheel', e => {
 }, { passive: false });
 
 // ── TOUCH ──
-let touches = {};        // active touches keyed by identifier
+let touches = {};
 let pinchStartDist = 0;
 let pinchStartZoom = 1;
 let pinchMidStart  = null;
@@ -779,20 +924,17 @@ mainCanvas.addEventListener('touchstart', e => {
   Array.from(e.changedTouches).forEach(t => {
     touches[t.identifier] = getCanvasPos(t.clientX, t.clientY);
   });
-
   const ids = Object.keys(touches);
-
   if (ids.length === 2) {
-    // Two fingers — pinch/pan mode, cancel any single-finger action
     isPainting = false; isPanning = false;
     const a = touches[ids[0]], b = touches[ids[1]];
-    pinchStartDist = Math.hypot(b.x-a.x, b.y-a.y);
+    pinchStartDist = Math.hypot(b.x - a.x, b.y - a.y);
     pinchStartZoom = cam.zoom;
-    pinchMidStart  = { x: (a.x+b.x)/2, y: (a.y+b.y)/2 };
+    pinchMidStart  = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
     pinchCamStart  = { x: cam.x, y: cam.y };
   } else if (ids.length === 1) {
-    touchMoved    = false;
-    touchDownPos  = { ...touches[ids[0]] };
+    touchMoved   = false;
+    touchDownPos = { ...touches[ids[0]] };
     touchDownTime = Date.now();
     handleDown(touches[ids[0]], true);
   }
@@ -803,39 +945,27 @@ mainCanvas.addEventListener('touchmove', e => {
   Array.from(e.changedTouches).forEach(t => {
     touches[t.identifier] = getCanvasPos(t.clientX, t.clientY);
   });
-
   const ids = Object.keys(touches);
-
   if (ids.length === 2) {
     const a = touches[ids[0]], b = touches[ids[1]];
-    const dist = Math.hypot(b.x-a.x, b.y-a.y);
-    const mid  = { x: (a.x+b.x)/2, y: (a.y+b.y)/2 };
-
-    // Pan by midpoint delta from gesture start
-    const dmx = mid.x - pinchMidStart.x;
-    const dmy = mid.y - pinchMidStart.y;
-    cam.x = pinchCamStart.x - dmx / pinchStartZoom;
-    cam.y = pinchCamStart.y - dmy / pinchStartZoom;
-
-    // Zoom around current midpoint
+    const dist = Math.hypot(b.x - a.x, b.y - a.y);
+    const mid  = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    // Pan by midpoint delta at original zoom
+    cam.x = pinchCamStart.x - (mid.x - pinchMidStart.x) / pinchStartZoom;
+    cam.y = pinchCamStart.y - (mid.y - pinchMidStart.y) / pinchStartZoom;
+    // Zoom around midpoint
     const newZoom = Math.max(0.05, Math.min(20, pinchStartZoom * (dist / pinchStartDist)));
     const before  = screenToWorld(mid.x, mid.y);
     cam.zoom = newZoom;
     const after   = screenToWorld(mid.x, mid.y);
     cam.x += before.x - after.x;
     cam.y += before.y - after.y;
-
-    const pct = Math.round(cam.zoom * 100);
-    document.getElementById('zoom-hud').textContent = pct + '%';
-    document.getElementById('stat-zoom').textContent = pct + '%';
+    updateZoomHUD();
     render();
-
   } else if (ids.length === 1) {
     const pos = touches[ids[0]];
-    // Detect if finger moved significantly (suppress tap-to-place)
     if (touchDownPos) {
-      const dx = pos.x - touchDownPos.x, dy = pos.y - touchDownPos.y;
-      if (Math.hypot(dx, dy) > 8) touchMoved = true;
+      if (Math.hypot(pos.x - touchDownPos.x, pos.y - touchDownPos.y) > 8) touchMoved = true;
     }
     handleMove(pos);
   }
@@ -845,10 +975,8 @@ mainCanvas.addEventListener('touchend', e => {
   e.preventDefault();
   Array.from(e.changedTouches).forEach(t => delete touches[t.identifier]);
   const remaining = Object.keys(touches).length;
-
   if (remaining === 0) {
-    // If single-finger tap (didn't move much, short press) and waypoint mode → place WP
-    const isQuickTap = (Date.now() - touchDownTime) < 350 && !touchMoved;
+    const isQuickTap = (Date.now() - touchDownTime) < 400 && !touchMoved;
     if (tool === 'waypoint' && isQuickTap && touchDownPos) {
       const world = screenToWorld(touchDownPos.x, touchDownPos.y);
       waypoints.push({ x: world.x, y: world.y });
@@ -858,7 +986,6 @@ mainCanvas.addEventListener('touchend', e => {
     handleUp();
     touchDownPos = null;
   } else if (remaining === 1) {
-    // Dropped to one finger after pinch — re-anchor single-finger pan
     const id = Object.keys(touches)[0];
     const pos = touches[id];
     panStart = { x: pos.x, y: pos.y, camX: cam.x, camY: cam.y };
@@ -872,7 +999,7 @@ mainCanvas.addEventListener('touchcancel', e => {
 }, { passive: false });
 
 // ── SHARED HANDLERS ──
-function handleDown(pos, isTouchEvent = false) {
+function handleDown(pos, isTouch) {
   const world = screenToWorld(pos.x, pos.y);
   if (spaceDown || tool === 'pan') {
     isPanning = true;
@@ -880,8 +1007,7 @@ function handleDown(pos, isTouchEvent = false) {
     mainCanvas.style.cursor = 'grabbing';
     return;
   }
-  // waypoint tap handled in touchend for touch; mousedown for mouse
-  if (tool === 'waypoint' && !isTouchEvent) {
+  if (tool === 'waypoint' && !isTouch) {
     waypoints.push({ x: world.x, y: world.y });
     updateWPList();
     render();
@@ -889,26 +1015,26 @@ function handleDown(pos, isTouchEvent = false) {
     isPainting = true;
     undoStack.push(paintLayers.length);
     paintAt(world.x, world.y);
+    render();
   } else if (tool === 'erase') {
     isPainting = true;
     undoStack.push(paintLayers.length);
     eraseAt(world.x, world.y);
+    render();
   }
 }
 
 function handleMove(pos) {
   if (isPanning) {
-    const dx = pos.x - panStart.x;
-    const dy = pos.y - panStart.y;
-    cam.x = panStart.camX - dx / cam.zoom;
-    cam.y = panStart.camY - dy / cam.zoom;
+    cam.x = panStart.camX - (pos.x - panStart.x) / cam.zoom;
+    cam.y = panStart.camY - (pos.y - panStart.y) / cam.zoom;
     render();
     return;
   }
   if (isPainting) {
     const world = screenToWorld(pos.x, pos.y);
-    if (tool === 'paint') paintAt(world.x, world.y);
-    else if (tool === 'erase') eraseAt(world.x, world.y);
+    if (tool === 'paint') { paintAt(world.x, world.y); render(); }
+    else if (tool === 'erase') { eraseAt(world.x, world.y); render(); }
   }
 }
 
@@ -925,22 +1051,28 @@ function applyZoom(factor, sx, sy) {
   const after = screenToWorld(sx, sy);
   cam.x += before.x - after.x;
   cam.y += before.y - after.y;
-  const pct = Math.round(cam.zoom * 100);
-  document.getElementById('zoom-hud').textContent = pct + '%';
-  document.getElementById('stat-zoom').textContent = pct + '%';
+  updateZoomHUD();
   render();
 }
 
-// ── KEYBOARD (desktop) ──
+function updateZoomHUD() {
+  const pct = Math.round(cam.zoom * 100) + '%';
+  const zh = document.getElementById('zoom-hud');
+  if (zh) zh.textContent = pct;
+  const sz = document.getElementById('stat-zoom');
+  if (sz) sz.textContent = pct;
+}
+
+// ── KEYBOARD ──
 window.addEventListener('keydown', e => {
-  if (e.code === 'Space') { spaceDown = true; mainCanvas.style.cursor = 'grab'; e.preventDefault(); }
+  if (e.code === 'Space' && !e.target.matches('input,textarea')) {
+    spaceDown = true; mainCanvas.style.cursor = 'grab'; e.preventDefault();
+  }
   if (e.key === 'w' || e.key === 'W') setTool('waypoint');
   if (e.key === 'p' || e.key === 'P') setTool('paint');
   if (e.key === 'e' || e.key === 'E') setTool('erase');
-  if (e.key === 'Delete' || e.key === 'Backspace') {
-    if (waypoints.length > 0 && tool === 'waypoint') {
-      waypoints.pop(); updateWPList(); render();
-    }
+  if ((e.key === 'Delete' || e.key === 'Backspace') && !e.target.matches('input,textarea')) {
+    if (waypoints.length > 0 && tool === 'waypoint') { waypoints.pop(); updateWPList(); render(); }
   }
   if (e.ctrlKey && e.key === 'z') { undoPaint(); e.preventDefault(); }
 });
@@ -953,109 +1085,60 @@ window.addEventListener('keyup', e => {
 
 // ── MOBILE HELPERS ──
 function mobileDeleteLast() {
-  if (waypoints.length > 0) { waypoints.pop(); updateWPList(); render(); }
+  if (waypoints.length > 0) { waypoints.pop(); updateWPList(); render(); showToast('Deleted last WP'); }
 }
-
 let surfOverlayOpen = false;
-function toggleSurfOverlay() {
-  surfOverlayOpen = !surfOverlayOpen;
-  document.getElementById('surf-overlay').classList.toggle('open', surfOverlayOpen);
-}
-function closeSurfOverlay() {
-  surfOverlayOpen = false;
-  document.getElementById('surf-overlay').classList.remove('open');
-}
-
-function hidePinchHint() {
-  const h = document.getElementById('pinch-hint');
-  if (h) h.style.display = 'none';
-}
-
-// Tool management — mobile-aware
-function setTool(t) {
-  tool = t;
-  document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-  const tb = document.getElementById('tool-' + t);
-  if (tb) tb.classList.add('active');
-  document.querySelectorAll('.mb-btn').forEach(b => b.classList.remove('active'));
-  const mb = document.getElementById('mb-' + t);
-  if (mb) mb.classList.add('active');
-  const hudMap = {
-    waypoint: 'Tap to place waypoints',
-    paint:    'Drag to paint surface',
-    erase:    'Drag to erase',
-    pan:      '1 finger pan · 2 fingers zoom'
-  };
-  document.getElementById('tool-hud').textContent = hudMap[t];
-  const showBrush = t === 'paint' || t === 'erase';
-  const sSection = document.getElementById('surface-section');
-  const bSection = document.getElementById('brush-section');
-  if (sSection) sSection.style.display = t === 'paint' ? '' : 'none';
-  if (bSection) bSection.style.display = showBrush ? '' : 'none';
-  mainCanvas.style.cursor = t === 'pan' ? 'grab' : (showBrush ? 'none' : 'crosshair');
-  const ring = document.getElementById('brush-ring');
-  if (ring) ring.style.display = showBrush ? '' : 'none';
-}
-
-// Surface management — mobile-aware
-function setSurface(s) {
-  surface = s;
-  document.querySelectorAll('.surf-btn').forEach(b => b.classList.remove('active'));
-  const sb = document.getElementById('surf-' + s.replaceAll('_','-'));
-  if (sb) sb.classList.add('active');
-  document.querySelectorAll('.so-btn').forEach(b => b.classList.remove('active'));
-  const so = document.getElementById('so-' + s);
-  if (so) so.classList.add('active');
-  // Update mobile surface dot emoji
-  const dotMap = {
-    flat_kerb:'🟥', sausage:'🟨', rumble:'🟧',
-    gravel:'🟫', grass:'🟩', armco:'⬜', tecpro:'🟦', tyrewall:'⬛'
-  };
-  const mbDot = document.getElementById('mb-surf-dot');
-  if (mbDot) mbDot.textContent = dotMap[s] || '🔲';
-}
+function toggleSurfOverlay() { surfOverlayOpen = !surfOverlayOpen; document.getElementById('surf-overlay').classList.toggle('open', surfOverlayOpen); }
+function closeSurfOverlay() { surfOverlayOpen = false; document.getElementById('surf-overlay').classList.remove('open'); }
+function hidePinchHint() { const h = document.getElementById('pinch-hint'); if (h) h.style.display = 'none'; }
 
 // ═══════════════════════════════════════════════════
-// PAINT / ERASE
+// IMAGE UPLOAD (background reference)
 // ═══════════════════════════════════════════════════
-function paintAt(wx, wy) {
-  paintLayers.push({ surface, x: wx, y: wy, r: brushSize });
-  document.getElementById('stat-paint').textContent = paintLayers.length;
-  render();
+function loadBgImage(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const img = new Image();
+    img.onload = () => {
+      bgImage = img;
+      const W = mainCanvas.width, H = mainCanvas.height;
+      const scale = Math.min((W * 0.85) / img.width, (H * 0.85) / img.height);
+      const ww = img.width  * scale / cam.zoom;
+      const wh = img.height * scale / cam.zoom;
+      bgImageBounds = { x: -ww / 2, y: -wh / 2, w: ww, h: wh };
+      cam.x = 0; cam.y = 0;
+      render();
+      showToast('Image loaded');
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
 }
-
-function eraseAt(wx, wy) {
-  const r2 = (brushSize * 1.2) ** 2;
-  paintLayers = paintLayers.filter(p => {
-    const dx = p.x - wx, dy = p.y - wy;
-    return dx*dx + dy*dy > r2;
-  });
-  document.getElementById('stat-paint').textContent = paintLayers.length;
-  render();
-}
-
-function undoPaint() {
-  if (undoStack.length === 0) return;
-  const prevLen = undoStack.pop();
-  paintLayers = paintLayers.slice(0, prevLen);
-  document.getElementById('stat-paint').textContent = paintLayers.length;
-  render();
-}
+document.getElementById('file-input').addEventListener('change', e => loadBgImage(e.target.files[0]));
+const cw = document.getElementById('canvas-wrap');
+cw.addEventListener('dragover', e => e.preventDefault());
+cw.addEventListener('drop', e => {
+  e.preventDefault();
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) loadBgImage(file);
+});
 
 // ═══════════════════════════════════════════════════
 // WAYPOINT LIST
 // ═══════════════════════════════════════════════════
 function updateWPList() {
   const list = document.getElementById('wp-list');
-  document.getElementById('stat-wp').textContent = waypoints.length;
+  const statWP = document.getElementById('stat-wp');
+  if (statWP) statWP.textContent = waypoints.length;
+  if (!list) return;
   list.innerHTML = '';
   waypoints.forEach((wp, i) => {
     const div = document.createElement('div');
     div.className = 'wp-item' + (i === selectedWP ? ' selected' : '');
-    div.innerHTML = `
-      <span class="wp-num">${i === 0 ? 'SF' : i}</span>
+    div.innerHTML = `<span class="wp-num">${i === 0 ? 'SF' : i}</span>
       <span class="wp-coords">${Math.round(wp.x)}, ${Math.round(wp.y)}</span>
-      <span class="wp-del" onclick="deleteWP(${i})">✕</span>`;
+      <span class="wp-del" onclick="event.stopPropagation();deleteWP(${i})">✕</span>`;
     div.addEventListener('click', () => { selectedWP = i; updateWPList(); render(); });
     list.appendChild(div);
   });
@@ -1064,8 +1147,7 @@ function updateWPList() {
 function deleteWP(i) {
   waypoints.splice(i, 1);
   if (selectedWP >= waypoints.length) selectedWP = -1;
-  updateWPList();
-  render();
+  updateWPList(); render();
 }
 
 function clearWaypoints() {
@@ -1076,91 +1158,39 @@ function clearWaypoints() {
 
 function clearAll() {
   if (!confirm('Reset everything? This cannot be undone.')) return;
-  waypoints = []; paintLayers = []; undoStack = []; selectedWP = -1;
-  bgImage = null;
+  waypoints = []; paintLayers = []; undoStack = []; selectedWP = -1; bgImage = null;
   updateWPList(); render();
 }
-
-// ═══════════════════════════════════════════════════
-// IMAGE UPLOAD
-// ═══════════════════════════════════════════════════
-document.getElementById('file-input').addEventListener('change', e => {
-  const file = e.target.files[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = ev => {
-    const img = new Image();
-    img.onload = () => {
-      bgImage = img;
-      // Fit image to viewport in world coords
-      const W = mainCanvas.width, H = mainCanvas.height;
-      const scale = Math.min((W * 0.85) / img.width, (H * 0.85) / img.height);
-      const ww = img.width * scale / cam.zoom;
-      const wh = img.height * scale / cam.zoom;
-      bgImageBounds = { x: -ww/2, y: -wh/2, w: ww, h: wh };
-      cam.x = 0; cam.y = 0;
-      render();
-    };
-    img.src = ev.target.result;
-  };
-  reader.readAsDataURL(file);
-});
-
-// Drag & drop
-const cw = document.getElementById('canvas-wrap');
-cw.addEventListener('dragover', e => e.preventDefault());
-cw.addEventListener('drop', e => {
-  e.preventDefault();
-  const file = e.dataTransfer.files[0];
-  if (!file || !file.type.startsWith('image/')) return;
-  document.getElementById('file-input').files = e.dataTransfer.files;
-  document.getElementById('file-input').dispatchEvent(new Event('change'));
-});
 
 // ═══════════════════════════════════════════════════
 // EXPORT
 // ═══════════════════════════════════════════════════
 function buildExportCode() {
-  const name    = document.getElementById('track-name').value.trim() || 'MY CIRCUIT';
-  const sub     = document.getElementById('track-sub').value.trim()  || 'Custom circuit';
-  const barriers= document.getElementById('barriers-toggle').checked;
-  const nPerSeg = document.getElementById('nperseg').value;
-  const key     = name.toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_');
+  const name = document.getElementById('track-name').value.trim() || 'MY CIRCUIT';
+  const sub  = document.getElementById('track-sub').value.trim()  || 'Custom circuit';
+  const barriers = document.getElementById('barriers-toggle').checked;
+  const nPerSeg  = document.getElementById('nperseg').value;
+  const key = name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/__+/g, '_');
 
-  // Waypoints — convert to game scale
-  // We scale so the track fits roughly within [-400,400] world units (matching spa/oval scale)
   let wps = waypoints;
   let scaleNote = '';
   if (wps.length > 0) {
-    // Find bounding box
     let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    wps.forEach(w => { minX=Math.min(minX,w.x); maxX=Math.max(maxX,w.x); minY=Math.min(minY,w.y); maxY=Math.max(maxY,w.y); });
-    const cx = (minX+maxX)/2, cy = (minY+maxY)/2;
-    const span = Math.max(maxX-minX, maxY-minY);
-    // Target span: 600 units (similar to spa which spans ~620 units)
-    const targetSpan = 600;
-    const factor = span > 0 ? targetSpan / span : 1;
+    wps.forEach(w => { minX = Math.min(minX, w.x); maxX = Math.max(maxX, w.x); minY = Math.min(minY, w.y); maxY = Math.max(maxY, w.y); });
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    const span = Math.max(maxX - minX, maxY - minY);
+    const factor = span > 0 ? 600 / span : 1;
     wps = wps.map(w => ({ x: (w.x - cx) * factor, y: (w.y - cy) * factor }));
-    scaleNote = `  // Auto-scaled: 1px ≈ ${(1/factor).toFixed(2)} game-units. Adjust nPerSeg for smoothness.\n`;
+    scaleNote = `  // Auto-scaled: 1px ≈ ${(1 / factor).toFixed(2)} game-units.\n`;
   }
 
-  // Paint layer summary — group by surface type for comment
   const surfaceCounts = {};
-  paintLayers.forEach(p => { surfaceCounts[p.surface] = (surfaceCounts[p.surface]||0)+1; });
-  const surfList = Object.entries(surfaceCounts).map(([k,v]) => `${SURFACES[k]?.label||k}(${v})`).join(', ');
+  paintLayers.forEach(p => { surfaceCounts[p.surface] = (surfaceCounts[p.surface] || 0) + 1; });
+  const surfList = Object.entries(surfaceCounts).map(([k, v]) => `${SURFACES[k]?.label || k}(${v})`).join(', ');
+  const wpLines = wps.map((w, i) => `      [${w.x.toFixed(1)}, ${w.y.toFixed(1)}],${i === 0 ? '  // SF line' : ''}`).join('\n');
+  const paintSummary = paintLayers.length > 0 ? `\n  // Paint zones: ${surfList}\n  // (${paintLayers.length} paint blobs)` : '';
 
-  // Build waypoints string
-  const wpLines = wps.map((w,i) => {
-    const comment = i===0 ? '  // SF line' : '';
-    return `      [${w.x.toFixed(1)}, ${w.y.toFixed(1)}],${comment}`;
-  }).join('\n');
-
-  // Paint zones summary as comments (position + surface)
-  const paintSummary = paintLayers.length > 0
-    ? `\n  // Paint zones: ${surfList}\n  // (${paintLayers.length} paint blobs — reference only, not used by game engine yet)`
-    : '';
-
-  return `  // ── ${name} ─────────────────────────────────────────────
+  return `  // ── ${name} ──────────────────────────────────────────
   ${key}: {
     name: '${name}',
     sub:  '${sub}',
@@ -1173,34 +1203,25 @@ ${wpLines}
 }
 
 function openExport() {
-  if (waypoints.length < 3) {
-    alert('Add at least 3 waypoints before exporting.');
-    return;
-  }
+  if (waypoints.length < 3) { alert('Add at least 3 waypoints before exporting.'); return; }
   document.getElementById('export-code').value = buildExportCode();
   document.getElementById('export-modal').classList.add('open');
 }
-
-function closeExport() {
-  document.getElementById('export-modal').classList.remove('open');
-}
+function closeExport() { document.getElementById('export-modal').classList.remove('open'); }
 
 function copyExport() {
   const ta = document.getElementById('export-code');
   ta.select();
-  navigator.clipboard.writeText(ta.value).then(() => showToast('Copied!')).catch(() => {
-    document.execCommand('copy');
-    showToast('Copied!');
-  });
+  navigator.clipboard.writeText(ta.value)
+    .then(() => showToast('Copied!'))
+    .catch(() => { document.execCommand('copy'); showToast('Copied!'); });
 }
 
 function downloadTrack() {
-  const name = (document.getElementById('track-name').value.trim() || 'track').toLowerCase().replace(/[^a-z0-9]/g,'_');
-  const code = buildExportCode();
-  const full = `// ── Track export from CIRCUIT FORGE ──\n// Paste this inside TRACK_DEFS in tracks.js\n\n${code}\n`;
-  const blob = new Blob([full], { type: 'text/javascript' });
+  const name = (document.getElementById('track-name').value.trim() || 'track').toLowerCase().replace(/[^a-z0-9]/g, '_');
+  const full = `// ── Track export from CIRCUIT FORGE ──\n// Paste inside TRACK_DEFS in tracks.js\n\n${buildExportCode()}\n`;
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
+  a.href = URL.createObjectURL(new Blob([full], { type: 'text/javascript' }));
   a.download = `track_${name}.js`;
   a.click();
 }
@@ -1209,7 +1230,267 @@ function showToast(msg) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.classList.add('show');
-  setTimeout(() => t.classList.remove('show'), 2000);
+  setTimeout(() => t.classList.remove('show'), 2200);
+}
+
+// ═══════════════════════════════════════════════════
+// TRACK IMAGE → WAYPOINTS  (pure JS, no external libs)
+// ═══════════════════════════════════════════════════
+let aiImageData = null;   // raw ImageData from uploaded file
+let aiImgW = 0, aiImgH = 0;
+
+function openAIConvert() { document.getElementById('ai-modal').classList.add('open'); }
+function closeAIConvert() { document.getElementById('ai-modal').classList.remove('open'); }
+
+function aiHandleDrop(e) {
+  e.preventDefault();
+  e.currentTarget.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file && file.type.startsWith('image/')) aiLoadImageFile(file);
+}
+
+function aiLoadFile(input) {
+  if (input.files[0]) aiLoadImageFile(input.files[0]);
+}
+
+function aiLoadImageFile(file) {
+  const reader = new FileReader();
+  reader.onload = ev => {
+    const img = new Image();
+    img.onload = () => {
+      // Limit processing size for performance
+      const MAX = 600;
+      const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+      aiImgW = Math.round(img.width  * scale);
+      aiImgH = Math.round(img.height * scale);
+      const c = document.createElement('canvas');
+      c.width = aiImgW; c.height = aiImgH;
+      const cx = c.getContext('2d');
+      cx.drawImage(img, 0, 0, aiImgW, aiImgH);
+      aiImageData = cx.getImageData(0, 0, aiImgW, aiImgH);
+      // Show preview
+      const prev = document.getElementById('ai-preview');
+      prev.src = ev.target.result;
+      document.getElementById('ai-preview-wrap').style.display = '';
+      document.getElementById('ai-drop').style.display = 'none';
+      setAIStatus('Image loaded — adjust options then click Extract', '');
+      document.getElementById('ai-run-btn').disabled = false;
+    };
+    img.src = ev.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function aiPreviewThresh() {
+  // live preview of threshold not needed — too expensive; status update only
+  if (aiImageData) setAIStatus('Settings changed — click Extract to apply', '');
+}
+
+function setAIStatus(msg, cls) {
+  const el = document.getElementById('ai-status');
+  el.textContent = msg;
+  el.className = cls ? cls : '';
+}
+
+function setAIProgress(pct) {
+  const bar = document.getElementById('ai-progress');
+  const fill = document.getElementById('ai-progress-bar');
+  bar.style.display = 'block';
+  fill.style.width = pct + '%';
+  if (pct >= 100) setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 600);
+}
+
+async function runAIConvert() {
+  if (!aiImageData) return;
+  const btn = document.getElementById('ai-run-btn');
+  btn.disabled = true;
+  setAIStatus('Analysing pixels…', '');
+  setAIProgress(5);
+
+  // Small async yield so UI can update
+  await new Promise(r => setTimeout(r, 30));
+
+  const thresh   = parseInt(document.getElementById('ai-thresh').value);
+  const inverted = document.getElementById('ai-invert').value === '1';
+  const wpCount  = parseInt(document.getElementById('ai-wp-count').value);
+  const smooth   = parseInt(document.getElementById('ai-smooth').value);
+
+  const W = aiImgW, H = aiImgH;
+  const data = aiImageData.data;
+
+  // ── Step 1: binarise ──
+  // Convert to greyscale, then threshold. inverted=false → dark pixels = track
+  const bin = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const r = data[i * 4], g = data[i * 4 + 1], b = data[i * 4 + 2];
+    const grey = (r * 77 + g * 150 + b * 29) >> 8;
+    bin[i] = inverted ? (grey > thresh ? 1 : 0) : (grey < thresh ? 1 : 0);
+  }
+  setAIProgress(15);
+  await new Promise(r => setTimeout(r, 10));
+
+  // ── Step 2: keep only the largest connected component (flood fill) ──
+  const label = new Int32Array(W * H).fill(-1);
+  let bestId = -1, bestCount = 0, compId = 0;
+  const stack = [];
+  for (let sy = 0; sy < H; sy++) {
+    for (let sx = 0; sx < W; sx++) {
+      const idx = sy * W + sx;
+      if (bin[idx] !== 1 || label[idx] !== -1) continue;
+      let count = 0;
+      stack.push(idx);
+      label[idx] = compId;
+      while (stack.length) {
+        const cur = stack.pop();
+        count++;
+        const cx2 = cur % W, cy2 = Math.floor(cur / W);
+        const neighbors = [cx2 > 0 ? cur - 1 : -1, cx2 < W - 1 ? cur + 1 : -1,
+                           cy2 > 0 ? cur - W : -1, cy2 < H - 1 ? cur + W : -1];
+        for (const n of neighbors) {
+          if (n !== -1 && bin[n] === 1 && label[n] === -1) { label[n] = compId; stack.push(n); }
+        }
+      }
+      if (count > bestCount) { bestCount = count; bestId = compId; }
+      compId++;
+    }
+  }
+  // Keep only bestId
+  for (let i = 0; i < W * H; i++) bin[i] = (label[i] === bestId) ? 1 : 0;
+  setAIProgress(30);
+  await new Promise(r => setTimeout(r, 10));
+
+  // ── Step 3: Zhang-Suen thinning (skeletonization) ──
+  const skel = new Uint8Array(bin);
+  let changed = true;
+  let iters = 0;
+  while (changed && iters < 500) {
+    changed = false;
+    iters++;
+    // Sub-iteration 1
+    const toRemove1 = [];
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const i = y * W + x;
+        if (!skel[i]) continue;
+        const [p2,p3,p4,p5,p6,p7,p8,p9] = [
+          skel[(y-1)*W+x], skel[(y-1)*W+(x+1)], skel[y*W+(x+1)], skel[(y+1)*W+(x+1)],
+          skel[(y+1)*W+x], skel[(y+1)*W+(x-1)], skel[y*W+(x-1)], skel[(y-1)*W+(x-1)]
+        ];
+        const B = p2+p3+p4+p5+p6+p7+p8+p9;
+        if (B < 2 || B > 6) continue;
+        let A = 0;
+        const seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2];
+        for (let k = 0; k < 8; k++) if (!seq[k] && seq[k+1]) A++;
+        if (A !== 1) continue;
+        if (p2*p4*p6 !== 0) continue;
+        if (p4*p6*p8 !== 0) continue;
+        toRemove1.push(i);
+      }
+    }
+    toRemove1.forEach(i => { skel[i] = 0; changed = true; });
+    // Sub-iteration 2
+    const toRemove2 = [];
+    for (let y = 1; y < H - 1; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const i = y * W + x;
+        if (!skel[i]) continue;
+        const [p2,p3,p4,p5,p6,p7,p8,p9] = [
+          skel[(y-1)*W+x], skel[(y-1)*W+(x+1)], skel[y*W+(x+1)], skel[(y+1)*W+(x+1)],
+          skel[(y+1)*W+x], skel[(y+1)*W+(x-1)], skel[y*W+(x-1)], skel[(y-1)*W+(x-1)]
+        ];
+        const B = p2+p3+p4+p5+p6+p7+p8+p9;
+        if (B < 2 || B > 6) continue;
+        let A = 0;
+        const seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2];
+        for (let k = 0; k < 8; k++) if (!seq[k] && seq[k+1]) A++;
+        if (A !== 1) continue;
+        if (p2*p4*p8 !== 0) continue;
+        if (p2*p6*p8 !== 0) continue;
+        toRemove2.push(i);
+      }
+    }
+    toRemove2.forEach(i => { skel[i] = 0; changed = true; });
+  }
+  setAIProgress(70);
+  await new Promise(r => setTimeout(r, 10));
+
+  // ── Step 4: collect skeleton pixels ──
+  const skelPts = [];
+  for (let i = 0; i < W * H; i++) { if (skel[i]) skelPts.push({ x: i % W, y: Math.floor(i / W) }); }
+
+  if (skelPts.length < 10) {
+    setAIStatus('Could not detect a track — try adjusting threshold or "Track is" toggle', 'err');
+    btn.disabled = false;
+    return;
+  }
+
+  // ── Step 5: order skeleton pixels by walking from one end ──
+  // Build adjacency: for each skeleton pixel find its skeleton neighbours
+  const skelSet = new Uint8Array(W * H);
+  skelPts.forEach(p => { skelSet[p.y * W + p.x] = 1; });
+
+  function skelNeighbors(x, y) {
+    const ns = [];
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dx && !dy) continue;
+      const nx = x + dx, ny = y + dy;
+      if (nx >= 0 && nx < W && ny >= 0 && ny < H && skelSet[ny * W + nx]) ns.push({ x: nx, y: ny });
+    }
+    return ns;
+  }
+
+  // Find a good starting point (endpoint or just first pixel)
+  let startPt = skelPts[0];
+  for (const p of skelPts) { if (skelNeighbors(p.x, p.y).length === 1) { startPt = p; break; } }
+
+  const visited = new Uint8Array(W * H);
+  const ordered = [];
+  let cur = startPt;
+  visited[cur.y * W + cur.x] = 1;
+  ordered.push(cur);
+  while (true) {
+    const ns = skelNeighbors(cur.x, cur.y).filter(n => !visited[n.y * W + n.x]);
+    if (!ns.length) break;
+    // pick closest unvisited neighbour
+    cur = ns[0];
+    visited[cur.y * W + cur.x] = 1;
+    ordered.push(cur);
+  }
+  setAIProgress(85);
+  await new Promise(r => setTimeout(r, 10));
+
+  // ── Step 6: downsample to desired waypoint count ──
+  const step = Math.max(1, Math.floor(ordered.length / wpCount));
+  let sampled = [];
+  for (let i = 0; i < ordered.length; i += step) sampled.push(ordered[i]);
+
+  // ── Step 7: moving-average smoothing ──
+  const win = smooth * 2 + 1;
+  const smoothed = sampled.map((p, i) => {
+    let sx = 0, sy = 0, cnt = 0;
+    for (let k = -smooth; k <= smooth; k++) {
+      const idx = (i + k + sampled.length) % sampled.length;
+      sx += sampled[idx].x; sy += sampled[idx].y; cnt++;
+    }
+    return { x: sx / cnt, y: sy / cnt };
+  });
+
+  // ── Step 8: convert to world coords (centre the track) ──
+  // Map image pixel coords to world coords centred in viewport
+  const cx = W / 2, cy2 = H / 2;
+  const scaleToWorld = (mainCanvas.width * 0.8) / W / cam.zoom;
+  const newWPs = smoothed.map(p => ({
+    x: (p.x - cx)  * scaleToWorld,
+    y: (p.y - cy2) * scaleToWorld
+  }));
+
+  setAIProgress(100);
+  waypoints = newWPs;
+  updateWPList();
+  render();
+  setAIStatus(`✓ Extracted ${newWPs.length} waypoints from skeleton (${iters} thinning passes)`, 'ok');
+  btn.disabled = false;
+  showToast(`${newWPs.length} waypoints extracted!`);
 }
 
 // ═══════════════════════════════════════════════════
@@ -1220,14 +1501,11 @@ setSurface('flat_kerb');
 updateBrush();
 render();
 
-// Auto-hide pinch hint after 3s
 setTimeout(() => {
   const h = document.getElementById('pinch-hint');
-  if (h) h.style.opacity = '0';
-  setTimeout(() => { if (h) h.style.display = 'none'; }, 600);
+  if (h) { h.style.transition = 'opacity 0.6s'; h.style.opacity = '0'; setTimeout(() => { if (h) h.style.display = 'none'; }, 600); }
 }, 3000);
 
-// Animate
 (function loop() { render(); requestAnimationFrame(loop); })();
 </script>
 </body>
