@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>CIRCUIT FORGE — Track Maker</title>
+<title>CIRCUIT FORGE v5 — Track Maker</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
 <style>
 :root {
@@ -345,7 +345,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
   <div id="sidebar">
     <div class="sb-header">
       <div class="sb-logo">CIRCUIT FORGE</div>
-      <div class="sb-sub">Track Studio</div>
+      <div class="sb-sub">Track Studio · v5</div>
     </div>
 
     <!-- Upload -->
@@ -501,6 +501,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
       <div class="rp-label" style="margin-top:8px;">Waypoints</div>
     </div>
     <div id="wp-list"></div>
+
+    <!-- Barrier list -->
+    <div id="barrier-list-section" style="display:none;border-top:1px solid var(--border);">
+      <div class="rp-section" style="padding-bottom:0;">
+        <div class="rp-label" style="margin-top:8px;">Barrier Segments <span id="barrier-count" style="color:var(--accent2);">0</span></div>
+      </div>
+      <div id="barrier-list" style="padding:4px 14px 8px;max-height:140px;overflow-y:auto;"></div>
+    </div>
   </div>
 </div>
 
@@ -602,30 +610,24 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
            ondragleave="this.classList.remove('drag-over')"
            ondrop="aiHandleDrop(event)">
         <div class="ad-icon">🗺️</div>
-        <div class="ad-text"><span class="ad-accent">Drop or click</span> to upload a track image<br>Works best with 2-colour images (track vs background)</div>
+        <div class="ad-text"><span class="ad-accent">Drop or click</span> to upload a track image<br>Works best with a track outline on a plain background</div>
       </div>
       <input type="file" id="ai-file" accept="image/*" onchange="aiLoadFile(this)">
       <div id="ai-preview-wrap">
         <img id="ai-preview" src="" alt="Track preview">
+        <div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+          <span style="font-size:10px;color:var(--text3);letter-spacing:1px;font-family:'Barlow Condensed',sans-serif;">WAYPOINTS</span>
+          <div style="display:flex;align-items:center;gap:6px;flex:1;">
+            <input type="range" min="20" max="120" value="60" id="ai-wp-count" style="flex:1;accent-color:#a78bfa;" oninput="document.getElementById('ai-wp-val').textContent=this.value">
+            <span class="ai-opt-val" id="ai-wp-val" style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;color:#a78bfa;min-width:24px;">60</span>
+          </div>
+        </div>
+        <div id="ai-detected-info" style="margin-top:6px;font-size:10px;color:var(--text3);font-family:'Barlow Condensed',sans-serif;letter-spacing:1px;min-height:14px;"></div>
       </div>
-      <div class="ai-options">
-        <div class="ai-opt-row">
-          <span class="ai-opt-label">Waypoints <span class="ai-opt-val" id="ai-wp-val">50</span></span>
-          <input type="range" min="20" max="120" value="50" oninput="document.getElementById('ai-wp-val').textContent=this.value" id="ai-wp-count">
-        </div>
-        <div class="ai-opt-row">
-          <span class="ai-opt-label">Threshold <span class="ai-opt-val" id="ai-thresh-val">128</span></span>
-          <input type="range" min="10" max="245" value="128" oninput="document.getElementById('ai-thresh-val').textContent=this.value;aiPreviewThresh()" id="ai-thresh">
-        </div>
-        <div class="ai-opt-row">
-          <span class="ai-opt-label">Smoothing <span class="ai-opt-val" id="ai-smooth-val">3</span></span>
-          <input type="range" min="1" max="8" value="3" oninput="document.getElementById('ai-smooth-val').textContent=this.value" id="ai-smooth">
-        </div>
-        <div class="ai-opt-row">
-          <span class="ai-opt-label">Track is <span class="ai-opt-val" id="ai-dark-val">Dark</span></span>
-          <input type="range" min="0" max="1" value="0" step="1" oninput="document.getElementById('ai-dark-val').textContent=this.value=='0'?'Dark':'Light';aiPreviewThresh()" id="ai-invert">
-        </div>
-      </div>
+      <!-- hidden inputs kept for JS compatibility -->
+      <input type="hidden" id="ai-thresh" value="128">
+      <input type="hidden" id="ai-smooth" value="3">
+      <input type="hidden" id="ai-invert" value="0">
       <div class="ai-progress" id="ai-progress"><div class="ai-progress-bar" id="ai-progress-bar"></div></div>
       <div id="ai-status">Upload an image to begin</div>
     </div>
@@ -758,12 +760,13 @@ function render() {
     const s = worldToScreen(wp.x, wp.y);
     const isStart = i === startingPointIdx;
     const isSel = i === selectedWP;
+    const isBarrierStart = tool === 'barrier' && i === barrierSelStart;
     ctx.beginPath();
-    ctx.arc(s.x, s.y, isSel ? 9 : (isStart ? 8 : 6), 0, Math.PI * 2);
-    ctx.fillStyle = isStart ? '#00ff88' : '#e8ff47';
+    ctx.arc(s.x, s.y, isBarrierStart ? 11 : (isSel ? 9 : (isStart ? 8 : 6)), 0, Math.PI * 2);
+    ctx.fillStyle = isBarrierStart ? '#ff8c00' : (isStart ? '#00ff88' : '#e8ff47');
     ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = isBarrierStart ? '#fff' : '#000';
+    ctx.lineWidth = isBarrierStart ? 2.5 : 1.5;
     ctx.stroke();
     ctx.fillStyle = '#000';
     ctx.font = 'bold 8px Barlow Condensed';
@@ -976,6 +979,10 @@ function setStartingPoint() {
 }
 
 function setTool(t) {
+  // Cancel any in-progress barrier selection
+  if (tool === 'barrier' && t !== 'barrier') {
+    barrierSelStart = -1;
+  }
   tool = t;
   // Desktop sidebar
   document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
@@ -991,7 +998,7 @@ function setTool(t) {
     paint:    'Paint — drag to paint surface',
     erase:    'Erase — drag to erase',
     pan:      'Pan — drag to move · scroll/pinch zoom',
-    barrier:  'Barrier — click start, then click end of segment'
+    barrier:  'Barrier — tap start waypoint'
   };
   document.getElementById('tool-hud').textContent = hudMap[t] || t;
 
@@ -1216,9 +1223,29 @@ function handleDown(pos, isTouch) {
   } else if (tool === 'barrier') {
     const seg = getSegmentNear(world.x, world.y);
     if (seg >= 0) {
-      barrierSelStart = seg;
-      showToast(`Barrier start at WP ${seg} — click end point`);
+      if (barrierSelStart < 0) {
+        // First click — set start
+        barrierSelStart = seg;
+        document.getElementById('tool-hud').textContent = `Barrier — start at WP ${seg} · now tap end point`;
+        showToast(`Start: WP ${seg} — now tap end`);
+        render();
+      } else {
+        // Second click — commit segment
+        if (seg !== barrierSelStart) {
+          barrierSegments.push({
+            from: Math.min(barrierSelStart, seg),
+            to:   Math.max(barrierSelStart, seg),
+            surface
+          });
+          showToast(`✓ ${SURFACES[surface].label} barrier added (WP ${Math.min(barrierSelStart, seg)}→${Math.max(barrierSelStart, seg)})`);
+          updateBarrierList();
+        }
+        barrierSelStart = -1;
+        document.getElementById('tool-hud').textContent = 'Barrier — tap start waypoint';
+        render();
+      }
     }
+    return;
   }
 }
 
@@ -1237,21 +1264,6 @@ function handleMove(pos) {
 }
 
 function handleUp(pos) {
-  if (tool === 'barrier' && barrierSelStart >= 0 && pos) {
-    const world = screenToWorld(pos.x, pos.y);
-    const seg = getSegmentNear(world.x, world.y);
-    if (seg >= 0 && seg !== barrierSelStart) {
-      barrierSegments.push({
-        from: Math.min(barrierSelStart, seg),
-        to:   Math.max(barrierSelStart, seg),
-        surface
-      });
-      showToast(`${SURFACES[surface].label} barrier added`);
-      render();
-    }
-    barrierSelStart = -1;
-    return;
-  }
   isPanning = false;
   isPainting = false;
   mainCanvas.style.cursor = tool === 'pan' ? 'grab' :
@@ -1358,7 +1370,39 @@ function updateWPList() {
   });
 }
 
+function updateBarrierList() {
+  const section = document.getElementById('barrier-list-section');
+  const list = document.getElementById('barrier-list');
+  const countEl = document.getElementById('barrier-count');
+  if (!section || !list) return;
+  if (barrierSegments.length === 0) {
+    section.style.display = 'none';
+    return;
+  }
+  section.style.display = '';
+  if (countEl) countEl.textContent = barrierSegments.length;
+  list.innerHTML = '';
+  barrierSegments.forEach((b, i) => {
+    const cfg = SURFACES[b.surface];
+    const div = document.createElement('div');
+    div.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05);';
+    div.innerHTML = `
+      <div style="width:10px;height:10px;border-radius:2px;flex-shrink:0;background:${cfg.dot};"></div>
+      <span style="font-family:'Barlow Condensed',sans-serif;font-size:11px;color:var(--text2);flex:1;">${cfg.label} WP${b.from}→${b.to}</span>
+      <span onclick="deleteBarrier(${i})" style="font-size:10px;color:var(--text3);cursor:pointer;padding:2px 5px;border-radius:2px;" onmouseover="this.style.color='#ff4747'" onmouseout="this.style.color='var(--text3)'">✕</span>`;
+    list.appendChild(div);
+  });
+}
+
+function deleteBarrier(i) {
+  barrierSegments.splice(i, 1);
+  updateBarrierList();
+  render();
+  showToast('Barrier removed');
+}
+
 function deleteWP(i) {
+
   waypoints.splice(i, 1);
   if (selectedWP >= waypoints.length) selectedWP = -1;
   if (startingPointIdx >= waypoints.length) startingPointIdx = 0;
@@ -1368,14 +1412,14 @@ function deleteWP(i) {
 function clearWaypoints() {
   if (!confirm('Clear all waypoints?')) return;
   waypoints = []; selectedWP = -1; startingPointIdx = 0; barrierSegments = []; barrierSelStart = -1;
-  updateWPList(); render();
+  updateWPList(); updateBarrierList(); render();
 }
 
 function clearAll() {
   if (!confirm('Reset everything? This cannot be undone.')) return;
   waypoints = []; paintLayers = []; undoStack = []; selectedWP = -1; bgImage = null;
   barrierSegments = []; barrierSelStart = -1; startingPointIdx = 0;
-  updateWPList(); render();
+  updateWPList(); updateBarrierList(); render();
 }
 
 // ═══════════════════════════════════════════════════
@@ -1489,12 +1533,38 @@ function aiLoadImageFile(file) {
       const cx = c.getContext('2d');
       cx.drawImage(img, 0, 0, aiImgW, aiImgH);
       aiImageData = cx.getImageData(0, 0, aiImgW, aiImgH);
+
+      // ── Auto-detect: is the track a bright line on dark bg, or dark on light? ──
+      const d = aiImageData.data;
+      const total = aiImgW * aiImgH;
+      let sumGray = 0;
+      // Sample every 4th pixel for speed
+      let sampled = 0;
+      for (let i = 0; i < total; i += 4) {
+        sumGray += 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
+        sampled++;
+      }
+      const avgBrightness = sumGray / sampled;
+      // If avg brightness is low (dark image), the track line is probably bright → invert=1
+      // If avg brightness is high (light image), the track is probably dark → invert=0
+      const autoInvert = avgBrightness < 100 ? 1 : 0;
+      const autoThresh = avgBrightness < 100 ? 60 : 180;
+      document.getElementById('ai-invert').value = autoInvert;
+      document.getElementById('ai-thresh').value = autoThresh;
+
+      const infoEl = document.getElementById('ai-detected-info');
+      if (infoEl) {
+        infoEl.textContent = autoInvert
+          ? '✓ Detected: bright track on dark background'
+          : '✓ Detected: dark track on light background';
+      }
+
       // Show preview
       const prev = document.getElementById('ai-preview');
       prev.src = ev.target.result;
       document.getElementById('ai-preview-wrap').style.display = '';
       document.getElementById('ai-drop').style.display = 'none';
-      setAIStatus('Image loaded — adjust options then click Extract', '');
+      setAIStatus('Ready — click Extract Waypoints', '');
       document.getElementById('ai-run-btn').disabled = false;
     };
     img.src = ev.target.result;
@@ -1503,8 +1573,7 @@ function aiLoadImageFile(file) {
 }
 
 function aiPreviewThresh() {
-  // live preview of threshold not needed — too expensive; status update only
-  if (aiImageData) setAIStatus('Settings changed — click Extract to apply', '');
+  // auto-detected values, nothing to do
 }
 
 function setAIStatus(msg, cls) {
@@ -1530,7 +1599,7 @@ async function runAIConvert() {
   const data = aiImageData.data;
   const wpCount = parseInt(document.getElementById('ai-wp-count').value);
   const thresh  = parseInt(document.getElementById('ai-thresh').value);
-  const smooth  = parseInt(document.getElementById('ai-smooth').value);
+  const smooth  = 4;  // fixed good default
   const invert  = parseInt(document.getElementById('ai-invert').value) === 1;
 
   setAIStatus('Step 1/5 — Thresholding…', '');
