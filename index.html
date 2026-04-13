@@ -373,6 +373,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
         <div class="tool-btn" id="tool-pan" onclick="setTool('pan')">
           <span class="tool-icon">✋</span>Pan
         </div>
+        <div class="tool-btn" id="tool-barrier" onclick="setTool('barrier')">
+          <span class="tool-icon">🚧</span>Barrier
+        </div>
+        <div class="tool-btn" onclick="setStartingPoint()" title="Set selected waypoint as Start/Finish">
+          <span class="tool-icon">🏁</span>Set Start
+        </div>
       </div>
     </div>
 
@@ -511,6 +517,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
   </div>
   <div class="mb-btn" id="mb-pan" onclick="setTool('pan');closeSurfOverlay()">
     <span class="mb-icon">✋</span>Pan
+  </div>
+  <div class="mb-btn" id="mb-barrier" onclick="setTool('barrier');closeSurfOverlay()">
+    <span class="mb-icon">🚧</span>Barrier
+  </div>
+  <div class="mb-btn" onclick="setStartingPoint();closeSurfOverlay()">
+    <span class="mb-icon">🏁</span>Start
   </div>
   <div class="mb-sep"></div>
   <div class="mb-btn" id="mb-surf" onclick="toggleSurfOverlay()">
@@ -651,6 +663,9 @@ let spaceDown = false;
 let panStart = { x: 0, y: 0, camX: 0, camY: 0 };
 let selectedWP = -1;
 let mouseWorld = { x: 0, y: 0 };
+let startingPointIdx = 0;
+let barrierSegments = [];   // {from, to, surface}
+let barrierSelStart = -1;
 
 // ═══════════════════════════════════════════════════
 // RESIZE
@@ -730,18 +745,22 @@ function render() {
     ctx.fill();
   }
 
-  // Centreline
-  if (waypoints.length >= 2) drawCentreline();
+  // Draw track centreline as a two-colour road strip
+  if (waypoints.length >= 2) {
+    drawTrackRoad();
+    drawBarrierSegments();
+    drawCentreline();
+  }
 
   // Waypoints
   for (let i = 0; i < waypoints.length; i++) {
     const wp = waypoints[i];
     const s = worldToScreen(wp.x, wp.y);
-    const isFirst = i === 0;
+    const isStart = i === startingPointIdx;
     const isSel = i === selectedWP;
     ctx.beginPath();
-    ctx.arc(s.x, s.y, isSel ? 9 : 6, 0, Math.PI * 2);
-    ctx.fillStyle = isFirst ? '#ff4747' : '#e8ff47';
+    ctx.arc(s.x, s.y, isSel ? 9 : (isStart ? 8 : 6), 0, Math.PI * 2);
+    ctx.fillStyle = isStart ? '#00ff88' : '#e8ff47';
     ctx.fill();
     ctx.strokeStyle = '#000';
     ctx.lineWidth = 1.5;
@@ -750,7 +769,7 @@ function render() {
     ctx.font = 'bold 8px Barlow Condensed';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(i === 0 ? 'SF' : i, s.x, s.y);
+    ctx.fillText(isStart ? 'SF' : i, s.x, s.y);
   }
 }
 
@@ -762,11 +781,153 @@ function catmullPoint(p0, p1, p2, p3, t) {
   };
 }
 
+// Build full spline point array
+function buildSplinePoints(segs) {
+  const n = waypoints.length;
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const p0 = waypoints[(i - 1 + n) % n];
+    const p1 = waypoints[i];
+    const p2 = waypoints[(i + 1) % n];
+    const p3 = waypoints[(i + 2) % n];
+    for (let j = 0; j < segs; j++) {
+      pts.push({ pt: catmullPoint(p0, p1, p2, p3, j / segs), seg: i });
+    }
+  }
+  return pts;
+}
+
+// Draw a two-colour road: dark asphalt body + coloured kerb stripes on edges
+function drawTrackRoad() {
+  const splinePts = buildSplinePoints(10);
+  if (splinePts.length < 2) return;
+  const screenPts = splinePts.map(p => ({ s: worldToScreen(p.pt.x, p.pt.y), seg: p.seg }));
+
+  const trackW = Math.max(6, 14 * cam.zoom);   // total road half-width in px
+  const kerbW  = Math.max(2, 4  * cam.zoom);   // kerb stripe width in px
+
+  // Draw asphalt body
+  ctx.strokeStyle = 'rgba(60,60,65,0.85)';
+  ctx.lineWidth = trackW * 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  screenPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.s.x, p.s.y) : ctx.lineTo(p.s.x, p.s.y));
+  ctx.closePath();
+  ctx.stroke();
+
+  // Draw outer white edge line
+  ctx.strokeStyle = 'rgba(220,220,220,0.5)';
+  ctx.lineWidth = trackW * 2 + kerbW * 2;
+  ctx.beginPath();
+  screenPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.s.x, p.s.y) : ctx.lineTo(p.s.x, p.s.y));
+  ctx.closePath();
+  ctx.stroke();
+
+  // Redraw asphalt on top to mask centre of outer line
+  ctx.strokeStyle = 'rgba(55,55,60,0.9)';
+  ctx.lineWidth = trackW * 2;
+  ctx.beginPath();
+  screenPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.s.x, p.s.y) : ctx.lineTo(p.s.x, p.s.y));
+  ctx.closePath();
+  ctx.stroke();
+
+  // Alternating red/white kerb chevrons on edge (simplified: alternating colour every ~20px)
+  let dist = 0;
+  for (let i = 1; i < screenPts.length; i++) {
+    const a = screenPts[i-1].s, b = screenPts[i].s;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const segLen = Math.hypot(dx, dy);
+    dist += segLen;
+    const chevronSize = 20;
+    const phase = Math.floor(dist / chevronSize);
+    ctx.strokeStyle = phase % 2 === 0 ? 'rgba(220,30,30,0.7)' : 'rgba(220,220,220,0.6)';
+    ctx.lineWidth = kerbW * 2;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+    // Mask centre again
+    ctx.strokeStyle = 'rgba(55,55,60,0.9)';
+    ctx.lineWidth = trackW * 2 - kerbW * 2;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+
+  // Start/finish line
+  if (startingPointIdx < waypoints.length) {
+    const sfPt = worldToScreen(waypoints[startingPointIdx].x, waypoints[startingPointIdx].y);
+    ctx.save();
+    ctx.strokeStyle = '#fff';
+    ctx.lineWidth = 3;
+    ctx.setLineDash([4, 4]);
+    const perpLen = trackW + 4;
+    // Draw a short perpendicular bar
+    const i1 = Math.min(startingPointIdx * 10, screenPts.length - 1);
+    const i2 = Math.min(i1 + 1, screenPts.length - 1);
+    if (i2 > i1) {
+      const dx = screenPts[i2].s.x - screenPts[i1].s.x;
+      const dy = screenPts[i2].s.y - screenPts[i1].s.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const px = -dy / len * perpLen, py = dx / len * perpLen;
+      ctx.beginPath();
+      ctx.moveTo(sfPt.x - px, sfPt.y - py);
+      ctx.lineTo(sfPt.x + px, sfPt.y + py);
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    ctx.restore();
+  }
+}
+
+// Draw barrier segments as thick coloured lines on the track
+function drawBarrierSegments() {
+  const splinePts = buildSplinePoints(10);
+  if (!barrierSegments.length) return;
+  for (const seg of barrierSegments) {
+    const cfg = SURFACES[seg.surface];
+    const relevant = splinePts.filter(p => p.seg >= seg.from && p.seg <= seg.to);
+    if (relevant.length < 2) continue;
+    ctx.strokeStyle = cfg.color.replace(/[\d.]+\)$/, '0.9)');
+    ctx.lineWidth = Math.max(4, 7 * cam.zoom);
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    relevant.forEach((p, i) => {
+      const s = worldToScreen(p.pt.x, p.pt.y);
+      i === 0 ? ctx.moveTo(s.x, s.y) : ctx.lineTo(s.x, s.y);
+    });
+    ctx.stroke();
+  }
+  // Draw barrier hover highlight
+  if (tool === 'barrier' && barrierSelStart >= 0) {
+    const hoverSeg = getSegmentNear(mouseWorld.x, mouseWorld.y);
+    if (hoverSeg >= 0) {
+      const from = Math.min(barrierSelStart, hoverSeg);
+      const to   = Math.max(barrierSelStart, hoverSeg);
+      const relevant = splinePts.filter(p => p.seg >= from && p.seg <= to);
+      if (relevant.length >= 2) {
+        const cfg = SURFACES[surface];
+        ctx.strokeStyle = cfg.color.replace(/[\d.]+\)$/, '0.6)');
+        ctx.lineWidth = Math.max(6, 10 * cam.zoom);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        relevant.forEach((p, i) => {
+          const s = worldToScreen(p.pt.x, p.pt.y);
+          i === 0 ? ctx.moveTo(s.x, s.y) : ctx.lineTo(s.x, s.y);
+        });
+        ctx.stroke();
+      }
+    }
+  }
+}
+
 function drawCentreline() {
   const n = waypoints.length;
-  ctx.strokeStyle = 'rgba(232,255,71,0.35)';
-  ctx.lineWidth = 1.5;
-  ctx.setLineDash([6, 6]);
+  ctx.strokeStyle = 'rgba(232,255,71,0.25)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 8]);
   ctx.beginPath();
   const segs = 8;
   for (let i = 0; i < n; i++) {
@@ -789,6 +950,31 @@ function drawCentreline() {
 // ═══════════════════════════════════════════════════
 // TOOL & SURFACE MANAGEMENT (single canonical versions)
 // ═══════════════════════════════════════════════════
+function getSegmentNear(wx, wy) {
+  if (waypoints.length < 2) return -1;
+  let best = -1, bestD = Infinity;
+  const n = waypoints.length;
+  for (let i = 0; i < n; i++) {
+    const w = waypoints[i];
+    const dx = w.x - wx, dy = w.y - wy;
+    const d = dx*dx + dy*dy;
+    if (d < bestD) { bestD = d; best = i; }
+  }
+  return best;
+}
+
+function setStartingPoint() {
+  if (waypoints.length === 0) { showToast('No waypoints yet!'); return; }
+  if (selectedWP >= 0) {
+    startingPointIdx = selectedWP;
+  } else {
+    startingPointIdx = 0;
+  }
+  updateWPList();
+  render();
+  showToast(`Starting point set to WP ${startingPointIdx}`);
+}
+
 function setTool(t) {
   tool = t;
   // Desktop sidebar
@@ -804,14 +990,16 @@ function setTool(t) {
     waypoint: 'Waypoint — click to place',
     paint:    'Paint — drag to paint surface',
     erase:    'Erase — drag to erase',
-    pan:      'Pan — drag to move · scroll/pinch zoom'
+    pan:      'Pan — drag to move · scroll/pinch zoom',
+    barrier:  'Barrier — click start, then click end of segment'
   };
   document.getElementById('tool-hud').textContent = hudMap[t] || t;
 
   const showBrush = t === 'paint' || t === 'erase';
+  const showSurface = t === 'paint' || t === 'barrier';
   const sSection = document.getElementById('surface-section');
   const bSection = document.getElementById('brush-section');
-  if (sSection) sSection.style.display = t === 'paint' ? '' : 'none';
+  if (sSection) sSection.style.display = showSurface ? '' : 'none';
   if (bSection) bSection.style.display = showBrush ? '' : 'none';
 
   mainCanvas.style.cursor = t === 'pan' ? 'grab' : (showBrush ? 'none' : 'crosshair');
@@ -899,9 +1087,13 @@ mainCanvas.addEventListener('mousemove', e => {
   if (ch) ch.textContent = `x: ${Math.round(mouseWorld.x)}  y: ${Math.round(mouseWorld.y)}`;
   updateBrushRing(pos.x, pos.y);
   handleMove(pos);
+  if (tool === 'barrier' && barrierSelStart >= 0) render();
 });
-mainCanvas.addEventListener('mouseup', () => handleUp());
-mainCanvas.addEventListener('mouseleave', () => handleUp());
+mainCanvas.addEventListener('mouseup', e => {
+  const pos = getCanvasPos(e.clientX, e.clientY);
+  handleUp(pos);
+});
+mainCanvas.addEventListener('mouseleave', () => handleUp(null));
 mainCanvas.addEventListener('wheel', e => {
   e.preventDefault();
   const pos = getCanvasPos(e.clientX, e.clientY);
@@ -983,7 +1175,7 @@ mainCanvas.addEventListener('touchend', e => {
       updateWPList();
       render();
     }
-    handleUp();
+    handleUp(touchDownPos);
     touchDownPos = null;
   } else if (remaining === 1) {
     const id = Object.keys(touches)[0];
@@ -995,7 +1187,7 @@ mainCanvas.addEventListener('touchend', e => {
 
 mainCanvas.addEventListener('touchcancel', e => {
   Array.from(e.changedTouches).forEach(t => delete touches[t.identifier]);
-  handleUp();
+  handleUp(null);
 }, { passive: false });
 
 // ── SHARED HANDLERS ──
@@ -1021,6 +1213,12 @@ function handleDown(pos, isTouch) {
     undoStack.push(paintLayers.length);
     eraseAt(world.x, world.y);
     render();
+  } else if (tool === 'barrier') {
+    const seg = getSegmentNear(world.x, world.y);
+    if (seg >= 0) {
+      barrierSelStart = seg;
+      showToast(`Barrier start at WP ${seg} — click end point`);
+    }
   }
 }
 
@@ -1038,7 +1236,22 @@ function handleMove(pos) {
   }
 }
 
-function handleUp() {
+function handleUp(pos) {
+  if (tool === 'barrier' && barrierSelStart >= 0 && pos) {
+    const world = screenToWorld(pos.x, pos.y);
+    const seg = getSegmentNear(world.x, world.y);
+    if (seg >= 0 && seg !== barrierSelStart) {
+      barrierSegments.push({
+        from: Math.min(barrierSelStart, seg),
+        to:   Math.max(barrierSelStart, seg),
+        surface
+      });
+      showToast(`${SURFACES[surface].label} barrier added`);
+      render();
+    }
+    barrierSelStart = -1;
+    return;
+  }
   isPanning = false;
   isPainting = false;
   mainCanvas.style.cursor = tool === 'pan' ? 'grab' :
@@ -1134,9 +1347,10 @@ function updateWPList() {
   if (!list) return;
   list.innerHTML = '';
   waypoints.forEach((wp, i) => {
+    const isStart = i === startingPointIdx;
     const div = document.createElement('div');
     div.className = 'wp-item' + (i === selectedWP ? ' selected' : '');
-    div.innerHTML = `<span class="wp-num">${i === 0 ? 'SF' : i}</span>
+    div.innerHTML = `<span class="wp-num" style="${isStart ? 'color:#00ff88' : ''}">${isStart ? '🏁' : i}</span>
       <span class="wp-coords">${Math.round(wp.x)}, ${Math.round(wp.y)}</span>
       <span class="wp-del" onclick="event.stopPropagation();deleteWP(${i})">✕</span>`;
     div.addEventListener('click', () => { selectedWP = i; updateWPList(); render(); });
@@ -1147,18 +1361,20 @@ function updateWPList() {
 function deleteWP(i) {
   waypoints.splice(i, 1);
   if (selectedWP >= waypoints.length) selectedWP = -1;
+  if (startingPointIdx >= waypoints.length) startingPointIdx = 0;
   updateWPList(); render();
 }
 
 function clearWaypoints() {
   if (!confirm('Clear all waypoints?')) return;
-  waypoints = []; selectedWP = -1;
+  waypoints = []; selectedWP = -1; startingPointIdx = 0; barrierSegments = []; barrierSelStart = -1;
   updateWPList(); render();
 }
 
 function clearAll() {
   if (!confirm('Reset everything? This cannot be undone.')) return;
   waypoints = []; paintLayers = []; undoStack = []; selectedWP = -1; bgImage = null;
+  barrierSegments = []; barrierSelStart = -1; startingPointIdx = 0;
   updateWPList(); render();
 }
 
@@ -1190,15 +1406,20 @@ function buildExportCode() {
   const wpLines = wps.map((w, i) => `      [${w.x.toFixed(1)}, ${w.y.toFixed(1)}],${i === 0 ? '  // SF line' : ''}`).join('\n');
   const paintSummary = paintLayers.length > 0 ? `\n  // Paint zones: ${surfList}\n  // (${paintLayers.length} paint blobs)` : '';
 
+  const barrierLines = barrierSegments.length > 0
+    ? `\n    barriers_detail: [\n${barrierSegments.map(b => `      { from: ${b.from}, to: ${b.to}, surface: '${b.surface}' }`).join(',\n')}\n    ],`
+    : '';
+
   return `  // ── ${name} ──────────────────────────────────────────
   ${key}: {
     name: '${name}',
     sub:  '${sub}',
     barriers: ${barriers},
+    startingPoint: ${startingPointIdx},
 ${scaleNote}    waypoints: [
 ${wpLines}
     ],
-    nPerSeg: ${nPerSeg},${paintSummary}
+    nPerSeg: ${nPerSeg},${barrierLines}${paintSummary}
   },`;
 }
 
@@ -1300,90 +1521,34 @@ function setAIProgress(pct) {
   if (pct >= 100) setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 600);
 }
 
-async 
-function runAIConvert() {
-  if (!aiImage) return;
+async function runAIConvert() {
+  if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }
+  const btn = document.getElementById('ai-run-btn');
+  btn.disabled = true;
 
-  const canvas = document.createElement('canvas');
-  const ctx = canvas.getContext('2d');
-  canvas.width = aiImage.width;
-  canvas.height = aiImage.height;
-  ctx.drawImage(aiImage, 0, 0);
+  const W = aiImgW, H = aiImgH;
+  const data = aiImageData.data;
+  const wpCount = parseInt(document.getElementById('ai-wp-count').value);
+  const thresh  = parseInt(document.getElementById('ai-thresh').value);
+  const smooth  = parseInt(document.getElementById('ai-smooth').value);
+  const invert  = parseInt(document.getElementById('ai-invert').value) === 1;
 
-  const img = ctx.getImageData(0,0,canvas.width,canvas.height);
-  const data = img.data;
+  setAIStatus('Step 1/5 — Thresholding…', '');
+  setAIProgress(5);
+  await new Promise(r => setTimeout(r, 10));
 
-  // grayscale
-  let gray = new Uint8ClampedArray(canvas.width*canvas.height);
-  for(let i=0;i<data.length;i+=4){
-    gray[i/4] = 0.299*data[i]+0.587*data[i+1]+0.114*data[i+2];
+  // ── Step 1: grayscale + threshold ──
+  const bin = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const gray = 0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2];
+    bin[i] = invert ? (gray > thresh ? 1 : 0) : (gray <= thresh ? 1 : 0);
   }
 
-  // auto threshold
-  let sum=0;
-  for(let i=0;i<gray.length;i++) sum+=gray[i];
-  let thresh = sum/gray.length;
-
-  let binary = new Uint8Array(gray.length);
-  for(let i=0;i<gray.length;i++){
-    binary[i] = gray[i] > thresh ? 1:0;
-  }
-
-  // collect edge pixels
-  let pts=[];
-  for(let y=1;y<canvas.height-1;y++){
-    for(let x=1;x<canvas.width-1;x++){
-      let i=y*canvas.width+x;
-      if(binary[i]){
-        // check neighbor
-        if(!binary[i-1]||!binary[i+1]||!binary[i-canvas.width]||!binary[i+canvas.width]){
-          pts.push({x,y});
-        }
-      }
-    }
-  }
-
-  if(pts.length<10){
-    showToast('Detection failed');
-    return;
-  }
-
-  // sort roughly (simple nearest neighbor chain)
-  let ordered=[pts[0]];
-  pts.splice(0,1);
-
-  while(pts.length){
-    let last=ordered[ordered.length-1];
-    let best=0, bestD=1e9;
-    for(let i=0;i<pts.length;i++){
-      let dx=pts[i].x-last.x;
-      let dy=pts[i].y-last.y;
-      let d=dx*dx+dy*dy;
-      if(d<bestD){bestD=d;best=i;}
-    }
-    ordered.push(pts[best]);
-    pts.splice(best,1);
-  }
-
-  // sample waypoints
-  waypoints=[];
-  let step = Math.max(1, Math.floor(ordered.length/60));
-  for(let i=0;i<ordered.length;i+=step){
-    let p=ordered[i];
-    waypoints.push({
-      x: p.x - canvas.width/2,
-      y: p.y - canvas.height/2
-    });
-  }
-
-  updateWPList();
-  render();
-  showToast('Track extracted');
-}
+  setAIStatus('Step 2/5 — Finding largest region…', '');
   setAIProgress(15);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 2: keep only the largest connected component (flood fill) ──
+  // ── Step 2: keep only the largest connected component ──
   const label = new Int32Array(W * H).fill(-1);
   let bestId = -1, bestCount = 0, compId = 0;
   const stack = [];
@@ -1408,19 +1573,18 @@ function runAIConvert() {
       compId++;
     }
   }
-  // Keep only bestId
   for (let i = 0; i < W * H; i++) bin[i] = (label[i] === bestId) ? 1 : 0;
+
+  setAIStatus('Step 3/5 — Skeletonizing…', '');
   setAIProgress(30);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 3: Zhang-Suen thinning (skeletonization) ──
+  // ── Step 3: Zhang-Suen thinning ──
   const skel = new Uint8Array(bin);
   let changed = true;
   let iters = 0;
   while (changed && iters < 500) {
-    changed = false;
-    iters++;
-    // Sub-iteration 1
+    changed = false; iters++;
     const toRemove1 = [];
     for (let y = 1; y < H - 1; y++) {
       for (let x = 1; x < W - 1; x++) {
@@ -1442,7 +1606,6 @@ function runAIConvert() {
       }
     }
     toRemove1.forEach(i => { skel[i] = 0; changed = true; });
-    // Sub-iteration 2
     const toRemove2 = [];
     for (let y = 1; y < H - 1; y++) {
       for (let x = 1; x < W - 1; x++) {
@@ -1464,22 +1627,28 @@ function runAIConvert() {
       }
     }
     toRemove2.forEach(i => { skel[i] = 0; changed = true; });
+    // yield every 5 iterations to update progress
+    if (iters % 5 === 0) {
+      setAIProgress(30 + Math.min(35, iters * 0.07 * 35));
+      await new Promise(r => setTimeout(r, 0));
+    }
   }
+
+  setAIStatus('Step 4/5 — Ordering skeleton…', '');
   setAIProgress(70);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 4: collect skeleton pixels ──
   const skelPts = [];
   for (let i = 0; i < W * H; i++) { if (skel[i]) skelPts.push({ x: i % W, y: Math.floor(i / W) }); }
 
   if (skelPts.length < 10) {
     setAIStatus('Could not detect a track — try adjusting threshold or "Track is" toggle', 'err');
     btn.disabled = false;
+    setAIProgress(0); document.getElementById('ai-progress').style.display='none';
     return;
   }
 
-  // ── Step 5: order skeleton pixels by walking from one end ──
-  // Build adjacency: for each skeleton pixel find its skeleton neighbours
+  // ── Step 5: walk the skeleton ──
   const skelSet = new Uint8Array(W * H);
   skelPts.forEach(p => { skelSet[p.y * W + p.x] = 1; });
 
@@ -1493,7 +1662,6 @@ function runAIConvert() {
     return ns;
   }
 
-  // Find a good starting point (endpoint or just first pixel)
   let startPt = skelPts[0];
   for (const p of skelPts) { if (skelNeighbors(p.x, p.y).length === 1) { startPt = p; break; } }
 
@@ -1505,21 +1673,21 @@ function runAIConvert() {
   while (true) {
     const ns = skelNeighbors(cur.x, cur.y).filter(n => !visited[n.y * W + n.x]);
     if (!ns.length) break;
-    // pick closest unvisited neighbour
     cur = ns[0];
     visited[cur.y * W + cur.x] = 1;
     ordered.push(cur);
   }
+
+  setAIStatus('Step 5/5 — Sampling & smoothing…', '');
   setAIProgress(85);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 6: downsample to desired waypoint count ──
+  // ── Step 6: downsample ──
   const step = Math.max(1, Math.floor(ordered.length / wpCount));
   let sampled = [];
   for (let i = 0; i < ordered.length; i += step) sampled.push(ordered[i]);
 
   // ── Step 7: moving-average smoothing ──
-  const win = smooth * 2 + 1;
   const smoothed = sampled.map((p, i) => {
     let sx = 0, sy = 0, cnt = 0;
     for (let k = -smooth; k <= smooth; k++) {
@@ -1529,8 +1697,7 @@ function runAIConvert() {
     return { x: sx / cnt, y: sy / cnt };
   });
 
-  // ── Step 8: convert to world coords (centre the track) ──
-  // Map image pixel coords to world coords centred in viewport
+  // ── Step 8: convert to world coords preserving aspect ratio ──
   const cx = W / 2, cy2 = H / 2;
   const scaleToWorld = (mainCanvas.width * 0.8) / W / cam.zoom;
   const newWPs = smoothed.map(p => ({
@@ -1542,7 +1709,7 @@ function runAIConvert() {
   waypoints = newWPs;
   updateWPList();
   render();
-  setAIStatus(`✓ Extracted ${newWPs.length} waypoints from skeleton (${iters} thinning passes)`, 'ok');
+  setAIStatus(`✓ Extracted ${newWPs.length} waypoints (${iters} thinning passes)`, 'ok');
   btn.disabled = false;
   showToast(`${newWPs.length} waypoints extracted!`);
 }
