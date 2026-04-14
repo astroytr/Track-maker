@@ -336,6 +336,14 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
 .ai-btn.cancel:hover { border-color: var(--text); color: var(--text); }
 .ai-progress { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; display: none; }
 .ai-progress-bar { height: 100%; background: #a78bfa; border-radius: 2px; width: 0%; transition: width 0.3s; }
+
+/* colour chip buttons */
+.colour-chip {
+  width: 30px; height: 30px; border-radius: 5px; cursor: pointer;
+  transition: transform 0.1s, box-shadow 0.1s; flex-shrink: 0;
+}
+.colour-chip:hover { transform: scale(1.12); }
+.colour-chip.selected { box-shadow: 0 0 0 2px #a78bfa, 0 0 0 4px rgba(167,139,250,0.35); }
 </style>
 </head>
 <body>
@@ -615,7 +623,28 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
       <input type="file" id="ai-file" accept="image/*" onchange="aiLoadFile(this)">
       <div id="ai-preview-wrap">
         <img id="ai-preview" src="" alt="Track preview">
-        <div style="margin-top:8px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
+
+        <!-- Colour pickers -->
+        <div style="margin-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div>
+            <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;margin-bottom:6px;">TRACK COLOUR</div>
+            <div style="display:flex;gap:6px;">
+              <button class="colour-chip" id="track-black"  onclick="setTrackColour('black')"  title="Black track" style="background:#111;border:2px solid #a78bfa;"></button>
+              <button class="colour-chip" id="track-white"  onclick="setTrackColour('white')"  title="White track" style="background:#fff;border:2px solid transparent;"></button>
+              <button class="colour-chip" id="track-red"    onclick="setTrackColour('red')"    title="Red track"   style="background:#e53;border:2px solid transparent;"></button>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;margin-bottom:6px;">BACKGROUND COLOUR</div>
+            <div style="display:flex;gap:6px;">
+              <button class="colour-chip" id="bg-white"  onclick="setBgColour('white')"  title="White background" style="background:#fff;border:2px solid #a78bfa;"></button>
+              <button class="colour-chip" id="bg-black"  onclick="setBgColour('black')"  title="Black background" style="background:#111;border:2px solid transparent;"></button>
+              <button class="colour-chip" id="bg-red"    onclick="setBgColour('red')"    title="Red background"   style="background:#e53;border:2px solid transparent;"></button>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;">
           <span style="font-size:10px;color:var(--text3);letter-spacing:1px;font-family:'Barlow Condensed',sans-serif;">WAYPOINTS</span>
           <div style="display:flex;align-items:center;gap:6px;flex:1;">
             <input type="range" min="20" max="120" value="60" id="ai-wp-count" style="flex:1;accent-color:#a78bfa;" oninput="document.getElementById('ai-wp-val').textContent=this.value">
@@ -1534,31 +1563,6 @@ function aiLoadImageFile(file) {
       cx.drawImage(img, 0, 0, aiImgW, aiImgH);
       aiImageData = cx.getImageData(0, 0, aiImgW, aiImgH);
 
-      // ── Auto-detect: is the track a bright line on dark bg, or dark on light? ──
-      const d = aiImageData.data;
-      const total = aiImgW * aiImgH;
-      let sumGray = 0;
-      // Sample every 4th pixel for speed
-      let sampled = 0;
-      for (let i = 0; i < total; i += 4) {
-        sumGray += 0.299 * d[i*4] + 0.587 * d[i*4+1] + 0.114 * d[i*4+2];
-        sampled++;
-      }
-      const avgBrightness = sumGray / sampled;
-      // If avg brightness is low (dark image), the track line is probably bright → invert=1
-      // If avg brightness is high (light image), the track is probably dark → invert=0
-      const autoInvert = avgBrightness < 100 ? 1 : 0;
-      const autoThresh = avgBrightness < 100 ? 60 : 180;
-      document.getElementById('ai-invert').value = autoInvert;
-      document.getElementById('ai-thresh').value = autoThresh;
-
-      const infoEl = document.getElementById('ai-detected-info');
-      if (infoEl) {
-        infoEl.textContent = autoInvert
-          ? '✓ Detected: bright track on dark background'
-          : '✓ Detected: dark track on light background';
-      }
-
       // Show preview
       const prev = document.getElementById('ai-preview');
       prev.src = ev.target.result;
@@ -1566,6 +1570,8 @@ function aiLoadImageFile(file) {
       document.getElementById('ai-drop').style.display = 'none';
       setAIStatus('Ready — click Extract Waypoints', '');
       document.getElementById('ai-run-btn').disabled = false;
+      const infoEl2 = document.getElementById('ai-detected-info');
+      if (infoEl2) infoEl2.textContent = '← Set track & background colours, then Extract';
     };
     img.src = ev.target.result;
   };
@@ -1574,6 +1580,24 @@ function aiLoadImageFile(file) {
 
 function aiPreviewThresh() {
   // auto-detected values, nothing to do
+}
+
+let aiTrackColour = 'black';   // 'black' | 'white' | 'red'
+let aiBgColour    = 'white';   // 'black' | 'white' | 'red'
+
+function setTrackColour(c) {
+  aiTrackColour = c;
+  ['black','white','red'].forEach(x => {
+    const el = document.getElementById('track-' + x);
+    if (el) el.style.border = (x === c) ? '2px solid #a78bfa' : '2px solid transparent';
+  });
+}
+function setBgColour(c) {
+  aiBgColour = c;
+  ['white','black','red'].forEach(x => {
+    const el = document.getElementById('bg-' + x);
+    if (el) el.style.border = (x === c) ? '2px solid #a78bfa' : '2px solid transparent';
+  });
 }
 
 function setAIStatus(msg, cls) {
@@ -1606,11 +1630,26 @@ async function runAIConvert() {
   setAIProgress(5);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 1: grayscale + threshold ──
+  // ── Step 1: colour-based thresholding ──
+  // Map colour names to target RGB ranges
+  function colourMatch(r, g, b, colour) {
+    if (colour === 'black') {
+      // dark pixels: all channels low
+      return r < 80 && g < 80 && b < 80;
+    } else if (colour === 'white') {
+      // bright pixels: all channels high
+      return r > 175 && g > 175 && b > 175;
+    } else if (colour === 'red') {
+      // red channel dominant, green+blue low
+      return r > 140 && g < 100 && b < 100 && r > (g + 60) && r > (b + 60);
+    }
+    return false;
+  }
+
   const bin = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) {
-    const gray = 0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2];
-    bin[i] = invert ? (gray > thresh ? 1 : 0) : (gray <= thresh ? 1 : 0);
+    const pr = data[i*4], pg = data[i*4+1], pb = data[i*4+2];
+    bin[i] = colourMatch(pr, pg, pb, aiTrackColour) ? 1 : 0;
   }
 
   setAIStatus('Step 2/5 — Finding largest region…', '');
