@@ -2,7 +2,7 @@
 <!--
   ╔══════════════════════════════════════════════════════════════╗
   ║  CIRCUIT FORGE — Track Studio                                ║
-  ║  VERSION: 5.5                                                ║
+  ║  VERSION: 5.6                                                ║
   ║                                                              ║
   ║  VERSIONING RULE (read before making any changes):           ║
   ║  • Bump the version number in ALL THREE places every edit:   ║
@@ -19,6 +19,9 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+<meta http-equiv="Pragma" content="no-cache">
+<meta http-equiv="Expires" content="0">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <title>CIRCUIT FORGE v5 — Track Maker</title>
@@ -370,9 +373,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.5</span>
+        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.6</span>
       </div>
-      <div class="sb-sub">Track Studio · v5.5</div>
+      <div class="sb-sub">Track Studio · v5.6</div>
     </div>
 
     <!-- Upload -->
@@ -478,7 +481,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v5.5</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v5.6</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
@@ -631,7 +634,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.5</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.6</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
@@ -1674,26 +1677,64 @@ async function runAIConvert() {
     bin[i] = colourMatch(data[i*4], data[i*4+1], data[i*4+2], aiTrackColour) ? 1 : 0;
   }
 
-  setAIStatus('Step 2/4 — Morphological closing & largest region…', '');
+  setAIStatus('Step 2/4 — Skeletonizing (Zhang-Suen)…', '');
   setAIProgress(20);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 2b: find largest connected component on raw bin (no morphology needed for line tracing) ──
+  // ── Step 2: Zhang-Suen thinning ──
+  // Iteratively erodes the binary image to a 1-pixel-wide skeleton,
+  // preserving connectivity and shape. Works correctly for any track shape.
+  function zhangSuen(src, W, H) {
+    const img = new Uint8Array(src); // copy
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (let pass = 0; pass < 2; pass++) {
+        const toRemove = [];
+        for (let y = 1; y < H - 1; y++) {
+          for (let x = 1; x < W - 1; x++) {
+            if (!img[y * W + x]) continue;
+            const p2 = img[(y-1)*W+x], p3 = img[(y-1)*W+(x+1)];
+            const p4 = img[y*W+(x+1)],  p5 = img[(y+1)*W+(x+1)];
+            const p6 = img[(y+1)*W+x],  p7 = img[(y+1)*W+(x-1)];
+            const p8 = img[y*W+(x-1)],  p9 = img[(y-1)*W+(x-1)];
+            const B = p2+p3+p4+p5+p6+p7+p8+p9;
+            if (B < 2 || B > 6) continue;
+            const seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2];
+            let A = 0;
+            for (let k = 0; k < 8; k++) if (!seq[k] && seq[k+1]) A++;
+            if (A !== 1) continue;
+            if (pass === 0) { if (p2*p4*p6 !== 0 || p4*p6*p8 !== 0) continue; }
+            else            { if (p2*p4*p8 !== 0 || p2*p6*p8 !== 0) continue; }
+            toRemove.push(y * W + x);
+          }
+        }
+        if (toRemove.length) { changed = true; for (const i of toRemove) img[i] = 0; }
+      }
+    }
+    return img;
+  }
+
+  const skel = zhangSuen(bin, W, H);
+
+  // ── Step 2b: find largest connected component of skeleton ──
   const label = new Int32Array(W * H).fill(-1);
   let bestId = -1, bestCount = 0, compId = 0;
   const stk = [];
   for (let sy = 0; sy < H; sy++) {
     for (let sx = 0; sx < W; sx++) {
       const idx = sy * W + sx;
-      if (bin[idx] !== 1 || label[idx] !== -1) continue;
-      let count = 0;
-      stk.push(idx);
-      label[idx] = compId;
+      if (!skel[idx] || label[idx] !== -1) continue;
+      let count = 0; stk.push(idx); label[idx] = compId;
       while (stk.length) {
         const cur = stk.pop(); count++;
         const cy2 = Math.floor(cur / W), cx2 = cur % W;
-        for (const n of [cy2>0?cur-W:-1, cy2<H-1?cur+W:-1, cx2>0?cur-1:-1, cx2<W-1?cur+1:-1]) {
-          if (n !== -1 && bin[n] === 1 && label[n] === -1) { label[n] = compId; stk.push(n); }
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dy && !dx) continue;
+          const ny = cy2+dy, nx = cx2+dx;
+          if (ny<0||ny>=H||nx<0||nx>=W) continue;
+          const ni = ny*W+nx;
+          if (skel[ni] && label[ni] === -1) { label[ni] = compId; stk.push(ni); }
         }
       }
       if (count > bestCount) { bestCount = count; bestId = compId; }
@@ -1706,49 +1747,54 @@ async function runAIConvert() {
     return;
   }
 
-  setAIStatus('Step 3/4 — Ordering pixels along track…', '');
-  setAIProgress(45);
+  setAIStatus('Step 3/4 — Tracing skeleton path…', '');
+  setAIProgress(50);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 3: Angle-sort ordering ──
-  // Collect all track pixels, compute centroid, sort by angle around it.
-  // This reliably orders any closed circuit shape (oval, complex, etc.)
-  // without the zigzag problem of greedy nearest-neighbour walks.
-  const trackPts = [];
+  // ── Step 3: 8-connected chain walk on 1px skeleton ──
+  // Because the skeleton is 1px wide, the greedy nearest-neighbour walk
+  // now stays perfectly on track — no zigzagging possible.
+  const skelPts = [];
   for (let i = 0; i < W * H; i++) {
-    if (label[i] === bestId) trackPts.push({ x: i % W, y: Math.floor(i / W) });
+    if (label[i] === bestId) skelPts.push(i);
   }
 
-  // Compute centroid
-  let cx0 = 0, cy0 = 0;
-  for (const p of trackPts) { cx0 += p.x; cy0 += p.y; }
-  cx0 /= trackPts.length; cy0 /= trackPts.length;
+  // Build fast lookup grid
+  const onSkel = new Uint8Array(W * H);
+  for (const i of skelPts) onSkel[i] = 1;
 
-  // Sort by angle from centroid — gives clean clockwise ordering for any closed loop
-  trackPts.sort((a, b) => Math.atan2(a.y - cy0, a.x - cx0) - Math.atan2(b.y - cy0, b.x - cx0));
+  const visited = new Uint8Array(W * H);
+  const boundary = [];
+  // Start from topmost-leftmost skeleton pixel
+  const start = skelPts[0];
+  let cur = start;
+  visited[cur] = 1;
+  boundary.push({ x: cur % W, y: Math.floor(cur / W) });
 
-  // Thin the point set: keep only one point per angular bucket to avoid
-  // clusters of pixels on thick lines swamping the waypoint count
-  const buckets = 720; // 0.5° resolution
-  const bucketMap = new Map();
-  for (const p of trackPts) {
-    const angle = Math.atan2(p.y - cy0, p.x - cx0);
-    const bucket = Math.floor(((angle + Math.PI) / (2 * Math.PI)) * buckets);
-    const dist = Math.hypot(p.x - cx0, p.y - cy0);
-    // Keep the point furthest from centroid in each bucket (outer edge of thick lines)
-    if (!bucketMap.has(bucket) || dist > bucketMap.get(bucket).dist) {
-      bucketMap.set(bucket, { x: p.x, y: p.y, dist });
+  const dirs8 = [-W-1,-W,-W+1,-1,1,W-1,W,W+1];
+  let prevDir = -1;
+  for (let step = 0; step < skelPts.length * 2; step++) {
+    let next = -1, nextDir = -1, bestScore = Infinity;
+    const cy2 = Math.floor(cur / W), cx2 = cur % W;
+    for (let d = 0; d < 8; d++) {
+      const ni = cur + dirs8[d];
+      const ny = Math.floor(ni / W), nx = ni % W;
+      if (ni < 0 || ni >= W*H) continue;
+      if (Math.abs(nx - cx2) > 1 || Math.abs(ny - cy2) > 1) continue;
+      if (!onSkel[ni] || visited[ni]) continue;
+      // Prefer continuing in same direction (reduces zig-zag)
+      const score = (prevDir >= 0 && d === prevDir) ? 0 : 1;
+      if (score < bestScore) { bestScore = score; next = ni; nextDir = d; }
     }
+    if (next === -1) break;
+    visited[next] = 1;
+    boundary.push({ x: next % W, y: Math.floor(next / W) });
+    prevDir = nextDir;
+    cur = next;
   }
-
-  const boundary = Array.from(bucketMap.values()).sort((a, b) => {
-    const aa = Math.atan2(a.y - cy0, a.x - cx0);
-    const ab = Math.atan2(b.y - cy0, b.x - cx0);
-    return aa - ab;
-  });
 
   if (boundary.length < 4) {
-    setAIStatus('No track pixels found — check colour selection', 'err');
+    setAIStatus('No skeleton path found — check colour selection', 'err');
     btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
     return;
   }
