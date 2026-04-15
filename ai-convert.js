@@ -73,6 +73,7 @@ function aiLoadImageFile(file) {
 
 // ── Eyedropper state machine ──
 function startEyedropper(mode) {
+  if (!aiPreviewCanvas) { setAIStatus('Upload an image first, then pick a colour', 'err'); return; }
   aiEyedropperMode = mode;
   document.getElementById('eyedropper-hint').style.display = '';
   aiPreviewCanvas.style.cursor = 'crosshair';
