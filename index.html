@@ -2,7 +2,7 @@
 <!--
   ╔══════════════════════════════════════════════════════════════╗
   ║  CIRCUIT FORGE — Track Studio                                ║
-  ║  VERSION: 5.6                                                ║
+  ║  VERSION: 5.7                                                ║
   ║                                                              ║
   ║  VERSIONING RULE (read before making any changes):           ║
   ║  • Bump the version number in ALL THREE places every edit:   ║
@@ -373,9 +373,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.6</span>
+        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.7</span>
       </div>
-      <div class="sb-sub">Track Studio · v5.6</div>
+      <div class="sb-sub">Track Studio · v5.7</div>
     </div>
 
     <!-- Upload -->
@@ -481,7 +481,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v5.6</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v5.7</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
@@ -634,7 +634,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.6</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.7</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
@@ -1763,35 +1763,70 @@ async function runAIConvert() {
   const onSkel = new Uint8Array(W * H);
   for (const i of skelPts) onSkel[i] = 1;
 
-  const visited = new Uint8Array(W * H);
-  const boundary = [];
-  // Start from topmost-leftmost skeleton pixel
-  const start = skelPts[0];
-  let cur = start;
-  visited[cur] = 1;
-  boundary.push({ x: cur % W, y: Math.floor(cur / W) });
-
   const dirs8 = [-W-1,-W,-W+1,-1,1,W-1,W,W+1];
-  let prevDir = -1;
-  for (let step = 0; step < skelPts.length * 2; step++) {
-    let next = -1, nextDir = -1, bestScore = Infinity;
-    const cy2 = Math.floor(cur / W), cx2 = cur % W;
+
+  // Count neighbours for each skeleton pixel
+  function neighbourCount(idx) {
+    let n = 0;
+    const cy2 = Math.floor(idx / W), cx2 = idx % W;
     for (let d = 0; d < 8; d++) {
-      const ni = cur + dirs8[d];
-      const ny = Math.floor(ni / W), nx = ni % W;
+      const ni = idx + dirs8[d];
       if (ni < 0 || ni >= W*H) continue;
+      const ny = Math.floor(ni / W), nx = ni % W;
       if (Math.abs(nx - cx2) > 1 || Math.abs(ny - cy2) > 1) continue;
-      if (!onSkel[ni] || visited[ni]) continue;
-      // Prefer continuing in same direction (reduces zig-zag)
-      const score = (prevDir >= 0 && d === prevDir) ? 0 : 1;
-      if (score < bestScore) { bestScore = score; next = ni; nextDir = d; }
+      if (onSkel[ni]) n++;
     }
-    if (next === -1) break;
-    visited[next] = 1;
-    boundary.push({ x: next % W, y: Math.floor(next / W) });
-    prevDir = nextDir;
-    cur = next;
+    return n;
   }
+
+  // Find an endpoint (1 neighbour) to start from — best for open paths.
+  // If the track is a closed loop (all pixels have 2+ neighbours), just use skelPts[0].
+  let startPt = skelPts[0];
+  for (const i of skelPts) {
+    if (neighbourCount(i) === 1) { startPt = i; break; }
+  }
+
+  // Walk the skeleton greedily, preferring the previous direction to reduce zigzag.
+  // After the initial walk stalls, we also walk BACKWARDS from the start to catch
+  // the other half of the loop (important for closed circuits).
+  function walkFrom(startIdx, visitedArr, prevDirHint) {
+    const path = [];
+    let cur = startIdx, prevDir = prevDirHint;
+    if (visitedArr[cur]) return path;
+    visitedArr[cur] = 1;
+    path.push({ x: cur % W, y: Math.floor(cur / W) });
+    for (let step = 0; step < skelPts.length * 2; step++) {
+      let next = -1, nextDir = -1, bestScore = Infinity;
+      const cy2 = Math.floor(cur / W), cx2 = cur % W;
+      for (let d = 0; d < 8; d++) {
+        const ni = cur + dirs8[d];
+        if (ni < 0 || ni >= W*H) continue;
+        const ny = Math.floor(ni / W), nx = ni % W;
+        if (Math.abs(nx - cx2) > 1 || Math.abs(ny - cy2) > 1) continue;
+        if (!onSkel[ni] || visitedArr[ni]) continue;
+        const score = (prevDir >= 0 && d === prevDir) ? 0 : 1;
+        if (score < bestScore) { bestScore = score; next = ni; nextDir = d; }
+      }
+      if (next === -1) break;
+      visitedArr[next] = 1;
+      path.push({ x: next % W, y: Math.floor(next / W) });
+      prevDir = nextDir;
+      cur = next;
+    }
+    return path;
+  }
+
+  const visited = new Uint8Array(W * H);
+  // Forward walk from startPt
+  const forwardPath = walkFrom(startPt, visited, -1);
+  // Reverse walk from startPt (walk the other side of a loop / open path)
+  const visited2 = new Uint8Array(visited); // copy state after forward walk
+  // Unvisit startPt so we can explore the other direction
+  visited2[startPt] = 0;
+  const backPath = walkFrom(startPt, visited2, -1);
+
+  // Assemble: reverse(backPath) + forwardPath gives full circuit
+  const boundary = [...backPath.slice(1).reverse(), ...forwardPath];
 
   if (boundary.length < 4) {
     setAIStatus('No skeleton path found — check colour selection', 'err');
