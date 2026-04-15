@@ -1,16 +1,12 @@
-// TRACK IMAGE → WAYPOINTS  v6.2
-// Eyedropper colour picker + centreline skeleton + full-circuit walk
+// TRACK IMAGE → WAYPOINTS  v6.3
 // ═══════════════════════════════════════════════════
 let aiImageData = null;
 let aiImgW = 0, aiImgH = 0;
-let aiRawImage = null;
 let aiTrackRGB = null;
 let aiBgRGB    = null;
 let aiEyedropperMode = null;
 let aiPreviewCanvas  = null;
 let aiPreviewCtx     = null;
-
-// Legacy vars kept so old references don't crash
 let aiTrackColour = 'black';
 let aiBgColour    = 'white';
 
@@ -28,7 +24,6 @@ function aiLoadFile(input) {
 }
 
 function aiLoadImageFile(file) {
-  // Remove any stale listeners before adding new ones
   if (aiPreviewCanvas) {
     aiPreviewCanvas.removeEventListener('click',      aiCanvasClick);
     aiPreviewCanvas.removeEventListener('mousemove',  aiCanvasMouseMove);
@@ -36,12 +31,11 @@ function aiLoadImageFile(file) {
     aiPreviewCanvas.removeEventListener('touchmove',  aiCanvasTouchMove);
     aiPreviewCanvas.removeEventListener('touchend',   aiCanvasTouchEnd);
   }
-
   const reader = new FileReader();
   reader.onload = ev => {
     const img = new Image();
     img.onload = () => {
-      const MAX = 700;
+      const MAX = 600;
       const scale = Math.min(1, MAX / Math.max(img.width, img.height));
       aiImgW = Math.round(img.width  * scale);
       aiImgH = Math.round(img.height * scale);
@@ -54,10 +48,11 @@ function aiLoadImageFile(file) {
 
       aiPreviewCanvas = document.getElementById('ai-preview-canvas');
       aiPreviewCtx    = aiPreviewCanvas.getContext('2d');
+
       document.getElementById('ai-preview-wrap').style.display = 'block';
-      const modalBody = aiPreviewCanvas.closest('.ai-body') || document.querySelector('.ai-body');
-      const availW = modalBody ? modalBody.clientWidth - 40 : 300;
-      const dispW = Math.min(availW, aiImgW, 500);
+      const modalBody = document.querySelector('.ai-body');
+      const availW = modalBody ? modalBody.clientWidth - 32 : 300;
+      const dispW = Math.min(availW, aiImgW);
       const dispH = Math.round(aiImgH * dispW / aiImgW);
       aiPreviewCanvas.width  = dispW;
       aiPreviewCanvas.height = dispH;
@@ -65,26 +60,29 @@ function aiLoadImageFile(file) {
       aiPreviewCanvas.style.height = dispH + 'px';
       aiPreviewCtx.drawImage(img, 0, 0, dispW, dispH);
 
-      aiPreviewCanvas.addEventListener('click',      aiCanvasClick,     { passive: false });
-      aiPreviewCanvas.addEventListener('mousemove',  aiCanvasMouseMove, { passive: false });
-      aiPreviewCanvas.addEventListener('touchstart', aiCanvasTouchStart,{ passive: false });
-      aiPreviewCanvas.addEventListener('touchmove',  aiCanvasTouchMove, { passive: false });
-      aiPreviewCanvas.addEventListener('touchend',   aiCanvasTouchEnd,  { passive: false });
+      aiPreviewCanvas.addEventListener('click',      aiCanvasClick,      { passive: false });
+      aiPreviewCanvas.addEventListener('mousemove',  aiCanvasMouseMove,  { passive: false });
+      aiPreviewCanvas.addEventListener('touchstart', aiCanvasTouchStart, { passive: false });
+      aiPreviewCanvas.addEventListener('touchmove',  aiCanvasTouchMove,  { passive: false });
+      aiPreviewCanvas.addEventListener('touchend',   aiCanvasTouchEnd,   { passive: false });
 
       document.getElementById('ai-drop').style.display = 'none';
       setAIStatus('Pick track colour and background colour from the image, then Extract', '');
       document.getElementById('ai-run-btn').disabled = false;
+
+      setTimeout(() => aiPreviewCanvas.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 120);
     };
     img.src = ev.target.result;
   };
   reader.readAsDataURL(file);
 }
 
-// ── Eyedropper state machine ──
+// ── Eyedropper ──
 function startEyedropper(mode) {
+  if (!aiPreviewCanvas) { setAIStatus('Upload an image first', 'err'); return; }
   aiEyedropperMode = mode;
   document.getElementById('eyedropper-hint').style.display = '';
-  if (aiPreviewCanvas) aiPreviewCanvas.style.cursor = 'crosshair';
+  aiPreviewCanvas.style.cursor = 'crosshair';
   document.getElementById('track-pick-btn').style.background =
     mode === 'track' ? 'rgba(167,139,250,0.35)' : 'rgba(167,139,250,0.12)';
   document.getElementById('bg-pick-btn').style.background =
@@ -105,8 +103,8 @@ function aiGetImageXY(canvas, clientX, clientY) {
   const rx = (clientX - rect.left) / rect.width;
   const ry = (clientY - rect.top)  / rect.height;
   return {
-    ix: Math.max(0, Math.min(aiImgW-1, Math.round(rx * aiImgW))),
-    iy: Math.max(0, Math.min(aiImgH-1, Math.round(ry * aiImgH))),
+    ix: Math.max(0, Math.min(aiImgW - 1, Math.round(rx * aiImgW))),
+    iy: Math.max(0, Math.min(aiImgH - 1, Math.round(ry * aiImgH))),
     cx: clientX - rect.left,
     cy: clientY - rect.top,
     cw: rect.width,
@@ -121,13 +119,12 @@ function aiSamplePixel(ix, iy) {
 }
 
 function rgbToHex(rgb) {
-  return '#' + [rgb.r, rgb.g, rgb.b].map(v => v.toString(16).padStart(2,'0')).join('');
+  return '#' + [rgb.r, rgb.g, rgb.b].map(v => v.toString(16).padStart(2, '0')).join('');
 }
 
 function aiPickColour(clientX, clientY) {
   if (!aiEyedropperMode || !aiPreviewCanvas) return;
   const { ix, iy } = aiGetImageXY(aiPreviewCanvas, clientX, clientY);
-  // Always sample from the original image data — never from the display canvas
   const rgb = aiSamplePixel(ix, iy);
   const hex = rgbToHex(rgb);
   if (aiEyedropperMode === 'track') {
@@ -143,8 +140,6 @@ function aiPickColour(clientX, clientY) {
   aiUpdatePreviewOverlay();
 }
 
-// FIX: Loupe always draws from original aiImageData, not the display canvas.
-// This ensures the loupe shows true colours even after the overlay is applied.
 function aiShowLoupe(clientX, clientY) {
   if (!aiEyedropperMode || !aiPreviewCanvas || !aiImageData) return;
   const loupe = document.getElementById('ai-loupe');
@@ -153,17 +148,13 @@ function aiShowLoupe(clientX, clientY) {
   loupe.width = loupe.height = LSIZE;
   loupe.style.width = loupe.style.height = LSIZE + 'px';
   loupe.style.display = 'block';
-
   let lx = cx + 20, ly = cy - LSIZE - 10;
   if (lx + LSIZE > cw) lx = cx - LSIZE - 20;
   if (ly < 0) ly = cy + 20;
   loupe.style.left = lx + 'px';
   loupe.style.top  = ly + 'px';
-
   const lc = loupe.getContext('2d');
   lc.imageSmoothingEnabled = false;
-
-  // Build loupe pixels directly from aiImageData (original colours, never overlay)
   const loupeImg = lc.createImageData(LSIZE, LSIZE);
   for (let ly2 = 0; ly2 < LSIZE; ly2++) {
     for (let lx2 = 0; lx2 < LSIZE; lx2++) {
@@ -178,50 +169,22 @@ function aiShowLoupe(clientX, clientY) {
     }
   }
   lc.putImageData(loupeImg, 0, 0);
-
-  // Crosshair over loupe
-  lc.strokeStyle = '#a78bfa';
-  lc.lineWidth = 1;
+  lc.strokeStyle = '#a78bfa'; lc.lineWidth = 1;
   lc.beginPath(); lc.moveTo(HALF, 0); lc.lineTo(HALF, LSIZE); lc.stroke();
   lc.beginPath(); lc.moveTo(0, HALF); lc.lineTo(LSIZE, HALF); lc.stroke();
 }
 
-function aiCanvasClick(e) {
-  if (!aiEyedropperMode) return;
-  e.preventDefault();
-  aiPickColour(e.clientX, e.clientY);
-}
-function aiCanvasMouseMove(e) {
-  if (!aiEyedropperMode) return;
-  aiShowLoupe(e.clientX, e.clientY);
-}
-function aiCanvasTouchStart(e) {
-  if (!aiEyedropperMode) return;
-  e.preventDefault();
-  const t = e.touches[0];
-  aiShowLoupe(t.clientX, t.clientY);
-}
-function aiCanvasTouchMove(e) {
-  if (!aiEyedropperMode) return;
-  e.preventDefault();
-  const t = e.touches[0];
-  aiShowLoupe(t.clientX, t.clientY);
-}
-function aiCanvasTouchEnd(e) {
-  if (!aiEyedropperMode) return;
-  e.preventDefault();
-  const t = e.changedTouches[0];
-  aiPickColour(t.clientX, t.clientY);
-}
+function aiCanvasClick(e)     { if (!aiEyedropperMode) return; e.preventDefault(); aiPickColour(e.clientX, e.clientY); }
+function aiCanvasMouseMove(e) { if (!aiEyedropperMode) return; aiShowLoupe(e.clientX, e.clientY); }
+function aiCanvasTouchStart(e){ if (!aiEyedropperMode) return; e.preventDefault(); aiShowLoupe(e.touches[0].clientX, e.touches[0].clientY); }
+function aiCanvasTouchMove(e) { if (!aiEyedropperMode) return; e.preventDefault(); aiShowLoupe(e.touches[0].clientX, e.touches[0].clientY); }
+function aiCanvasTouchEnd(e)  { if (!aiEyedropperMode) return; e.preventDefault(); aiPickColour(e.changedTouches[0].clientX, e.changedTouches[0].clientY); }
 
-// FIX: Overlay compositing — draw base image first, then paint overlay on top
-// using globalAlpha so the original image remains visible.
 function aiUpdatePreviewOverlay() {
   if (!aiPreviewCtx || !aiImageData) return;
-  const tol = parseInt(document.getElementById('ai-tolerance').value) || 40;
+  const tol = 40;
+  const tolSq = tol * tol;
   const pw = aiPreviewCanvas.width, ph = aiPreviewCanvas.height;
-
-  // Step 1: redraw the original image as the base
   const base = aiPreviewCtx.createImageData(pw, ph);
   for (let py = 0; py < ph; py++) {
     for (let px = 0; px < pw; px++) {
@@ -236,38 +199,18 @@ function aiUpdatePreviewOverlay() {
     }
   }
   aiPreviewCtx.putImageData(base, 0, 0);
-
-  // Step 2: paint overlay on top using globalAlpha (proper blending)
   if (!aiTrackRGB && !aiBgRGB) return;
-  const tolSq = tol * tol;
   for (let py = 0; py < ph; py++) {
     for (let px = 0; px < pw; px++) {
       const ix = Math.round(px * aiImgW / pw);
       const iy = Math.round(py * aiImgH / ph);
       const si = (iy * aiImgW + ix) * 4;
       const r = aiImageData.data[si], g = aiImageData.data[si+1], b = aiImageData.data[si+2];
-
       let isTrack = false, isBg = false;
-      if (aiTrackRGB) {
-        const dr = r - aiTrackRGB.r, dg = g - aiTrackRGB.g, db = b - aiTrackRGB.b;
-        if (dr*dr + dg*dg + db*db < tolSq) isTrack = true;
-      }
-      if (aiBgRGB) {
-        const dr = r - aiBgRGB.r, dg = g - aiBgRGB.g, db = b - aiBgRGB.b;
-        if (dr*dr + dg*dg + db*db < tolSq) isBg = true;
-      }
-
-      if (isTrack) {
-        // Purple tint for track pixels — draw a 1×1 filled rect with alpha
-        aiPreviewCtx.globalAlpha = 0.72;
-        aiPreviewCtx.fillStyle = 'rgb(167,139,250)';
-        aiPreviewCtx.fillRect(px, py, 1, 1);
-      } else if (isBg) {
-        // Dark tint for background pixels
-        aiPreviewCtx.globalAlpha = 0.62;
-        aiPreviewCtx.fillStyle = 'rgb(0,0,0)';
-        aiPreviewCtx.fillRect(px, py, 1, 1);
-      }
+      if (aiTrackRGB) { const dr=r-aiTrackRGB.r,dg=g-aiTrackRGB.g,db=b-aiTrackRGB.b; if(dr*dr+dg*dg+db*db<tolSq) isTrack=true; }
+      if (aiBgRGB)    { const dr=r-aiBgRGB.r,   dg=g-aiBgRGB.g,   db=b-aiBgRGB.b;    if(dr*dr+dg*dg+db*db<tolSq) isBg=true; }
+      if (isTrack) { aiPreviewCtx.globalAlpha=0.65; aiPreviewCtx.fillStyle='rgb(167,139,250)'; aiPreviewCtx.fillRect(px,py,1,1); }
+      else if (isBg){ aiPreviewCtx.globalAlpha=0.55; aiPreviewCtx.fillStyle='rgb(0,0,0)';       aiPreviewCtx.fillRect(px,py,1,1); }
     }
   }
   aiPreviewCtx.globalAlpha = 1;
@@ -276,33 +219,37 @@ function aiUpdatePreviewOverlay() {
 function setAIStatus(msg, cls) {
   const el = document.getElementById('ai-status');
   el.textContent = msg;
-  el.className = cls ? cls : '';
+  el.className = cls || '';
 }
 function setAIProgress(pct) {
-  const bar  = document.getElementById('ai-progress');
-  const fill = document.getElementById('ai-progress-bar');
-  bar.style.display = 'block';
-  fill.style.width  = pct + '%';
+  const bar = document.getElementById('ai-progress'), fill = document.getElementById('ai-progress-bar');
+  bar.style.display = 'block'; fill.style.width = pct + '%';
   if (pct >= 100) setTimeout(() => { bar.style.display='none'; fill.style.width='0%'; }, 600);
 }
 
-// Legacy stubs
 function setTrackColour(c) { aiTrackColour = c; }
-function setBgColour(c)    { aiBgColour    = c; }
+function setBgColour(c)    { aiBgColour = c; }
 function aiPreviewThresh() {}
 
 // ═══════════════════════════════════════════════════════════════════
-// MAIN PIPELINE v6.2
-// Key improvements over v6.1:
-//   • Centreline extraction via distance transform + local maxima
-//     → walk follows track centre, not the full track width
-//   • Full-circuit walk: continues past endB to capture the whole loop
-//     → closed circuits are fully traced, not just half
+// PIPELINE v6.3
+//
+// The key insight this version gets right:
+//   1. Build a BINARY MASK: pixel is "track" if it's closer to aiTrackRGB
+//      than to aiBgRGB in colour space. This uses BOTH picked colours
+//      properly instead of just erasing background.
+//   2. Keep only the largest connected region (removes UI chrome, noise).
+//   3. Compute a TRUE MEDIAL AXIS via iterative border erosion (Zhang-Suen
+//      thinning). This gives a 1-pixel-wide skeleton that follows the
+//      exact centreline of the track band — no gaps, no doubles.
+//   4. Walk the skeleton with a simple chain-following algorithm that
+//      never backtracks, producing correctly ordered waypoints.
+//   5. Uniform resample + smooth → world coords.
 // ═══════════════════════════════════════════════════════════════════
 async function runAIConvert() {
   if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }
-  if (!aiTrackRGB)  { setAIStatus('Pick the track colour first — tap 🎯 Pick then tap on the track in the image', 'err'); return; }
-  if (!aiBgRGB)     { setAIStatus('Pick the background colour first — tap 🎯 Pick then tap on the background', 'err'); return; }
+  if (!aiTrackRGB)  { setAIStatus('Pick the track colour first', 'err'); return; }
+  if (!aiBgRGB)     { setAIStatus('Pick the background colour first', 'err'); return; }
 
   const btn = document.getElementById('ai-run-btn');
   btn.disabled = true;
@@ -311,319 +258,251 @@ async function runAIConvert() {
   const data = aiImageData.data;
   const wpCount = parseInt(document.getElementById('ai-wp-count').value);
 
-  // ── Step 1: Background removal ──
-  setAIStatus('Step 1/5 — Removing background pixels…', '');
-  setAIProgress(5);
-  await new Promise(r => setTimeout(r, 10));
+  // ── Step 1: Colour-distance binary mask ──
+  // A pixel belongs to "track" if dist-to-trackRGB < dist-to-bgRGB.
+  // This properly uses BOTH colours — much more accurate than bg-only removal.
+  setAIStatus('Step 1/4 — Classifying pixels…', '');
+  setAIProgress(8);
+  await tick();
 
-  let bgTol = 50;
-  let trackMask, trackCount;
-
-  for (let attempt = 0; attempt < 4; attempt++) {
-    const bgTolSq = bgTol * bgTol;
-    trackMask  = new Uint8Array(W * H);
-    trackCount = 0;
-    for (let i = 0; i < W * H; i++) {
-      const r = data[i*4], g = data[i*4+1], b = data[i*4+2];
-      const dr = r - aiBgRGB.r, dg = g - aiBgRGB.g, db = b - aiBgRGB.b;
-      if (dr*dr + dg*dg + db*db > bgTolSq) { trackMask[i] = 1; trackCount++; }
-    }
-    if (trackCount > 100) break;
-    bgTol += 20;
+  const mask = new Uint8Array(W * H);
+  let trackCount = 0;
+  for (let i = 0; i < W * H; i++) {
+    const r = data[i*4], g = data[i*4+1], b = data[i*4+2];
+    const dT = colDist2(r, g, b, aiTrackRGB);
+    const dB = colDist2(r, g, b, aiBgRGB);
+    if (dT < dB) { mask[i] = 1; trackCount++; }
   }
 
-  if (trackCount < 100) {
-    setAIStatus('Background removal left almost no pixels — try re-picking the background colour', 'err');
-    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display = 'none';
-    return;
+  if (trackCount < 50) {
+    setAIStatus('Too few track pixels — re-pick colours', 'err');
+    btn.disabled = false; return;
   }
 
   // ── Step 2: Keep largest connected component ──
-  setAIStatus('Step 2/5 — Finding largest track region…', '');
-  setAIProgress(18);
-  await new Promise(r => setTimeout(r, 10));
+  setAIStatus('Step 2/4 — Finding track region…', '');
+  setAIProgress(20);
+  await tick();
 
-  const label = new Int32Array(W * H).fill(-1);
-  let bestId = -1, bestCount = 0, compId = 0;
-  const stk = [];
-  for (let sy = 0; sy < H; sy++) {
-    for (let sx = 0; sx < W; sx++) {
-      const idx = sy * W + sx;
-      if (!trackMask[idx] || label[idx] !== -1) continue;
-      let count = 0;
-      stk.push(idx); label[idx] = compId;
-      while (stk.length) {
-        const cur = stk.pop(); count++;
-        const cy = Math.floor(cur / W), cx = cur % W;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-          if (!dy && !dx) continue;
-          const ny = cy + dy, nx = cx + dx;
-          if (ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
-          const ni = ny * W + nx;
-          if (trackMask[ni] && label[ni] === -1) { label[ni] = compId; stk.push(ni); }
-        }
-      }
-      if (count > bestCount) { bestCount = count; bestId = compId; }
-      compId++;
-    }
-  }
+  const comp = largestComponent(mask, W, H);
+  // comp is a Uint8Array where 1 = belongs to largest region
 
-  if (bestId === -1 || bestCount < 50) {
-    setAIStatus('No connected track found — re-pick colours or try a cleaner image', 'err');
-    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display = 'none';
-    return;
-  }
+  // ── Step 3: Zhang-Suen thinning → 1px skeleton ──
+  setAIStatus('Step 3/4 — Skeletonising track…', '');
+  setAIProgress(35);
+  await tick();
 
-  // ── Step 3: Centreline extraction via distance transform + local maxima ──
-  // BFS from background-adjacent pixels gives each track pixel its distance
-  // to the nearest background. Pixels that are local maxima lie on the
-  // centreline — equidistant from both edges of the track.
-  setAIStatus('Step 3/5 — Extracting track centreline…', '');
-  setAIProgress(32);
-  await new Promise(r => setTimeout(r, 15));
+  const skel = zhangSuenThin(comp, W, H);
 
-  const distFromBg = new Int32Array(W * H).fill(-1);
-  const bfsQ = [];
-  let bfsQHead = 0;
-
-  // Seed: track pixels that are adjacent to a non-track (background) pixel
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = y * W + x;
-      if (label[i] !== bestId) continue;
-      let adjBg = false;
-      for (let dy = -1; dy <= 1 && !adjBg; dy++) {
-        for (let dx = -1; dx <= 1 && !adjBg; dx++) {
-          if (!dy && !dx) continue;
-          const ny = y + dy, nx = x + dx;
-          if (ny < 0 || ny >= H || nx < 0 || nx >= W) { adjBg = true; break; }
-          const ni = ny * W + nx;
-          if (label[ni] !== bestId) adjBg = true;
-        }
-      }
-      if (adjBg) { distFromBg[i] = 0; bfsQ.push(i); }
-    }
-  }
-
-  // BFS inward
-  while (bfsQHead < bfsQ.length) {
-    const cur = bfsQ[bfsQHead++];
-    const cy = Math.floor(cur / W), cx = cur % W;
-    for (let dy = -1; dy <= 1; dy++) {
-      for (let dx = -1; dx <= 1; dx++) {
-        if (!dy && !dx) continue;
-        const ny = cy + dy, nx = cx + dx;
-        if (ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
-        const ni = ny * W + nx;
-        if (label[ni] === bestId && distFromBg[ni] === -1) {
-          distFromBg[ni] = distFromBg[cur] + 1;
-          bfsQ.push(ni);
-        }
-      }
-    }
-  }
-
-  // Centreline = pixels where distance is a local maximum (>= all 8 neighbours)
-  // We also keep pixels with distance=0 (single-pixel-wide track edges)
-  // to ensure connectivity on thin parts.
-  const centrelineMask = new Uint8Array(W * H);
-  let centrelineCount = 0;
-  for (let y = 1; y < H - 1; y++) {
-    for (let x = 1; x < W - 1; x++) {
-      const i = y * W + x;
-      if (distFromBg[i] < 0) continue; // not a track pixel
-      const d = distFromBg[i];
-      let isLocalMax = true;
-      for (let dy = -1; dy <= 1 && isLocalMax; dy++) {
-        for (let dx = -1; dx <= 1 && isLocalMax; dx++) {
-          if (!dy && !dx) continue;
-          const ni = (y + dy) * W + (x + dx);
-          if (distFromBg[ni] > d) isLocalMax = false;
-        }
-      }
-      if (isLocalMax) { centrelineMask[i] = 1; centrelineCount++; }
-    }
-  }
-
-  // Fallback: if centreline is too sparse (very thin track), use full track
-  const maskToUse = centrelineCount >= 30 ? centrelineMask : trackMask;
-
-  // ── Step 4: Grid of centroids (on centreline) ──
-  setAIStatus('Step 4/5 — Building grid centroids…', '');
-  setAIProgress(50);
-  await new Promise(r => setTimeout(r, 15));
-
-  const targetCells = wpCount * 4;
-  const cellSize = Math.max(2, Math.min(16, Math.floor(Math.sqrt((W * H) / targetCells))));
-  const GW = Math.ceil(W / cellSize);
-  const GH = Math.ceil(H / cellSize);
-
-  const cellXSum = new Float64Array(GW * GH);
-  const cellYSum = new Float64Array(GW * GH);
-  const cellN    = new Int32Array(GW * GH);
-
-  for (let y = 0; y < H; y++) {
-    for (let x = 0; x < W; x++) {
-      const i = y * W + x;
-      if (!maskToUse[i] || label[i] !== bestId) continue;
-      const gx = Math.floor(x / cellSize), gy = Math.floor(y / cellSize);
-      const gi = gy * GW + gx;
-      cellXSum[gi] += x; cellYSum[gi] += y; cellN[gi]++;
-    }
-  }
-
-  const occupied = new Uint8Array(GW * GH);
-  for (let gi = 0; gi < GW * GH; gi++) if (cellN[gi] > 0) occupied[gi] = 1;
-
-  // ── Step 5: Full-circuit walk ──
-  // Double-BFS to find antipodal endpoints, then greedy walk the entire loop.
-  // The key fix: after reaching endB, we continue walking any unvisited
-  // neighbours — this captures the full closed circuit instead of half.
-  setAIStatus('Step 5/5 — Ordering waypoints…', '');
+  // ── Step 4: Walk skeleton into ordered chain ──
+  setAIStatus('Step 4/4 — Ordering waypoints…', '');
   setAIProgress(65);
-  await new Promise(r => setTimeout(r, 15));
+  await tick();
 
-  function gridNeighbours8(gi) {
-    const gx = gi % GW, gy = Math.floor(gi / GW);
-    const nb = [];
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      if (!dy && !dx) continue;
-      const nx = gx + dx, ny = gy + dy;
-      if (nx < 0 || nx >= GW || ny < 0 || ny >= GH) continue;
-      const ni = ny * GW + nx;
-      if (occupied[ni]) nb.push(ni);
-    }
-    return nb;
-  }
-
-  function bfsGrid(startGi) {
-    const dist = new Int32Array(GW * GH).fill(-1);
-    const q = [startGi]; dist[startGi] = 0;
-    let qi = 0, far = startGi, maxD = 0;
-    while (qi < q.length) {
-      const cur = q[qi++];
-      for (const nb of gridNeighbours8(cur)) {
-        if (dist[nb] === -1) {
-          dist[nb] = dist[cur] + 1; q.push(nb);
-          if (dist[nb] > maxD) { maxD = dist[nb]; far = nb; }
-        }
-      }
-    }
-    return { dist, far };
-  }
-
-  let seed = -1;
-  for (let gi = 0; gi < GW * GH; gi++) if (occupied[gi]) { seed = gi; break; }
-  if (seed === -1) {
-    setAIStatus('No grid cells found — re-pick colours', 'err');
-    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display = 'none';
-    return;
-  }
-
-  const r1   = bfsGrid(seed);
-  const endA = r1.far;
-  const r2   = bfsGrid(endA);
-  const endB = r2.far;
-
-  // Greedy walk starting from endA.
-  // Phase 1 (guided): prefer cells with decreasing distance to endB.
-  // Phase 2 (unguided): after reaching endB, continue to any unvisited neighbour.
-  // This ensures the full closed loop is captured.
-  const visitedG = new Uint8Array(GW * GH);
-  const chain = [];
-  let cur = endA;
-  visitedG[cur] = 1;
-  chain.push(cur);
-  let guidedPhase = true;
-
-  for (let step = 0; step < GW * GH; step++) {
-    const nbs = gridNeighbours8(cur).filter(n => !visitedG[n]);
-    if (!nbs.length) break;
-
-    let best;
-    if (guidedPhase) {
-      // Guide toward endB using BFS distance
-      best = nbs[0];
-      let bestD = r2.dist[best] >= 0 ? r2.dist[best] : 9e9;
-      for (const nb of nbs) {
-        const d = r2.dist[nb] >= 0 ? r2.dist[nb] : 9e9;
-        if (d < bestD) { bestD = d; best = nb; }
-      }
-      if (cur === endB) guidedPhase = false; // switch to free walk
-    } else {
-      // Free walk: pick nearest unvisited neighbour in image space
-      const cx = (cur % GW) * cellSize, cy = Math.floor(cur / GW) * cellSize;
-      best = nbs[0];
-      let bestDist = Infinity;
-      for (const nb of nbs) {
-        const nx = (nb % GW) * cellSize, ny = Math.floor(nb / GW) * cellSize;
-        const d = (nx - cx) * (nx - cx) + (ny - cy) * (ny - cy);
-        if (d < bestDist) { bestDist = d; best = nb; }
-      }
-    }
-
-    visitedG[best] = 1;
-    chain.push(best);
-    cur = best;
-  }
+  const chain = walkSkeleton(skel, W, H);
 
   if (chain.length < 4) {
-    setAIStatus('Could not order the track — re-pick colours', 'err');
-    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display = 'none';
-    return;
+    setAIStatus('Could not trace skeleton — try a cleaner image or re-pick colours', 'err');
+    btn.disabled = false; return;
   }
 
   setAIProgress(82);
-  await new Promise(r => setTimeout(r, 10));
+  await tick();
 
-  // ── Step 6: Centroid per cell → raw waypoints ──
-  const rawWPs = chain.map(gi => ({
-    x: cellXSum[gi] / cellN[gi],
-    y: cellYSum[gi] / cellN[gi]
-  }));
+  // ── Uniform resample ──
+  const sampled = uniformResample(chain, wpCount);
 
-  // ── Step 7: Uniform downsample ──
-  const sampled = [];
-  const step = rawWPs.length / Math.min(wpCount, rawWPs.length);
-  for (let i = 0; i < Math.min(wpCount, rawWPs.length); i++) {
-    sampled.push(rawWPs[Math.min(rawWPs.length - 1, Math.round(i * step))]);
+  // ── Smooth (3 passes, window 3) ──
+  let pts = sampled;
+  for (let p = 0; p < 3; p++) pts = smoothPass(pts, 3);
+
+  // ── Scale to world coords ──
+  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
+  for (const p of pts) {
+    if(p.x<minX)minX=p.x; if(p.x>maxX)maxX=p.x;
+    if(p.y<minY)minY=p.y; if(p.y>maxY)maxY=p.y;
   }
-
-  // ── Step 8: Light smoothing (2 passes, window=2) ──
-  function smoothPass(pts, r) {
-    return pts.map((p, i) => {
-      let sx = 0, sy = 0, cnt = 0;
-      for (let k = -r; k <= r; k++) {
-        const idx = (i + k + pts.length) % pts.length;
-        sx += pts[idx].x; sy += pts[idx].y; cnt++;
-      }
-      return { x: sx / cnt, y: sy / cnt };
-    });
-  }
-  const smoothed = smoothPass(smoothPass(sampled, 2), 2);
-
-  // ── Step 9: Scale to world coords ──
-  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-  for (const p of smoothed) {
-    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
-    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
-  }
-  const tW = maxX - minX || 1, tH = maxY - minY || 1;
-  const scale = Math.min(mainCanvas.width * 0.82 / tW, mainCanvas.height * 0.82 / tH) / cam.zoom;
-  const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
-
-  const newWPs = smoothed.map(p => ({
-    x: (p.x - midX) * scale,
-    y: (p.y - midY) * scale
-  }));
+  const tW=maxX-minX||1, tH=maxY-minY||1;
+  const sc = Math.min(mainCanvas.width*0.82/tW, mainCanvas.height*0.82/tH) / cam.zoom;
+  const midX=(minX+maxX)/2, midY=(minY+maxY)/2;
+  const newWPs = pts.map(p => ({ x:(p.x-midX)*sc, y:(p.y-midY)*sc }));
 
   setAIProgress(100);
   waypoints = newWPs;
   updateWPList();
   render();
-  setAIStatus(`✓ ${newWPs.length} waypoints · ${bestCount.toLocaleString()} track pixels · centreline: ${centrelineCount} px`, 'ok');
+  setAIStatus(`✓ ${newWPs.length} waypoints extracted`, 'ok');
   btn.disabled = false;
   showToast(`${newWPs.length} waypoints placed!`);
+}
+
+// ── Helpers ──
+
+function tick() { return new Promise(r => setTimeout(r, 10)); }
+
+function colDist2(r, g, b, rgb) {
+  const dr=r-rgb.r, dg=g-rgb.g, db=b-rgb.b;
+  return dr*dr + dg*dg + db*db;
+}
+
+function largestComponent(mask, W, H) {
+  const label = new Int32Array(W * H).fill(-1);
+  let bestId = -1, bestCount = 0, compId = 0;
+  const stk = [];
+  for (let sy = 0; sy < H; sy++) {
+    for (let sx = 0; sx < W; sx++) {
+      const idx = sy*W+sx;
+      if (!mask[idx] || label[idx] !== -1) continue;
+      let count = 0;
+      stk.push(idx); label[idx] = compId;
+      while (stk.length) {
+        const cur = stk.pop(); count++;
+        const cy = Math.floor(cur/W), cx = cur%W;
+        for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
+          if (!dy && !dx) continue;
+          const ny=cy+dy, nx=cx+dx;
+          if (ny<0||ny>=H||nx<0||nx>=W) continue;
+          const ni=ny*W+nx;
+          if (mask[ni] && label[ni]===-1) { label[ni]=compId; stk.push(ni); }
+        }
+      }
+      if (count > bestCount) { bestCount=count; bestId=compId; }
+      compId++;
+    }
+  }
+  const out = new Uint8Array(W*H);
+  for (let i=0; i<W*H; i++) if (label[i]===bestId) out[i]=1;
+  return out;
+}
+
+// Zhang-Suen parallel thinning — produces a 1-pixel-wide skeleton
+function zhangSuenThin(mask, W, H) {
+  const img = new Uint8Array(mask); // copy
+  let changed = true;
+  const toDelete = [];
+
+  while (changed) {
+    changed = false;
+
+    // Sub-iteration 1
+    toDelete.length = 0;
+    for (let y=1; y<H-1; y++) {
+      for (let x=1; x<W-1; x++) {
+        const i = y*W+x;
+        if (!img[i]) continue;
+        const [A, B, p2, p4, p6, p8] = zsParams(img, x, y, W);
+        if (B>=2 && B<=6 && A===1 && p2*p4*p6===0 && p4*p6*p8===0) {
+          toDelete.push(i); changed = true;
+        }
+      }
+    }
+    for (const i of toDelete) img[i] = 0;
+
+    // Sub-iteration 2
+    toDelete.length = 0;
+    for (let y=1; y<H-1; y++) {
+      for (let x=1; x<W-1; x++) {
+        const i = y*W+x;
+        if (!img[i]) continue;
+        const [A, B, p2, p4, p6, p8] = zsParams(img, x, y, W);
+        if (B>=2 && B<=6 && A===1 && p2*p4*p8===0 && p2*p6*p8===0) {
+          toDelete.push(i); changed = true;
+        }
+      }
+    }
+    for (const i of toDelete) img[i] = 0;
+  }
+  return img;
+}
+
+function zsParams(img, x, y, W) {
+  // 8-neighbours in order: p2=N, p3=NE, p4=E, p5=SE, p6=S, p7=SW, p8=W, p9=NW
+  const p2=img[(y-1)*W+x], p3=img[(y-1)*W+(x+1)], p4=img[y*W+(x+1)], p5=img[(y+1)*W+(x+1)];
+  const p6=img[(y+1)*W+x], p7=img[(y+1)*W+(x-1)], p8=img[y*W+(x-1)], p9=img[(y-1)*W+(x-1)];
+  const B = p2+p3+p4+p5+p6+p7+p8+p9;
+  // A = number of 0→1 transitions in the ordered sequence
+  const seq=[p2,p3,p4,p5,p6,p7,p8,p9,p2];
+  let A=0; for(let k=0;k<8;k++) if(!seq[k]&&seq[k+1]) A++;
+  return [A, B, p2, p4, p6, p8];
+}
+
+// Walk skeleton: find an endpoint (1 neighbour) or any pixel, then follow
+// the chain greedily without revisiting. Handles both open and closed loops.
+function walkSkeleton(skel, W, H) {
+  // Build neighbour list for each skeleton pixel
+  const skelPts = [];
+  const idx2pt  = new Int32Array(W*H).fill(-1);
+  for (let y=0; y<H; y++) for (let x=0; x<W; x++) {
+    if (!skel[y*W+x]) continue;
+    idx2pt[y*W+x] = skelPts.length;
+    skelPts.push({ x, y, idx: y*W+x });
+  }
+
+  if (skelPts.length === 0) return [];
+
+  function neighbours(pt) {
+    const nb = [];
+    for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
+      if (!dy&&!dx) continue;
+      const nx=pt.x+dx, ny=pt.y+dy;
+      if (nx<0||nx>=W||ny<0||ny>=H) continue;
+      const ni=ny*W+nx;
+      if (skel[ni] && idx2pt[ni]!==-1) nb.push(idx2pt[ni]);
+    }
+    return nb;
+  }
+
+  // Find an endpoint (pixel with exactly 1 skeleton neighbour) to start from
+  // If none (pure loop), start from any pixel
+  let startPtIdx = 0;
+  for (let k=0; k<skelPts.length; k++) {
+    if (neighbours(skelPts[k]).length === 1) { startPtIdx = k; break; }
+  }
+
+  const visited = new Uint8Array(skelPts.length);
+  const chain = [];
+  let cur = startPtIdx;
+
+  while (true) {
+    visited[cur] = 1;
+    chain.push({ x: skelPts[cur].x, y: skelPts[cur].y });
+    const nbs = neighbours(skelPts[cur]).filter(n => !visited[n]);
+    if (nbs.length === 0) break;
+    // Pick the neighbour that is spatially closest (avoids diagonal jumps)
+    const cp = skelPts[cur];
+    let best = nbs[0], bestD = Infinity;
+    for (const n of nbs) {
+      const dx=skelPts[n].x-cp.x, dy=skelPts[n].y-cp.y;
+      const d=dx*dx+dy*dy;
+      if (d<bestD) { bestD=d; best=n; }
+    }
+    cur = best;
+  }
+
+  return chain;
+}
+
+// Resample chain to exactly N evenly-spaced points
+function uniformResample(chain, N) {
+  if (chain.length <= N) return chain;
+  const step = (chain.length - 1) / (N - 1);
+  const out = [];
+  for (let i = 0; i < N; i++) {
+    out.push(chain[Math.min(chain.length-1, Math.round(i*step))]);
+  }
+  return out;
+}
+
+function smoothPass(pts, r) {
+  const n = pts.length;
+  return pts.map((p, i) => {
+    let sx=0, sy=0, cnt=0;
+    for (let k=-r; k<=r; k++) {
+      const j=(i+k+n)%n;
+      sx+=pts[j].x; sy+=pts[j].y; cnt++;
+    }
+    return { x:sx/cnt, y:sy/cnt };
+  });
 }
 
 // ═══════════════════════════════════════════════════
