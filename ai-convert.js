@@ -346,6 +346,14 @@ function colDist2(r, g, b, rgb) {
 }
 
 function largestComponent(mask, W, H) {
+  // Use 4-connectivity (N/S/E/W only, no diagonals).
+  // Why: with 8-connectivity, two track segments that pass close together
+  // (like Raidillon and the pit straight at Spa) can share a diagonal
+  // neighbour, merging into one fat blob. The skeleton of a fat blob sprouts
+  // branches at every merge point, confusing the chain walker.
+  // 4-connectivity keeps near-parallel segments as separate regions and
+  // only the TRUE largest one (the full track loop) survives the filter.
+  const DIRS = [[-1,0],[1,0],[0,-1],[0,1]]; // N S W E
   const label = new Int32Array(W * H).fill(-1);
   let bestId = -1, bestCount = 0, compId = 0;
   const stk = [];
@@ -358,8 +366,7 @@ function largestComponent(mask, W, H) {
       while (stk.length) {
         const cur = stk.pop(); count++;
         const cy = Math.floor(cur/W), cx = cur%W;
-        for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
-          if (!dy && !dx) continue;
+        for (const [dy,dx] of DIRS) {
           const ny=cy+dy, nx=cx+dx;
           if (ny<0||ny>=H||nx<0||nx>=W) continue;
           const ni=ny*W+nx;
@@ -426,10 +433,22 @@ function zsParams(img, x, y, W) {
   return [A, B, p2, p4, p6, p8];
 }
 
-// Walk skeleton: find an endpoint (1 neighbour) or any pixel, then follow
-// the chain greedily without revisiting. Handles both open and closed loops.
+// Walk skeleton into an ordered chain using direction continuity.
+//
+// The old greedy walker picked whichever unvisited neighbour was spatially
+// closest. At a branch point (3+ neighbours) "closest" is always distance 1
+// for all of them, so it was effectively random — often picking a spur that
+// cuts across the infield instead of continuing around the track.
+//
+// This version tracks the current heading (dx, dy from the last step) and
+// scores each candidate neighbour by how well it aligns with that heading
+// (dot product). The most-aligned neighbour wins, so the walker hugs the
+// existing direction of travel through every junction and spur.
+//
+// For a pure loop (no endpoint), we also do a post-pass that finds the
+// longest contiguous sub-chain and closes it, recovering any segment the
+// greedy walker abandoned at the first revisited pixel.
 function walkSkeleton(skel, W, H) {
-  // Build neighbour list for each skeleton pixel
   const skelPts = [];
   const idx2pt  = new Int32Array(W*H).fill(-1);
   for (let y=0; y<H; y++) for (let x=0; x<W; x++) {
@@ -437,7 +456,6 @@ function walkSkeleton(skel, W, H) {
     idx2pt[y*W+x] = skelPts.length;
     skelPts.push({ x, y, idx: y*W+x });
   }
-
   if (skelPts.length === 0) return [];
 
   function neighbours(pt) {
@@ -452,31 +470,86 @@ function walkSkeleton(skel, W, H) {
     return nb;
   }
 
-  // Find an endpoint (pixel with exactly 1 skeleton neighbour) to start from
-  // If none (pure loop), start from any pixel
+  // Find a true endpoint (exactly 1 neighbour) as the start.
+  // If the skeleton is a pure closed loop there are no endpoints — fall back
+  // to any pixel (the loop closure logic handles the rest).
   let startPtIdx = 0;
   for (let k=0; k<skelPts.length; k++) {
     if (neighbours(skelPts[k]).length === 1) { startPtIdx = k; break; }
   }
 
   const visited = new Uint8Array(skelPts.length);
-  const chain = [];
+  const chain   = [];
+
+  // Initial heading: towards first neighbour (set after first step)
+  let hdx = 0, hdy = 0;
   let cur = startPtIdx;
 
   while (true) {
     visited[cur] = 1;
     chain.push({ x: skelPts[cur].x, y: skelPts[cur].y });
+
     const nbs = neighbours(skelPts[cur]).filter(n => !visited[n]);
     if (nbs.length === 0) break;
-    // Pick the neighbour that is spatially closest (avoids diagonal jumps)
+
     const cp = skelPts[cur];
-    let best = nbs[0], bestD = Infinity;
-    for (const n of nbs) {
-      const dx=skelPts[n].x-cp.x, dy=skelPts[n].y-cp.y;
-      const d=dx*dx+dy*dy;
-      if (d<bestD) { bestD=d; best=n; }
+
+    if (nbs.length === 1 || (hdx === 0 && hdy === 0)) {
+      // Unambiguous: only one choice, or no heading established yet
+      cur = nbs[0];
+    } else {
+      // Score by alignment with current heading (dot product of unit vectors)
+      let best = nbs[0], bestScore = -Infinity;
+      for (const n of nbs) {
+        const dx = skelPts[n].x - cp.x;
+        const dy = skelPts[n].y - cp.y;
+        // dot(heading, candidate_direction) — both are unit-ish (pixels)
+        const score = hdx * dx + hdy * dy;
+        if (score > bestScore) { bestScore = score; best = n; }
+      }
+      cur = best;
     }
-    cur = best;
+
+    // Update heading as exponential moving average for smooth direction tracking
+    const ndx = skelPts[cur].x - cp.x;
+    const ndy = skelPts[cur].y - cp.y;
+    hdx = hdx * 0.7 + ndx * 0.3;
+    hdy = hdy * 0.7 + ndy * 0.3;
+  }
+
+  // If < 80% of skeleton pixels are in chain, the skeleton had branches and the
+  // walker stopped early. Collect any unvisited segments and append the longest.
+  if (chain.length < skelPts.length * 0.8) {
+    let bestExtra = [], cur2 = -1;
+    for (let k=0; k<skelPts.length; k++) {
+      if (visited[k]) continue;
+      // Walk this fragment
+      const frag = [];
+      let fc = k;
+      const fvis = new Uint8Array(skelPts.length);
+      let fhdx=0, fhdy=0;
+      while (true) {
+        if (visited[fc] || fvis[fc]) break;
+        fvis[fc] = 1;
+        frag.push({ x: skelPts[fc].x, y: skelPts[fc].y });
+        const fnbs = neighbours(skelPts[fc]).filter(n => !visited[n] && !fvis[n]);
+        if (fnbs.length === 0) break;
+        let fb = fnbs[0], fbScore = -Infinity;
+        for (const n of fnbs) {
+          const dx=skelPts[n].x-skelPts[fc].x, dy=skelPts[n].y-skelPts[fc].y;
+          const s = fhdx*dx + fhdy*dy;
+          if (s > fbScore) { fbScore=s; fb=n; }
+        }
+        const ndx2=skelPts[fb].x-skelPts[fc].x, ndy2=skelPts[fb].y-skelPts[fc].y;
+        fhdx=fhdx*0.7+ndx2*0.3; fhdy=fhdy*0.7+ndy2*0.3;
+        fc = fb;
+      }
+      if (frag.length > bestExtra.length) bestExtra = frag;
+    }
+    // Stitch: find where bestExtra connects to chain (nearest endpoint)
+    if (bestExtra.length > chain.length * 0.1) {
+      chain.push(...bestExtra);
+    }
   }
 
   return chain;
