@@ -2,7 +2,7 @@
 <!--
   ╔══════════════════════════════════════════════════════════════╗
   ║  CIRCUIT FORGE — Track Studio                                ║
-  ║  VERSION: 5.7                                                ║
+  ║  VERSION: 5.8                                                ║
   ║                                                              ║
   ║  VERSIONING RULE (read before making any changes):           ║
   ║  • Bump the version number in ALL THREE places every edit:   ║
@@ -373,9 +373,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.7</span>
+        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.8</span>
       </div>
-      <div class="sb-sub">Track Studio · v5.7</div>
+      <div class="sb-sub">Track Studio · v5.8</div>
     </div>
 
     <!-- Upload -->
@@ -481,7 +481,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v5.7</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v5.8</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
@@ -634,7 +634,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.7</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.8</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
@@ -1650,255 +1650,203 @@ async function runAIConvert() {
   const wpCount = parseInt(document.getElementById('ai-wp-count').value);
 
   // ═══════════════════════════════════════════════════════════════════
-  // PIPELINE (per PDF recommendations):
-  // 1. Colour threshold → binary mask
-  // 2. Morphological closing (3×3, 2 passes) → fill gaps
-  // 3. Boundary trace using Moore neighbour walk (CHAIN_APPROX_NONE)
-  //    on the largest connected component → all border pixels kept
-  // 4. approxPolyDP equivalent with small ε (2% perimeter) → preserve shape
-  // 5. Uniform downsample to wpCount → moving-average smooth
-  // 6. Convert to world coords
+  // PIPELINE v5.8:
+  // 1. Remove background pixels (user-selected colour)
+  // 2. Auto-detect track colour = dominant colour of remaining pixels
+  //    → keep only pixels close to that colour (generous threshold)
+  // 3. Flood-fill to find largest connected component = the track
+  // 4. Compute mass centroid of entire track component
+  // 5. Angular slices: divide 360° into wpCount bins, compute centroid
+  //    of all track pixels in each slice → centre-line waypoint per slice
+  // 6. Fill empty bins, smooth 2 passes, scale to world coords
   // ═══════════════════════════════════════════════════════════════════
 
-  setAIStatus('Step 1/4 — Colour threshold…', '');
-  setAIProgress(5);
+  setAIStatus('Step 1/4 — Removing background…', '');
+  setAIProgress(10);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 1: colour-based thresholding ──
-  function colourMatch(r, g, b, colour) {
-    if (colour === 'black')  return r < 80  && g < 80  && b < 80;
-    if (colour === 'white')  return r > 175 && g > 175 && b > 175;
-    if (colour === 'red')    return r > 120 && g < 130 && b < 130 && r > g + 30 && r > b + 30;
+  // ── Step 1: remove background ──
+  function isBg(r, g, b) {
+    const c = aiBgColour;
+    if (c === 'black') return r < 60  && g < 60  && b < 60;
+    if (c === 'white') return r > 200 && g > 200 && b > 200;
+    if (c === 'red')   return r > 140 && g < 100 && b < 100 && r > g+50 && r > b+50;
     return false;
   }
 
-  const bin = new Uint8Array(W * H);
-  for (let i = 0; i < W * H; i++) {
-    bin[i] = colourMatch(data[i*4], data[i*4+1], data[i*4+2], aiTrackColour) ? 1 : 0;
+  // Collect non-BG pixels, accumulate average colour
+  let rAcc=0, gAcc=0, bAcc=0, nAcc=0;
+  const nonBg = new Uint8Array(W * H);
+  for (let i = 0; i < W*H; i++) {
+    const r=data[i*4], g=data[i*4+1], b=data[i*4+2];
+    if (!isBg(r,g,b)) {
+      nonBg[i]=1;
+      rAcc+=r; gAcc+=g; bAcc+=b; nAcc++;
+    }
+  }
+  if (nAcc < 50) {
+    setAIStatus('Background removal left no pixels — try a different background colour', 'err');
+    btn.disabled=false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
+    return;
   }
 
-  setAIStatus('Step 2/4 — Skeletonizing (Zhang-Suen)…', '');
+  // ── Step 2: auto-detect track colour from average of non-BG pixels ──
+  setAIStatus('Step 2/4 — Detecting track colour…', '');
   setAIProgress(20);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 2: Zhang-Suen thinning ──
-  // Iteratively erodes the binary image to a 1-pixel-wide skeleton,
-  // preserving connectivity and shape. Works correctly for any track shape.
-  function zhangSuen(src, W, H) {
-    const img = new Uint8Array(src); // copy
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (let pass = 0; pass < 2; pass++) {
-        const toRemove = [];
-        for (let y = 1; y < H - 1; y++) {
-          for (let x = 1; x < W - 1; x++) {
-            if (!img[y * W + x]) continue;
-            const p2 = img[(y-1)*W+x], p3 = img[(y-1)*W+(x+1)];
-            const p4 = img[y*W+(x+1)],  p5 = img[(y+1)*W+(x+1)];
-            const p6 = img[(y+1)*W+x],  p7 = img[(y+1)*W+(x-1)];
-            const p8 = img[y*W+(x-1)],  p9 = img[(y-1)*W+(x-1)];
-            const B = p2+p3+p4+p5+p6+p7+p8+p9;
-            if (B < 2 || B > 6) continue;
-            const seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2];
-            let A = 0;
-            for (let k = 0; k < 8; k++) if (!seq[k] && seq[k+1]) A++;
-            if (A !== 1) continue;
-            if (pass === 0) { if (p2*p4*p6 !== 0 || p4*p6*p8 !== 0) continue; }
-            else            { if (p2*p4*p8 !== 0 || p2*p6*p8 !== 0) continue; }
-            toRemove.push(y * W + x);
-          }
-        }
-        if (toRemove.length) { changed = true; for (const i of toRemove) img[i] = 0; }
-      }
-    }
-    return img;
+  const avgR = rAcc/nAcc, avgG = gAcc/nAcc, avgB = bAcc/nAcc;
+
+  // Keep pixels within colour distance 80 of detected average (includes anti-alias)
+  const trackMask = new Uint8Array(W * H);
+  for (let i = 0; i < W*H; i++) {
+    if (!nonBg[i]) continue;
+    const dr=data[i*4]-avgR, dg=data[i*4+1]-avgG, db=data[i*4+2]-avgB;
+    if (dr*dr + dg*dg + db*db < 80*80) trackMask[i]=1;
   }
 
-  const skel = zhangSuen(bin, W, H);
+  // ── Step 3: largest connected component of track mask ──
+  setAIStatus('Step 3/4 — Finding track & placing waypoints…', '');
+  setAIProgress(35);
+  await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 2b: find largest connected component of skeleton ──
-  const label = new Int32Array(W * H).fill(-1);
-  let bestId = -1, bestCount = 0, compId = 0;
-  const stk = [];
-  for (let sy = 0; sy < H; sy++) {
-    for (let sx = 0; sx < W; sx++) {
-      const idx = sy * W + sx;
-      if (!skel[idx] || label[idx] !== -1) continue;
-      let count = 0; stk.push(idx); label[idx] = compId;
+  const label = new Int32Array(W*H).fill(-1);
+  let bestId=-1, bestCount=0, compId=0;
+  const stk=[];
+  for (let sy=0; sy<H; sy++) {
+    for (let sx=0; sx<W; sx++) {
+      const idx=sy*W+sx;
+      if (!trackMask[idx] || label[idx]!==-1) continue;
+      let count=0;
+      stk.push(idx); label[idx]=compId;
       while (stk.length) {
-        const cur = stk.pop(); count++;
-        const cy2 = Math.floor(cur / W), cx2 = cur % W;
-        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-          if (!dy && !dx) continue;
-          const ny = cy2+dy, nx = cx2+dx;
+        const cur=stk.pop(); count++;
+        const cy=Math.floor(cur/W), cx=cur%W;
+        for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
+          if (!dy&&!dx) continue;
+          const ny=cy+dy, nx=cx+dx;
           if (ny<0||ny>=H||nx<0||nx>=W) continue;
-          const ni = ny*W+nx;
-          if (skel[ni] && label[ni] === -1) { label[ni] = compId; stk.push(ni); }
+          const ni=ny*W+nx;
+          if (trackMask[ni] && label[ni]===-1) { label[ni]=compId; stk.push(ni); }
         }
       }
-      if (count > bestCount) { bestCount = count; bestId = compId; }
+      if (count>bestCount) { bestCount=count; bestId=compId; }
       compId++;
     }
   }
-  if (bestId === -1 || bestCount < 5) {
-    setAIStatus('No track detected — check colour selection', 'err');
-    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
+  if (bestId===-1 || bestCount<20) {
+    setAIStatus('No track component found — check background colour', 'err');
+    btn.disabled=false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
     return;
   }
 
-  setAIStatus('Step 3/4 — Tracing skeleton path…', '');
-  setAIProgress(50);
+  // Collect component pixels + compute mass centroid
+  let cxSum=0, cySum=0, compN=0;
+  let minX=W, maxX=0, minY=H, maxY=0;
+  const compPixels=[]; // [{x,y}]
+  for (let i=0; i<W*H; i++) {
+    if (label[i]!==bestId) continue;
+    const px=i%W, py=Math.floor(i/W);
+    compPixels.push({x:px,y:py});
+    cxSum+=px; cySum+=py; compN++;
+    if (px<minX) minX=px; if (px>maxX) maxX=px;
+    if (py<minY) minY=py; if (py>maxY) maxY=py;
+  }
+  const massCX = cxSum/compN;
+  const massCY = cySum/compN;
+  const trackWpx = maxX-minX;
+  const trackHpx = maxY-minY;
+
+  // ── Step 4: angular slice centroids → centre-line waypoints ──
+  // For each of wpCount angular slices, compute the centroid of ALL
+  // track pixels in that slice. This lands on the centre of the track
+  // ribbon — not the edge — for any track shape.
+  setAIProgress(55);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 3: 8-connected chain walk on 1px skeleton ──
-  // Because the skeleton is 1px wide, the greedy nearest-neighbour walk
-  // now stays perfectly on track — no zigzagging possible.
-  const skelPts = [];
-  for (let i = 0; i < W * H; i++) {
-    if (label[i] === bestId) skelPts.push(i);
+  const TWO_PI = Math.PI*2;
+  const sliceXSum = new Float64Array(wpCount);
+  const sliceYSum = new Float64Array(wpCount);
+  const sliceN    = new Int32Array(wpCount);
+
+  for (const p of compPixels) {
+    const a = Math.atan2(p.y - massCY, p.x - massCX); // -π..π
+    const norm = (a < 0 ? a + TWO_PI : a);              // 0..2π
+    const si = Math.min(wpCount-1, Math.floor(norm / TWO_PI * wpCount));
+    sliceXSum[si] += p.x;
+    sliceYSum[si] += p.y;
+    sliceN[si]++;
   }
 
-  // Build fast lookup grid
-  const onSkel = new Uint8Array(W * H);
-  for (const i of skelPts) onSkel[i] = 1;
-
-  const dirs8 = [-W-1,-W,-W+1,-1,1,W-1,W,W+1];
-
-  // Count neighbours for each skeleton pixel
-  function neighbourCount(idx) {
-    let n = 0;
-    const cy2 = Math.floor(idx / W), cx2 = idx % W;
-    for (let d = 0; d < 8; d++) {
-      const ni = idx + dirs8[d];
-      if (ni < 0 || ni >= W*H) continue;
-      const ny = Math.floor(ni / W), nx = ni % W;
-      if (Math.abs(nx - cx2) > 1 || Math.abs(ny - cy2) > 1) continue;
-      if (onSkel[ni]) n++;
+  // Build raw waypoints from non-empty slices
+  const rawBins = [];
+  for (let si=0; si<wpCount; si++) {
+    if (sliceN[si] >= 2) {
+      rawBins.push({ si, x: sliceXSum[si]/sliceN[si], y: sliceYSum[si]/sliceN[si] });
     }
-    return n;
   }
 
-  // Find an endpoint (1 neighbour) to start from — best for open paths.
-  // If the track is a closed loop (all pixels have 2+ neighbours), just use skelPts[0].
-  let startPt = skelPts[0];
-  for (const i of skelPts) {
-    if (neighbourCount(i) === 1) { startPt = i; break; }
-  }
-
-  // Walk the skeleton greedily, preferring the previous direction to reduce zigzag.
-  // After the initial walk stalls, we also walk BACKWARDS from the start to catch
-  // the other half of the loop (important for closed circuits).
-  function walkFrom(startIdx, visitedArr, prevDirHint) {
-    const path = [];
-    let cur = startIdx, prevDir = prevDirHint;
-    if (visitedArr[cur]) return path;
-    visitedArr[cur] = 1;
-    path.push({ x: cur % W, y: Math.floor(cur / W) });
-    for (let step = 0; step < skelPts.length * 2; step++) {
-      let next = -1, nextDir = -1, bestScore = Infinity;
-      const cy2 = Math.floor(cur / W), cx2 = cur % W;
-      for (let d = 0; d < 8; d++) {
-        const ni = cur + dirs8[d];
-        if (ni < 0 || ni >= W*H) continue;
-        const ny = Math.floor(ni / W), nx = ni % W;
-        if (Math.abs(nx - cx2) > 1 || Math.abs(ny - cy2) > 1) continue;
-        if (!onSkel[ni] || visitedArr[ni]) continue;
-        const score = (prevDir >= 0 && d === prevDir) ? 0 : 1;
-        if (score < bestScore) { bestScore = score; next = ni; nextDir = d; }
-      }
-      if (next === -1) break;
-      visitedArr[next] = 1;
-      path.push({ x: next % W, y: Math.floor(next / W) });
-      prevDir = nextDir;
-      cur = next;
-    }
-    return path;
-  }
-
-  const visited = new Uint8Array(W * H);
-  // Forward walk from startPt
-  const forwardPath = walkFrom(startPt, visited, -1);
-  // Reverse walk from startPt (walk the other side of a loop / open path)
-  const visited2 = new Uint8Array(visited); // copy state after forward walk
-  // Unvisit startPt so we can explore the other direction
-  visited2[startPt] = 0;
-  const backPath = walkFrom(startPt, visited2, -1);
-
-  // Assemble: reverse(backPath) + forwardPath gives full circuit
-  const boundary = [...backPath.slice(1).reverse(), ...forwardPath];
-
-  if (boundary.length < 4) {
-    setAIStatus('No skeleton path found — check colour selection', 'err');
-    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
+  if (rawBins.length < 4) {
+    setAIStatus('Not enough angular coverage — try more waypoints', 'err');
+    btn.disabled=false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
     return;
   }
 
-  // ── Step 4a: approxPolyDP-style Ramer-Douglas-Peucker simplification ──
-  // epsilon = 1.5% of perimeter (PDF recommends 1–3%)
-  function rdp(pts, eps) {
-    if (pts.length <= 2) return pts.slice();
-    let maxD = 0, maxI = 0;
-    const [x1,y1] = [pts[0].x, pts[0].y];
-    const [x2,y2] = [pts[pts.length-1].x, pts[pts.length-1].y];
-    const len = Math.hypot(x2-x1, y2-y1) || 1;
-    for (let i = 1; i < pts.length - 1; i++) {
-      const d = Math.abs((y2-y1)*pts[i].x - (x2-x1)*pts[i].y + x2*y1 - y2*x1) / len;
-      if (d > maxD) { maxD = d; maxI = i; }
+  // Fill empty bins by linear interpolation between neighbours
+  const filled = new Array(wpCount).fill(null);
+  for (const b of rawBins) filled[b.si] = { x:b.x, y:b.y };
+  for (let pass=0; pass<wpCount; pass++) {
+    for (let i=0; i<wpCount; i++) {
+      if (filled[i]) continue;
+      const prev = filled[(i-1+wpCount)%wpCount];
+      const next = filled[(i+1)%wpCount];
+      if (prev && next) filled[i] = { x:(prev.x+next.x)/2, y:(prev.y+next.y)/2 };
+      else if (prev)    filled[i] = { x:prev.x, y:prev.y };
+      else if (next)    filled[i] = { x:next.x, y:next.y };
     }
-    if (maxD > eps) {
-      return [...rdp(pts.slice(0, maxI+1), eps).slice(0,-1), ...rdp(pts.slice(maxI), eps)];
-    }
-    return [pts[0], pts[pts.length-1]];
   }
-  // Estimate perimeter of boundary
-  let perim = 0;
-  for (let i = 0; i < boundary.length; i++) {
-    const b = boundary[(i+1) % boundary.length];
-    perim += Math.hypot(b.x - boundary[i].x, b.y - boundary[i].y);
-  }
-  const epsilon = 0.015 * perim;  // 1.5% — preserves curves, removes pixel staircase noise
-  const approx = rdp(boundary, epsilon);
+  const ordered = filled.filter(Boolean);
 
-  setAIStatus('Step 4/4 — Sampling & smoothing…', '');
+  setAIStatus('Step 4/4 — Smoothing & scaling…', '');
   setAIProgress(75);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 4b: uniform downsample to wpCount ──
-  const step = Math.max(1, Math.floor(approx.length / wpCount));
-  const sampled = [];
-  for (let i = 0; i < approx.length; i += step) sampled.push(approx[i]);
-
-  // ── Step 4c: moving-average smooth (window=3, 2 passes) — light touch only ──
-  // PDF warns against over-smoothing; keep window small so corners survive
+  // ── Step 5: smooth 2 passes ──
   function smoothPass(pts, r) {
     return pts.map((p, i) => {
-      let sx = 0, sy = 0, cnt = 0;
-      for (let k = -r; k <= r; k++) {
-        const idx = (i + k + pts.length) % pts.length;
-        sx += pts[idx].x; sy += pts[idx].y; cnt++;
+      let sx=0, sy=0, cnt=0;
+      for (let k=-r; k<=r; k++) {
+        const idx=(i+k+pts.length)%pts.length;
+        sx+=pts[idx].x; sy+=pts[idx].y; cnt++;
       }
-      return { x: sx/cnt, y: sy/cnt };
+      return {x:sx/cnt, y:sy/cnt};
     });
   }
-  const smoothed = smoothPass(smoothPass(sampled, 2), 2);
+  const smoothed = smoothPass(smoothPass(ordered, 2), 2);
 
-  // ── Step 5: convert to world coords ──
-  const imgCX = W / 2, imgCY = H / 2;
-  const scaleToWorld = (mainCanvas.width * 0.8) / W / cam.zoom;
+  // ── Step 6: scale to world coords, centred, filling ~80% of canvas ──
+  const trackScreenW = mainCanvas.width  * 0.8;
+  const trackScreenH = mainCanvas.height * 0.8;
+  const scaleX = trackWpx > 0 ? trackScreenW/trackWpx : 1;
+  const scaleY = trackHpx > 0 ? trackScreenH/trackHpx : 1;
+  const scale  = Math.min(scaleX, scaleY) / cam.zoom;
+  const midX   = (minX+maxX)/2;
+  const midY   = (minY+maxY)/2;
+
   const newWPs = smoothed.map(p => ({
-    x: (p.x - imgCX) * scaleToWorld,
-    y: (p.y - imgCY) * scaleToWorld
+    x: (p.x - midX) * scale,
+    y: (p.y - midY) * scale
   }));
 
   setAIProgress(100);
   waypoints = newWPs;
   updateWPList();
   render();
-  setAIStatus(`✓ Extracted ${newWPs.length} waypoints from ${boundary.length}-pt boundary`, 'ok');
+  setAIStatus(`✓ ${newWPs.length} waypoints from ${compN} track pixels`, 'ok');
   btn.disabled = false;
-  showToast(`${newWPs.length} waypoints extracted!`);
+  showToast(`${newWPs.length} waypoints placed!`);
 }
+
 
 // ═══════════════════════════════════════════════════
 // INIT
