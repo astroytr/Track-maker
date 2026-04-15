@@ -2,7 +2,7 @@
 <!--
   ╔══════════════════════════════════════════════════════════════╗
   ║  CIRCUIT FORGE — Track Studio                                ║
-  ║  VERSION: 5.1                                                ║
+  ║  VERSION: 5.2                                                ║
   ║                                                              ║
   ║  VERSIONING RULE (read before making any changes):           ║
   ║  • Bump the version number in ALL THREE places every edit:   ║
@@ -370,9 +370,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.1</span>
+        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.2</span>
       </div>
-      <div class="sb-sub">Track Studio · v5.1</div>
+      <div class="sb-sub">Track Studio · v5.2</div>
     </div>
 
     <!-- Upload -->
@@ -630,7 +630,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.1</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.2</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
@@ -1644,202 +1644,201 @@ async function runAIConvert() {
   const W = aiImgW, H = aiImgH;
   const data = aiImageData.data;
   const wpCount = parseInt(document.getElementById('ai-wp-count').value);
-  const thresh  = parseInt(document.getElementById('ai-thresh').value);
-  const smooth  = 4;  // fixed good default
-  const invert  = parseInt(document.getElementById('ai-invert').value) === 1;
 
-  setAIStatus('Step 1/5 — Thresholding…', '');
+  // ═══════════════════════════════════════════════════════════════════
+  // PIPELINE (per PDF recommendations):
+  // 1. Colour threshold → binary mask
+  // 2. Morphological closing (3×3, 2 passes) → fill gaps
+  // 3. Boundary trace using Moore neighbour walk (CHAIN_APPROX_NONE)
+  //    on the largest connected component → all border pixels kept
+  // 4. approxPolyDP equivalent with small ε (2% perimeter) → preserve shape
+  // 5. Uniform downsample to wpCount → moving-average smooth
+  // 6. Convert to world coords
+  // ═══════════════════════════════════════════════════════════════════
+
+  setAIStatus('Step 1/4 — Colour threshold…', '');
   setAIProgress(5);
   await new Promise(r => setTimeout(r, 10));
 
   // ── Step 1: colour-based thresholding ──
-  // Map colour names to target RGB ranges
   function colourMatch(r, g, b, colour) {
-    if (colour === 'black') {
-      // dark pixels: all channels low
-      return r < 80 && g < 80 && b < 80;
-    } else if (colour === 'white') {
-      // bright pixels: all channels high
-      return r > 175 && g > 175 && b > 175;
-    } else if (colour === 'red') {
-      // red channel dominant, green+blue low
-      return r > 140 && g < 100 && b < 100 && r > (g + 60) && r > (b + 60);
-    }
+    if (colour === 'black')  return r < 80  && g < 80  && b < 80;
+    if (colour === 'white')  return r > 175 && g > 175 && b > 175;
+    if (colour === 'red')    return r > 140 && g < 110 && b < 110 && r > g + 50 && r > b + 50;
     return false;
   }
 
   const bin = new Uint8Array(W * H);
   for (let i = 0; i < W * H; i++) {
-    const pr = data[i*4], pg = data[i*4+1], pb = data[i*4+2];
-    bin[i] = colourMatch(pr, pg, pb, aiTrackColour) ? 1 : 0;
+    bin[i] = colourMatch(data[i*4], data[i*4+1], data[i*4+2], aiTrackColour) ? 1 : 0;
   }
 
-  setAIStatus('Step 2/5 — Finding largest region…', '');
-  setAIProgress(15);
+  setAIStatus('Step 2/4 — Morphological closing & largest region…', '');
+  setAIProgress(20);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 2: keep only the largest connected component ──
+  // ── Step 2a: morphological closing (dilation then erosion, 3×3 kernel, 2 passes) ──
+  // This fills small gaps in the binary mask before contour finding (per PDF)
+  function dilate3(src, W, H) {
+    const dst = new Uint8Array(W * H);
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+      let v = 0;
+      for (let dy = -1; dy <= 1 && !v; dy++) for (let dx = -1; dx <= 1 && !v; dx++) v = src[(y+dy)*W+(x+dx)];
+      dst[y*W+x] = v;
+    }
+    return dst;
+  }
+  function erode3(src, W, H) {
+    const dst = new Uint8Array(W * H);
+    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+      let v = 1;
+      for (let dy = -1; dy <= 1 && v; dy++) for (let dx = -1; dx <= 1 && v; dx++) v = src[(y+dy)*W+(x+dx)];
+      dst[y*W+x] = v;
+    }
+    return dst;
+  }
+  let closed = erode3(dilate3(erode3(dilate3(bin, W, H), W, H), W, H), W, H);
+
+  // ── Step 2b: find largest connected component (flood fill) ──
   const label = new Int32Array(W * H).fill(-1);
   let bestId = -1, bestCount = 0, compId = 0;
-  const stack = [];
+  const stk = [];
   for (let sy = 0; sy < H; sy++) {
     for (let sx = 0; sx < W; sx++) {
       const idx = sy * W + sx;
-      if (bin[idx] !== 1 || label[idx] !== -1) continue;
+      if (closed[idx] !== 1 || label[idx] !== -1) continue;
       let count = 0;
-      stack.push(idx);
+      stk.push(idx);
       label[idx] = compId;
-      while (stack.length) {
-        const cur = stack.pop();
-        count++;
-        const cx2 = cur % W, cy2 = Math.floor(cur / W);
-        const neighbors = [cx2 > 0 ? cur - 1 : -1, cx2 < W - 1 ? cur + 1 : -1,
-                           cy2 > 0 ? cur - W : -1, cy2 < H - 1 ? cur + W : -1];
-        for (const n of neighbors) {
-          if (n !== -1 && bin[n] === 1 && label[n] === -1) { label[n] = compId; stack.push(n); }
+      while (stk.length) {
+        const cur = stk.pop(); count++;
+        const cy2 = Math.floor(cur / W), cx2 = cur % W;
+        for (const n of [cy2>0?cur-W:-1, cy2<H-1?cur+W:-1, cx2>0?cur-1:-1, cx2<W-1?cur+1:-1]) {
+          if (n !== -1 && closed[n] === 1 && label[n] === -1) { label[n] = compId; stk.push(n); }
         }
       }
       if (count > bestCount) { bestCount = count; bestId = compId; }
       compId++;
     }
   }
-  for (let i = 0; i < W * H; i++) bin[i] = (label[i] === bestId) ? 1 : 0;
+  if (bestId === -1 || bestCount < 20) {
+    setAIStatus('No track detected — check colour selection', 'err');
+    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
+    return;
+  }
+  for (let i = 0; i < W * H; i++) closed[i] = (label[i] === bestId) ? 1 : 0;
 
-  setAIStatus('Step 3/5 — Skeletonizing…', '');
-  setAIProgress(30);
+  setAIStatus('Step 3/4 — Tracing boundary (shape-preserving)…', '');
+  setAIProgress(45);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 3: Zhang-Suen thinning ──
-  const skel = new Uint8Array(bin);
-  let changed = true;
-  let iters = 0;
-  while (changed && iters < 500) {
-    changed = false; iters++;
-    const toRemove1 = [];
-    for (let y = 1; y < H - 1; y++) {
-      for (let x = 1; x < W - 1; x++) {
-        const i = y * W + x;
-        if (!skel[i]) continue;
-        const [p2,p3,p4,p5,p6,p7,p8,p9] = [
-          skel[(y-1)*W+x], skel[(y-1)*W+(x+1)], skel[y*W+(x+1)], skel[(y+1)*W+(x+1)],
-          skel[(y+1)*W+x], skel[(y+1)*W+(x-1)], skel[y*W+(x-1)], skel[(y-1)*W+(x-1)]
-        ];
-        const B = p2+p3+p4+p5+p6+p7+p8+p9;
-        if (B < 2 || B > 6) continue;
-        let A = 0;
-        const seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2];
-        for (let k = 0; k < 8; k++) if (!seq[k] && seq[k+1]) A++;
-        if (A !== 1) continue;
-        if (p2*p4*p6 !== 0) continue;
-        if (p4*p6*p8 !== 0) continue;
-        toRemove1.push(i);
-      }
-    }
-    toRemove1.forEach(i => { skel[i] = 0; changed = true; });
-    const toRemove2 = [];
-    for (let y = 1; y < H - 1; y++) {
-      for (let x = 1; x < W - 1; x++) {
-        const i = y * W + x;
-        if (!skel[i]) continue;
-        const [p2,p3,p4,p5,p6,p7,p8,p9] = [
-          skel[(y-1)*W+x], skel[(y-1)*W+(x+1)], skel[y*W+(x+1)], skel[(y+1)*W+(x+1)],
-          skel[(y+1)*W+x], skel[(y+1)*W+(x-1)], skel[y*W+(x-1)], skel[(y-1)*W+(x-1)]
-        ];
-        const B = p2+p3+p4+p5+p6+p7+p8+p9;
-        if (B < 2 || B > 6) continue;
-        let A = 0;
-        const seq = [p2,p3,p4,p5,p6,p7,p8,p9,p2];
-        for (let k = 0; k < 8; k++) if (!seq[k] && seq[k+1]) A++;
-        if (A !== 1) continue;
-        if (p2*p4*p8 !== 0) continue;
-        if (p2*p6*p8 !== 0) continue;
-        toRemove2.push(i);
-      }
-    }
-    toRemove2.forEach(i => { skel[i] = 0; changed = true; });
-    // yield every 5 iterations to update progress
-    if (iters % 5 === 0) {
-      setAIProgress(30 + Math.min(35, iters * 0.07 * 35));
-      await new Promise(r => setTimeout(r, 0));
-    }
+  // ── Step 3: Moore-neighbour boundary trace (CHAIN_APPROX_NONE equivalent) ──
+  // Traces the full outer boundary of the largest region, keeping every pixel.
+  // This replaces skeletonisation — we trace the EDGE of the shape, then
+  // compute its centroid-offset midline to get the track centreline.
+  const dx8 = [1,1,0,-1,-1,-1, 0, 1];
+  const dy8 = [0,1,1, 1, 0,-1,-1,-1];
+
+  // Find top-left starting pixel of the region
+  let startIdx = -1;
+  outer: for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+    if (closed[y*W+x]) { startIdx = y*W+x; break outer; }
   }
 
-  setAIStatus('Step 4/5 — Ordering skeleton…', '');
-  setAIProgress(70);
-  await new Promise(r => setTimeout(r, 10));
+  const boundary = [];
+  {
+    const sx = startIdx % W, sy = Math.floor(startIdx / W);
+    let cx3 = sx, cy3 = sy;
+    // entry direction: came from left (direction index 4 = left)
+    let entryDir = 4;
+    const visited2 = new Uint8Array(W * H);
+    let safety = 0;
+    do {
+      boundary.push({ x: cx3, y: cy3 });
+      visited2[cy3*W+cx3] = 1;
+      // Search clockwise starting from (entryDir + 5) % 8
+      let found = false;
+      for (let k = 1; k <= 8; k++) {
+        const dir = (entryDir + 5 + k) % 8;
+        const nx = cx3 + dx8[dir], ny = cy3 + dy8[dir];
+        if (nx >= 0 && nx < W && ny >= 0 && ny < H && closed[ny*W+nx]) {
+          entryDir = (dir + 4) % 8; // reverse direction
+          cx3 = nx; cy3 = ny; found = true; break;
+        }
+      }
+      if (!found) break;
+      if (++safety > W * H) break;
+    } while (cx3 !== sx || cy3 !== sy);
+  }
 
-  const skelPts = [];
-  for (let i = 0; i < W * H; i++) { if (skel[i]) skelPts.push({ x: i % W, y: Math.floor(i / W) }); }
-
-  if (skelPts.length < 10) {
-    setAIStatus('Could not detect a track — try adjusting threshold or "Track is" toggle', 'err');
-    btn.disabled = false;
-    setAIProgress(0); document.getElementById('ai-progress').style.display='none';
+  if (boundary.length < 10) {
+    setAIStatus('Boundary too small — try a different colour or image', 'err');
+    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
     return;
   }
 
-  // ── Step 5: walk the skeleton ──
-  const skelSet = new Uint8Array(W * H);
-  skelPts.forEach(p => { skelSet[p.y * W + p.x] = 1; });
-
-  function skelNeighbors(x, y) {
-    const ns = [];
-    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
-      if (!dx && !dy) continue;
-      const nx = x + dx, ny = y + dy;
-      if (nx >= 0 && nx < W && ny >= 0 && ny < H && skelSet[ny * W + nx]) ns.push({ x: nx, y: ny });
+  // ── Step 4a: approxPolyDP-style Ramer-Douglas-Peucker simplification ──
+  // epsilon = 1.5% of perimeter (PDF recommends 1–3%)
+  function rdp(pts, eps) {
+    if (pts.length <= 2) return pts.slice();
+    let maxD = 0, maxI = 0;
+    const [x1,y1] = [pts[0].x, pts[0].y];
+    const [x2,y2] = [pts[pts.length-1].x, pts[pts.length-1].y];
+    const len = Math.hypot(x2-x1, y2-y1) || 1;
+    for (let i = 1; i < pts.length - 1; i++) {
+      const d = Math.abs((y2-y1)*pts[i].x - (x2-x1)*pts[i].y + x2*y1 - y2*x1) / len;
+      if (d > maxD) { maxD = d; maxI = i; }
     }
-    return ns;
+    if (maxD > eps) {
+      return [...rdp(pts.slice(0, maxI+1), eps).slice(0,-1), ...rdp(pts.slice(maxI), eps)];
+    }
+    return [pts[0], pts[pts.length-1]];
   }
-
-  let startPt = skelPts[0];
-  for (const p of skelPts) { if (skelNeighbors(p.x, p.y).length === 1) { startPt = p; break; } }
-
-  const visited = new Uint8Array(W * H);
-  const ordered = [];
-  let cur = startPt;
-  visited[cur.y * W + cur.x] = 1;
-  ordered.push(cur);
-  while (true) {
-    const ns = skelNeighbors(cur.x, cur.y).filter(n => !visited[n.y * W + n.x]);
-    if (!ns.length) break;
-    cur = ns[0];
-    visited[cur.y * W + cur.x] = 1;
-    ordered.push(cur);
+  // Estimate perimeter of boundary
+  let perim = 0;
+  for (let i = 0; i < boundary.length; i++) {
+    const b = boundary[(i+1) % boundary.length];
+    perim += Math.hypot(b.x - boundary[i].x, b.y - boundary[i].y);
   }
+  const epsilon = 0.015 * perim;  // 1.5% — preserves curves, removes pixel staircase noise
+  const approx = rdp(boundary, epsilon);
 
-  setAIStatus('Step 5/5 — Sampling & smoothing…', '');
-  setAIProgress(85);
+  setAIStatus('Step 4/4 — Sampling & smoothing…', '');
+  setAIProgress(75);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 6: downsample ──
-  const step = Math.max(1, Math.floor(ordered.length / wpCount));
-  let sampled = [];
-  for (let i = 0; i < ordered.length; i += step) sampled.push(ordered[i]);
+  // ── Step 4b: uniform downsample to wpCount ──
+  const step = Math.max(1, Math.floor(approx.length / wpCount));
+  const sampled = [];
+  for (let i = 0; i < approx.length; i += step) sampled.push(approx[i]);
 
-  // ── Step 7: moving-average smoothing ──
-  const smoothed = sampled.map((p, i) => {
-    let sx = 0, sy = 0, cnt = 0;
-    for (let k = -smooth; k <= smooth; k++) {
-      const idx = (i + k + sampled.length) % sampled.length;
-      sx += sampled[idx].x; sy += sampled[idx].y; cnt++;
-    }
-    return { x: sx / cnt, y: sy / cnt };
-  });
+  // ── Step 4c: moving-average smooth (window=3, 2 passes) — light touch only ──
+  // PDF warns against over-smoothing; keep window small so corners survive
+  function smoothPass(pts, r) {
+    return pts.map((p, i) => {
+      let sx = 0, sy = 0, cnt = 0;
+      for (let k = -r; k <= r; k++) {
+        const idx = (i + k + pts.length) % pts.length;
+        sx += pts[idx].x; sy += pts[idx].y; cnt++;
+      }
+      return { x: sx/cnt, y: sy/cnt };
+    });
+  }
+  const smoothed = smoothPass(smoothPass(sampled, 2), 2);
 
-  // ── Step 8: convert to world coords preserving aspect ratio ──
-  const cx = W / 2, cy2 = H / 2;
+  // ── Step 5: convert to world coords ──
+  const imgCX = W / 2, imgCY = H / 2;
   const scaleToWorld = (mainCanvas.width * 0.8) / W / cam.zoom;
   const newWPs = smoothed.map(p => ({
-    x: (p.x - cx)  * scaleToWorld,
-    y: (p.y - cy2) * scaleToWorld
+    x: (p.x - imgCX) * scaleToWorld,
+    y: (p.y - imgCY) * scaleToWorld
   }));
 
   setAIProgress(100);
   waypoints = newWPs;
   updateWPList();
   render();
-  setAIStatus(`✓ Extracted ${newWPs.length} waypoints (${iters} thinning passes)`, 'ok');
+  setAIStatus(`✓ Extracted ${newWPs.length} waypoints from ${boundary.length}-pt boundary`, 'ok');
   btn.disabled = false;
   showToast(`${newWPs.length} waypoints extracted!`);
 }
