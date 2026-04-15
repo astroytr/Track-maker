@@ -2,7 +2,7 @@
 <!--
   ╔══════════════════════════════════════════════════════════════╗
   ║  CIRCUIT FORGE — Track Studio                                ║
-  ║  VERSION: 5.3                                                ║
+  ║  VERSION: 5.4                                                ║
   ║                                                              ║
   ║  VERSIONING RULE (read before making any changes):           ║
   ║  • Bump the version number in ALL THREE places every edit:   ║
@@ -370,9 +370,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.3</span>
+        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.4</span>
       </div>
-      <div class="sb-sub">Track Studio · v5.3</div>
+      <div class="sb-sub">Track Studio · v5.4</div>
     </div>
 
     <!-- Upload -->
@@ -478,7 +478,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v5.3</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v5.4</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
@@ -631,7 +631,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.3</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.4</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
@@ -1678,40 +1678,14 @@ async function runAIConvert() {
   setAIProgress(20);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 2a: morphological closing (dilation then erosion, 3×3 kernel, 2 passes) ──
-  // This fills small gaps in the binary mask before contour finding (per PDF)
-  function dilate3(src, W, H) {
-    const dst = new Uint8Array(W * H);
-    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
-      let v = 0;
-      for (let dy = -1; dy <= 1 && !v; dy++) for (let dx = -1; dx <= 1 && !v; dx++) v = src[(y+dy)*W+(x+dx)];
-      dst[y*W+x] = v;
-    }
-    return dst;
-  }
-  function erode3(src, W, H) {
-    const dst = new Uint8Array(W * H);
-    for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
-      let v = 1;
-      for (let dy = -1; dy <= 1 && v; dy++) for (let dx = -1; dx <= 1 && v; dx++) v = src[(y+dy)*W+(x+dx)];
-      dst[y*W+x] = v;
-    }
-    return dst;
-  }
-  // Extra dilation passes for thin lines (e.g. single-pixel-width track outlines)
-  let d = bin;
-  for (let pass = 0; pass < 6; pass++) d = dilate3(d, W, H);
-  let closed = d;
-  for (let pass = 0; pass < 3; pass++) closed = erode3(closed, W, H);
-
-  // ── Step 2b: find largest connected component (flood fill) ──
+  // ── Step 2b: find largest connected component on raw bin (no morphology needed for line tracing) ──
   const label = new Int32Array(W * H).fill(-1);
   let bestId = -1, bestCount = 0, compId = 0;
   const stk = [];
   for (let sy = 0; sy < H; sy++) {
     for (let sx = 0; sx < W; sx++) {
       const idx = sy * W + sx;
-      if (closed[idx] !== 1 || label[idx] !== -1) continue;
+      if (bin[idx] !== 1 || label[idx] !== -1) continue;
       let count = 0;
       stk.push(idx);
       label[idx] = compId;
@@ -1719,7 +1693,7 @@ async function runAIConvert() {
         const cur = stk.pop(); count++;
         const cy2 = Math.floor(cur / W), cx2 = cur % W;
         for (const n of [cy2>0?cur-W:-1, cy2<H-1?cur+W:-1, cx2>0?cur-1:-1, cx2<W-1?cur+1:-1]) {
-          if (n !== -1 && closed[n] === 1 && label[n] === -1) { label[n] = compId; stk.push(n); }
+          if (n !== -1 && bin[n] === 1 && label[n] === -1) { label[n] = compId; stk.push(n); }
         }
       }
       if (count > bestCount) { bestCount = count; bestId = compId; }
@@ -1731,53 +1705,60 @@ async function runAIConvert() {
     btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
     return;
   }
-  for (let i = 0; i < W * H; i++) closed[i] = (label[i] === bestId) ? 1 : 0;
 
-  setAIStatus('Step 3/4 — Tracing boundary (shape-preserving)…', '');
+  setAIStatus('Step 3/4 — Ordering pixels along track…', '');
   setAIProgress(45);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 3: Moore-neighbour boundary trace (CHAIN_APPROX_NONE equivalent) ──
-  // Traces the full outer boundary of the largest region, keeping every pixel.
-  // This replaces skeletonisation — we trace the EDGE of the shape, then
-  // compute its centroid-offset midline to get the track centreline.
-  const dx8 = [1,1,0,-1,-1,-1, 0, 1];
-  const dy8 = [0,1,1, 1, 0,-1,-1,-1];
-
-  // Find top-left starting pixel of the region
-  let startIdx = -1;
-  outer: for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
-    if (closed[y*W+x]) { startIdx = y*W+x; break outer; }
+  // ── Step 3: Nearest-neighbour chain walk along raw track pixels ──
+  // Works for both filled shapes AND thin line outlines (like SPA).
+  // Collects all pixels of the largest component, then greedily walks
+  // from the first pixel to the nearest unvisited neighbour.
+  const trackPts = [];
+  for (let i = 0; i < W * H; i++) {
+    if (label[i] === bestId) trackPts.push({ x: i % W, y: Math.floor(i / W) });
   }
 
+  // Build a grid index for fast nearest-neighbour lookup
+  const ptGrid = new Map();
+  const gridSize = 4; // bucket size in pixels
+  for (const p of trackPts) {
+    const key = `${Math.floor(p.x/gridSize)},${Math.floor(p.y/gridSize)}`;
+    if (!ptGrid.has(key)) ptGrid.set(key, []);
+    ptGrid.get(key).push(p);
+  }
+
+  const inChain = new Uint8Array(W * H);
   const boundary = [];
-  {
-    const sx = startIdx % W, sy = Math.floor(startIdx / W);
-    let cx3 = sx, cy3 = sy;
-    // entry direction: came from left (direction index 4 = left)
-    let entryDir = 4;
-    const visited2 = new Uint8Array(W * H);
-    let safety = 0;
-    do {
-      boundary.push({ x: cx3, y: cy3 });
-      visited2[cy3*W+cx3] = 1;
-      // Search clockwise starting from (entryDir + 5) % 8
-      let found = false;
-      for (let k = 1; k <= 8; k++) {
-        const dir = (entryDir + 5 + k) % 8;
-        const nx = cx3 + dx8[dir], ny = cy3 + dy8[dir];
-        if (nx >= 0 && nx < W && ny >= 0 && ny < H && closed[ny*W+nx]) {
-          entryDir = (dir + 4) % 8; // reverse direction
-          cx3 = nx; cy3 = ny; found = true; break;
-        }
+  let cur = trackPts[0];
+  inChain[cur.y * W + cur.x] = 1;
+  boundary.push(cur);
+
+  function nearestUnvisited(p) {
+    let best = null, bestD = Infinity;
+    const gx = Math.floor(p.x / gridSize), gy = Math.floor(p.y / gridSize);
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const bucket = ptGrid.get(`${gx+dx},${gy+dy}`);
+      if (!bucket) continue;
+      for (const q of bucket) {
+        if (inChain[q.y * W + q.x]) continue;
+        const d = (q.x-p.x)**2 + (q.y-p.y)**2;
+        if (d < bestD) { bestD = d; best = q; }
       }
-      if (!found) break;
-      if (++safety > W * H) break;
-    } while (cx3 !== sx || cy3 !== sy);
+    }
+    return best;
+  }
+
+  for (let i = 1; i < trackPts.length; i++) {
+    const next = nearestUnvisited(cur);
+    if (!next) break;
+    inChain[next.y * W + next.x] = 1;
+    boundary.push(next);
+    cur = next;
   }
 
   if (boundary.length < 4) {
-    setAIStatus('Boundary too small — try selecting "Red" as track colour', 'err');
+    setAIStatus('No track pixels found — check colour selection', 'err');
     btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
     return;
   }
