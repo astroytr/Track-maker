@@ -47,11 +47,17 @@ function aiLoadImageFile(file) {
       // Draw into the visible preview canvas
       aiPreviewCanvas = document.getElementById('ai-preview-canvas');
       aiPreviewCtx    = aiPreviewCanvas.getContext('2d');
-      // Fit inside modal width (~500px)
-      const dispW = Math.min(500, aiImgW);
+      // Show preview wrap first so we can measure available width
+      document.getElementById('ai-preview-wrap').style.display = 'block';
+      // Fit inside actual available width
+      const modalBody = aiPreviewCanvas.closest('.ai-body') || document.querySelector('.ai-body');
+      const availW = modalBody ? modalBody.clientWidth - 40 : 300;
+      const dispW = Math.min(availW, aiImgW, 500);
       const dispH = Math.round(aiImgH * dispW / aiImgW);
       aiPreviewCanvas.width  = dispW;
       aiPreviewCanvas.height = dispH;
+      aiPreviewCanvas.style.width  = dispW + 'px';
+      aiPreviewCanvas.style.height = dispH + 'px';
       aiPreviewCtx.drawImage(img, 0, 0, dispW, dispH);
 
       // Attach eyedropper events
@@ -62,7 +68,6 @@ function aiLoadImageFile(file) {
       aiPreviewCanvas.addEventListener('touchend',   aiCanvasTouchEnd,  { passive: false });
 
       document.getElementById('ai-drop').style.display = 'none';
-      document.getElementById('ai-preview-wrap').style.display = 'block';
       setAIStatus('Pick track colour and background colour from the image, then Extract', '');
       document.getElementById('ai-run-btn').disabled = false;
     };
