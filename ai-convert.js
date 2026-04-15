@@ -62,7 +62,7 @@ function aiLoadImageFile(file) {
       aiPreviewCanvas.addEventListener('touchend',   aiCanvasTouchEnd,  { passive: false });
 
       document.getElementById('ai-drop').style.display = 'none';
-      document.getElementById('ai-preview-wrap').style.display = '';
+      document.getElementById('ai-preview-wrap').style.display = 'block';
       setAIStatus('Pick track colour and background colour from the image, then Extract', '');
       document.getElementById('ai-run-btn').disabled = false;
     };
@@ -73,7 +73,6 @@ function aiLoadImageFile(file) {
 
 // ── Eyedropper state machine ──
 function startEyedropper(mode) {
-  if (!aiPreviewCanvas) { setAIStatus('Upload an image first, then pick a colour', 'err'); return; }
   aiEyedropperMode = mode;
   document.getElementById('eyedropper-hint').style.display = '';
   aiPreviewCanvas.style.cursor = 'crosshair';
