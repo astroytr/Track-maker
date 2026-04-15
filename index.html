@@ -2,7 +2,7 @@
 <!--
   ╔══════════════════════════════════════════════════════════════╗
   ║  CIRCUIT FORGE — Track Studio                                ║
-  ║  VERSION: 5.9                                                ║
+  ║  VERSION: 6.0                                                ║
   ║                                                              ║
   ║  VERSIONING RULE (read before making any changes):           ║
   ║  • Bump the version number in ALL THREE places every edit:   ║
@@ -373,9 +373,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v5.9</span>
+        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v6.0</span>
       </div>
-      <div class="sb-sub">Track Studio · v5.9</div>
+      <div class="sb-sub">Track Studio · v6.0</div>
     </div>
 
     <!-- Upload -->
@@ -481,7 +481,7 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v5.9</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v6.0</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
@@ -634,11 +634,50 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v5.9</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v6.0</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
     <div class="ai-body">
+
+      <!-- Colour pickers — ALWAYS VISIBLE -->
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
+        <!-- Track colour -->
+        <div>
+          <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;margin-bottom:5px;">TRACK COLOUR</div>
+          <div style="display:flex;align-items:center;gap:7px;">
+            <div id="track-swatch" style="width:32px;height:32px;border-radius:5px;background:#555;border:2px solid var(--border2);flex-shrink:0;"></div>
+            <button id="track-pick-btn" onclick="startEyedropper('track')"
+              style="padding:5px 10px;background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.4);border-radius:4px;
+                     color:#a78bfa;font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px;
+                     cursor:pointer;text-transform:uppercase;">
+              🎯 Pick
+            </button>
+            <span id="track-hex" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;color:var(--text3);letter-spacing:1px;">not set</span>
+          </div>
+        </div>
+        <!-- Background colour -->
+        <div>
+          <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;margin-bottom:5px;">BACKGROUND COLOUR</div>
+          <div style="display:flex;align-items:center;gap:7px;">
+            <div id="bg-swatch" style="width:32px;height:32px;border-radius:5px;background:#555;border:2px solid var(--border2);flex-shrink:0;"></div>
+            <button id="bg-pick-btn" onclick="startEyedropper('bg')"
+              style="padding:5px 10px;background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.4);border-radius:4px;
+                     color:#a78bfa;font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px;
+                     cursor:pointer;text-transform:uppercase;">
+              🎯 Pick
+            </button>
+            <span id="bg-hex" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;color:var(--text3);letter-spacing:1px;">not set</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Eyedropper hint -->
+      <div id="eyedropper-hint" style="display:none;padding:6px 10px;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);
+           border-radius:4px;font-size:11px;color:#a78bfa;font-family:'Barlow Condensed',sans-serif;letter-spacing:1px;
+           text-align:center;margin-bottom:8px;">
+        🎯 TAP ON THE IMAGE TO PICK COLOUR
+      </div>
 
       <!-- Step 1: Upload -->
       <div id="ai-drop" onclick="document.getElementById('ai-file').click()"
@@ -646,51 +685,12 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
            ondragleave="this.classList.remove('drag-over')"
            ondrop="aiHandleDrop(event)">
         <div class="ad-icon">🗺️</div>
-        <div class="ad-text"><span class="ad-accent">Drop or click</span> to upload a track image</div>
+        <div class="ad-text"><span class="ad-accent">Drop or click</span> to upload a track image<br><span style="color:var(--text3);font-size:10px;">Then tap 🎯 Pick to sample track &amp; background colours</span></div>
       </div>
       <input type="file" id="ai-file" accept="image/*" onchange="aiLoadFile(this)">
 
-      <!-- Step 2: Eyedropper colour pickers + preview -->
+      <!-- Preview canvas + sliders (shown after upload) -->
       <div id="ai-preview-wrap" style="display:none;">
-
-        <!-- Colour picker row -->
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-          <!-- Track colour -->
-          <div>
-            <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;margin-bottom:5px;">TRACK COLOUR</div>
-            <div style="display:flex;align-items:center;gap:7px;">
-              <div id="track-swatch" style="width:32px;height:32px;border-radius:5px;background:#888;border:2px solid var(--border2);flex-shrink:0;"></div>
-              <button id="track-pick-btn" onclick="startEyedropper('track')"
-                style="padding:5px 10px;background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.4);border-radius:4px;
-                       color:#a78bfa;font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px;
-                       cursor:pointer;text-transform:uppercase;">
-                🎯 Pick
-              </button>
-              <span id="track-hex" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;color:var(--text3);letter-spacing:1px;"></span>
-            </div>
-          </div>
-          <!-- Background colour -->
-          <div>
-            <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;margin-bottom:5px;">BACKGROUND COLOUR</div>
-            <div style="display:flex;align-items:center;gap:7px;">
-              <div id="bg-swatch" style="width:32px;height:32px;border-radius:5px;background:#111;border:2px solid var(--border2);flex-shrink:0;"></div>
-              <button id="bg-pick-btn" onclick="startEyedropper('bg')"
-                style="padding:5px 10px;background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.4);border-radius:4px;
-                       color:#a78bfa;font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px;
-                       cursor:pointer;text-transform:uppercase;">
-                🎯 Pick
-              </button>
-              <span id="bg-hex" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;color:var(--text3);letter-spacing:1px;"></span>
-            </div>
-          </div>
-        </div>
-
-        <!-- Eyedropper hint -->
-        <div id="eyedropper-hint" style="display:none;padding:6px 10px;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);
-             border-radius:4px;font-size:11px;color:#a78bfa;font-family:'Barlow Condensed',sans-serif;letter-spacing:1px;
-             text-align:center;margin-bottom:8px;">
-          🎯 TAP ON THE IMAGE TO PICK COLOUR — tap anywhere else to cancel
-        </div>
 
         <!-- Preview canvas (eyedropper taps on this) -->
         <div style="position:relative;text-align:center;">
@@ -701,17 +701,8 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
           <canvas id="ai-loupe" style="display:none;position:absolute;border-radius:50%;border:2px solid #a78bfa;pointer-events:none;box-shadow:0 2px 12px #0008;"></canvas>
         </div>
 
-        <!-- Threshold slider -->
-        <div style="margin-top:10px;display:flex;align-items:center;gap:8px;">
-          <span style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;white-space:nowrap;">COLOUR TOLERANCE</span>
-          <input type="range" min="5" max="120" value="40" id="ai-tolerance"
-            style="flex:1;accent-color:#a78bfa;"
-            oninput="document.getElementById('ai-tol-val').textContent=this.value;aiUpdatePreviewOverlay()">
-          <span id="ai-tol-val" style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;color:#a78bfa;min-width:28px;">40</span>
-        </div>
-
         <!-- Waypoint count -->
-        <div style="margin-top:6px;display:flex;align-items:center;gap:8px;">
+        <div style="margin-top:10px;display:flex;align-items:center;gap:8px;">
           <span style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;white-space:nowrap;">WAYPOINTS</span>
           <input type="range" min="20" max="200" value="80" id="ai-wp-count"
             style="flex:1;accent-color:#a78bfa;"
@@ -725,8 +716,9 @@ html, body { width: 100%; height: 100%; overflow: hidden; background: var(--bg);
       <input type="hidden" id="ai-thresh" value="128">
       <input type="hidden" id="ai-smooth" value="3">
       <input type="hidden" id="ai-invert" value="0">
+      <input type="hidden" id="ai-tolerance" value="40">
       <div class="ai-progress" id="ai-progress"><div class="ai-progress-bar" id="ai-progress-bar"></div></div>
-      <div id="ai-status">Upload an image to begin</div>
+      <div id="ai-status">Upload an image, then pick track &amp; background colours</div>
     </div>
     <div class="ai-footer">
       <button class="ai-btn cancel" onclick="closeAIConvert()">Cancel</button>
@@ -1596,7 +1588,7 @@ function showToast(msg) {
 }
 
 // ═══════════════════════════════════════════════════
-// TRACK IMAGE → WAYPOINTS  v5.9
+// TRACK IMAGE → WAYPOINTS  v6.0
 // Eyedropper colour picker + grid-path walk
 // ═══════════════════════════════════════════════════
 let aiImageData = null;
@@ -1851,248 +1843,16 @@ function setBgColour(c)    { aiBgColour    = c; }
 function aiPreviewThresh() {}
 
 // ═══════════════════════════════════════════════════════════════════
-// MAIN PIPELINE v5.9
-// 1. Threshold image using eyedropper colours + tolerance
-// 2. Flood-fill → largest connected component = the track
-// 3. Divide image into GRID cells, mark cells that contain track pixels
-// 4. Find the longest connected chain of grid cells (BFS from each cell)
-//    → this chain follows the track path regardless of concavity
-// 5. For each cell in chain, compute centroid of track pixels → waypoint
-// 6. Downsample to wpCount, smooth, scale to world
+// MAIN PIPELINE v6.0
+// Exact approach: erase background pixels by colour distance,
+// remaining pixels = the track. Thin to centreline via grid
+// cell centroids, then nearest-neighbour chain walk to order them.
 // ═══════════════════════════════════════════════════════════════════
 async function runAIConvert() {
   if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }
-  if (!aiTrackRGB)  { setAIStatus('Pick the track colour first (🎯 Pick button)', 'err'); return; }
-  if (!aiBgRGB)     { setAIStatus('Pick the background colour first (🎯 Pick button)', 'err'); return; }
+  if (!aiTrackRGB)  { setAIStatus('Pick the track colour first — tap 🎯 Pick then tap on the track in the image', 'err'); return; }
+  if (!aiBgRGB)     { setAIStatus('Pick the background colour first — tap 🎯 Pick then tap on the background', 'err'); return; }
 
-  const btn = document.getElementById('ai-run-btn');
-  btn.disabled = true;
-
-  const W    = aiImgW, H = aiImgH;
-  const data = aiImageData.data;
-  const wpCount  = parseInt(document.getElementById('ai-wp-count').value);
-  const tol      = parseInt(document.getElementById('ai-tolerance').value);
-  const tolSq    = tol * tol;
-
-  setAIStatus('Step 1/4 — Thresholding…', '');
-  setAIProgress(5);
-  await new Promise(r => setTimeout(r, 10));
-
-  // ── Step 1: build track mask using eyedropper colours ──
-  const trackMask = new Uint8Array(W * H);
-  let trackCount = 0;
-  for (let i = 0; i < W * H; i++) {
-    const r=data[i*4], g=data[i*4+1], b=data[i*4+2];
-    const dtr=r-aiTrackRGB.r, dtg=g-aiTrackRGB.g, dtb=b-aiTrackRGB.b;
-    if (dtr*dtr + dtg*dtg + dtb*dtb <= tolSq) { trackMask[i]=1; trackCount++; }
-  }
-  if (trackCount < 20) {
-    setAIStatus('No track pixels matched — try a higher tolerance or re-pick the colour', 'err');
-    btn.disabled=false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
-    return;
-  }
-
-  setAIStatus('Step 2/4 — Finding track component…', '');
-  setAIProgress(18);
-  await new Promise(r => setTimeout(r, 10));
-
-  // ── Step 2: flood-fill → largest connected component ──
-  const label = new Int32Array(W * H).fill(-1);
-  let bestId=-1, bestCount=0, compId=0;
-  const stk=[];
-  for (let sy=0; sy<H; sy++) {
-    for (let sx=0; sx<W; sx++) {
-      const idx=sy*W+sx;
-      if (!trackMask[idx]||label[idx]!==-1) continue;
-      let count=0; stk.push(idx); label[idx]=compId;
-      while (stk.length) {
-        const cur=stk.pop(); count++;
-        const cy=Math.floor(cur/W), cx=cur%W;
-        for (let dy=-1;dy<=1;dy++) for (let dx=-1;dx<=1;dx++) {
-          if (!dy&&!dx) continue;
-          const ny=cy+dy, nx=cx+dx;
-          if (ny<0||ny>=H||nx<0||nx>=W) continue;
-          const ni=ny*W+nx;
-          if (trackMask[ni]&&label[ni]===-1) { label[ni]=compId; stk.push(ni); }
-        }
-      }
-      if (count>bestCount) { bestCount=count; bestId=compId; }
-      compId++;
-    }
-  }
-  if (bestId===-1||bestCount<10) {
-    setAIStatus('No connected track found — check colour / tolerance', 'err');
-    btn.disabled=false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
-    return;
-  }
-
-  setAIStatus('Step 3/4 — Building grid path…', '');
-  setAIProgress(38);
-  await new Promise(r => setTimeout(r, 15));
-
-  // ── Step 3: overlay a grid on the image ──
-  // Cell size = roughly average track-width / 2, so multiple cells span the track
-  // Estimate track width: sqrt(component area / perimeter) is approx width
-  // Simple estimate: cellSize ≈ sqrt(bestCount) / 8, clamped 3-20px
-  const cellSize = Math.max(3, Math.min(20, Math.round(Math.sqrt(bestCount) / 8)));
-  const GW = Math.ceil(W / cellSize);
-  const GH = Math.ceil(H / cellSize);
-
-  // For each grid cell, accumulate track pixels from best component
-  const cellXSum = new Float64Array(GW * GH);
-  const cellYSum = new Float64Array(GW * GH);
-  const cellN    = new Int32Array(GW * GH);
-
-  for (let i=0; i<W*H; i++) {
-    if (label[i]!==bestId) continue;
-    const px=i%W, py=Math.floor(i/W);
-    const gx=Math.floor(px/cellSize), gy=Math.floor(py/cellSize);
-    const gi=gy*GW+gx;
-    cellXSum[gi]+=px; cellYSum[gi]+=py; cellN[gi]++;
-  }
-
-  // Occupied grid cells
-  const occupied = new Uint8Array(GW * GH);
-  for (let gi=0; gi<GW*GH; gi++) if (cellN[gi]>0) occupied[gi]=1;
-
-  setAIStatus('Step 4/4 — Tracing grid path…', '');
-  setAIProgress(55);
-  await new Promise(r => setTimeout(r, 15));
-
-  // ── Step 4: find the ordered path through grid cells ──
-  // Strategy: BFS to find the two farthest endpoints of the grid graph,
-  // then DFS/greedy walk from one endpoint to the other, always preferring
-  // the direction that continues the path (to avoid backtracking).
-
-  const dirs4 = [-GW, 1, GW, -1];        // 4-connected neighbours (up/right/down/left)
-  const dirs8g = [-GW-1,-GW,-GW+1,-1,1,GW-1,GW,GW+1]; // 8-connected
-
-  function gridNeighbours(gi) {
-    const gx=gi%GW, gy=Math.floor(gi/GW);
-    const nb=[];
-    for (let dy=-1;dy<=1;dy++) for (let dx=-1;dx<=1;dx++) {
-      if (!dy&&!dx) continue;
-      const nx=gx+dx, ny=gy+dy;
-      if (nx<0||nx>=GW||ny<0||ny>=GH) continue;
-      const ni=ny*GW+nx;
-      if (occupied[ni]) nb.push(ni);
-    }
-    return nb;
-  }
-
-  // BFS from a seed cell to find all reachable cells + distances
-  function bfsGrid(startGi) {
-    const dist = new Int32Array(GW * GH).fill(-1);
-    const queue = [startGi]; dist[startGi]=0; let qi=0, farthest=startGi, maxD=0;
-    while (qi < queue.length) {
-      const cur = queue[qi++];
-      for (const nb of gridNeighbours(cur)) {
-        if (dist[nb]===-1) {
-          dist[nb]=dist[cur]+1;
-          queue.push(nb);
-          if (dist[nb]>maxD) { maxD=dist[nb]; farthest=nb; }
-        }
-      }
-    }
-    return { dist, farthest, queue };
-  }
-
-  // Find a starting cell (any occupied cell near track boundary)
-  let seedGi = -1;
-  for (let gi=0; gi<GW*GH; gi++) if (occupied[gi]) { seedGi=gi; break; }
-
-  // Two-pass BFS to find true endpoints (farthest pair)
-  const bfs1 = bfsGrid(seedGi);
-  const endA  = bfs1.farthest;
-  const bfs2  = bfsGrid(endA);
-  const endB  = bfs2.farthest;
-
-  // Greedy walk from endA to endB (prefer cells already on known shortest path)
-  // Use bfs2.dist as guidance: at each step move to unvisited neighbour with LOWEST dist
-  const visitedG = new Uint8Array(GW * GH);
-  const chainGi  = [];
-  let curG = endA;
-  visitedG[curG] = 1;
-  chainGi.push(curG);
-  let prevG = -1;
-
-  for (let step=0; step<GW*GH*2; step++) {
-    const nbs = gridNeighbours(curG).filter(n => !visitedG[n]);
-    if (nbs.length === 0) break;
-    // Pick neighbour with smallest dist-to-endB (greedy shortest path)
-    let best = nbs[0], bestD = bfs2.dist[best];
-    for (const nb of nbs) {
-      const d = bfs2.dist[nb] >= 0 ? bfs2.dist[nb] : 999999;
-      if (d < bestD) { bestD = d; best = nb; }
-    }
-    visitedG[best] = 1;
-    chainGi.push(best);
-    prevG = curG;
-    curG  = best;
-    if (curG === endB) break;
-  }
-
-  if (chainGi.length < 3) {
-    setAIStatus('Could not trace a path — try adjusting tolerance', 'err');
-    btn.disabled=false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
-    return;
-  }
-
-  // ── Step 5: waypoint = centroid of track pixels in each grid cell ──
-  const rawWPs = chainGi.map(gi => ({
-    x: cellXSum[gi] / cellN[gi],
-    y: cellYSum[gi] / cellN[gi]
-  }));
-
-  // ── Step 6: uniform downsample to wpCount ──
-  let sampled = rawWPs;
-  if (rawWPs.length > wpCount) {
-    sampled = [];
-    const step = rawWPs.length / wpCount;
-    for (let i=0; i<wpCount; i++) sampled.push(rawWPs[Math.round(i*step) % rawWPs.length]);
-  }
-
-  // ── Step 7: smooth 3 passes ──
-  function smoothPass(pts, r) {
-    return pts.map((p, i) => {
-      let sx=0, sy=0, cnt=0;
-      for (let k=-r; k<=r; k++) {
-        const idx=(i+k+pts.length)%pts.length;
-        sx+=pts[idx].x; sy+=pts[idx].y; cnt++;
-      }
-      return {x:sx/cnt, y:sy/cnt};
-    });
-  }
-  let smoothed = smoothPass(smoothPass(smoothPass(sampled, 2), 2), 1);
-
-  // ── Step 8: scale to world coords ──
-  let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
-  for (const p of smoothed) {
-    if (p.x<minX) minX=p.x; if (p.x>maxX) maxX=p.x;
-    if (p.y<minY) minY=p.y; if (p.y>maxY) maxY=p.y;
-  }
-  const trackW = maxX-minX || 1, trackH = maxY-minY || 1;
-  const scaleX = mainCanvas.width  * 0.82 / trackW;
-  const scaleY = mainCanvas.height * 0.82 / trackH;
-  const scale  = Math.min(scaleX, scaleY) / cam.zoom;
-  const midX   = (minX+maxX)/2, midY=(minY+maxY)/2;
-
-  const newWPs = smoothed.map(p => ({
-    x: (p.x-midX)*scale,
-    y: (p.y-midY)*scale
-  }));
-
-  setAIProgress(100);
-  waypoints = newWPs;
-  updateWPList();
-  render();
-  setAIStatus(`✓ ${newWPs.length} waypoints · ${bestCount} track pixels · grid ${GW}×${GH} (cell ${cellSize}px)`, 'ok');
-  btn.disabled = false;
-  showToast(`${newWPs.length} waypoints placed!`);
-}
-
-async function runAIConvert() {
-  if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }
   const btn = document.getElementById('ai-run-btn');
   btn.disabled = true;
 
@@ -2101,188 +1861,218 @@ async function runAIConvert() {
   const wpCount = parseInt(document.getElementById('ai-wp-count').value);
 
   // ═══════════════════════════════════════════════════════════════════
-  // PIPELINE v5.9:
-  // 1. Remove background pixels (user-selected colour)
-  // 2. Auto-detect track colour = dominant colour of remaining pixels
-  //    → keep only pixels close to that colour (generous threshold)
-  // 3. Flood-fill to find largest connected component = the track
-  // 4. Compute mass centroid of entire track component
-  // 5. Angular slices: divide 360° into wpCount bins, compute centroid
-  //    of all track pixels in each slice → centre-line waypoint per slice
-  // 6. Fill empty bins, smooth 2 passes, scale to world coords
+  // PIPELINE v6.0 — Background removal → track mesh → ordered waypoints
+  //
+  // Core idea (user-specified):
+  //   1. Remove every pixel that matches the background colour (with tolerance)
+  //   2. The remaining pixels ARE the track — no guessing, no skeletonization
+  //   3. Subdivide into a fine grid; each occupied cell gets one centroid point
+  //   4. Double-BFS on that grid finds the two farthest endpoints of the track
+  //   5. Greedy nearest-neighbour walk orders the centroids into a smooth path
+  //   6. Downsample → light smooth → world coords
   // ═══════════════════════════════════════════════════════════════════
 
-  setAIStatus('Step 1/4 — Removing background…', '');
-  setAIProgress(10);
+  setAIStatus('Step 1/4 — Removing background pixels…', '');
+  setAIProgress(8);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 1: remove background ──
-  function isBg(r, g, b) {
-    const c = aiBgColour;
-    if (c === 'black') return r < 60  && g < 60  && b < 60;
-    if (c === 'white') return r > 200 && g > 200 && b > 200;
-    if (c === 'red')   return r > 140 && g < 100 && b < 100 && r > g+50 && r > b+50;
-    return false;
+  // ── Step 1: erase background ──
+  // Any pixel within colour-distance TOL of aiBgRGB is background.
+  // Tolerance is adaptive: start at 40, expand if nothing survives.
+  let bgTol = 50;
+  let trackMask, trackCount;
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const bgTolSq = bgTol * bgTol;
+    trackMask  = new Uint8Array(W * H);
+    trackCount = 0;
+    for (let i = 0; i < W * H; i++) {
+      const r = data[i*4], g = data[i*4+1], b = data[i*4+2];
+      const dr = r - aiBgRGB.r, dg = g - aiBgRGB.g, db = b - aiBgRGB.b;
+      if (dr*dr + dg*dg + db*db > bgTolSq) { trackMask[i] = 1; trackCount++; }
+    }
+    if (trackCount > 100) break;
+    bgTol += 20; // loosen if too strict
   }
 
-  // Collect non-BG pixels, accumulate average colour
-  let rAcc=0, gAcc=0, bAcc=0, nAcc=0;
-  const nonBg = new Uint8Array(W * H);
-  for (let i = 0; i < W*H; i++) {
-    const r=data[i*4], g=data[i*4+1], b=data[i*4+2];
-    if (!isBg(r,g,b)) {
-      nonBg[i]=1;
-      rAcc+=r; gAcc+=g; bAcc+=b; nAcc++;
-    }
-  }
-  if (nAcc < 50) {
-    setAIStatus('Background removal left no pixels — try a different background colour', 'err');
-    btn.disabled=false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
+  if (trackCount < 100) {
+    setAIStatus('Background removal left almost no pixels — try re-picking the background colour', 'err');
+    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display = 'none';
     return;
   }
 
-  // ── Step 2: auto-detect track colour from average of non-BG pixels ──
-  setAIStatus('Step 2/4 — Detecting track colour…', '');
-  setAIProgress(20);
+  setAIStatus('Step 2/4 — Finding largest track region…', '');
+  setAIProgress(25);
   await new Promise(r => setTimeout(r, 10));
 
-  const avgR = rAcc/nAcc, avgG = gAcc/nAcc, avgB = bAcc/nAcc;
-
-  // Keep pixels within colour distance 80 of detected average (includes anti-alias)
-  const trackMask = new Uint8Array(W * H);
-  for (let i = 0; i < W*H; i++) {
-    if (!nonBg[i]) continue;
-    const dr=data[i*4]-avgR, dg=data[i*4+1]-avgG, db=data[i*4+2]-avgB;
-    if (dr*dr + dg*dg + db*db < 80*80) trackMask[i]=1;
-  }
-
-  // ── Step 3: largest connected component of track mask ──
-  setAIStatus('Step 3/4 — Finding track & placing waypoints…', '');
-  setAIProgress(35);
-  await new Promise(r => setTimeout(r, 10));
-
-  const label = new Int32Array(W*H).fill(-1);
-  let bestId=-1, bestCount=0, compId=0;
-  const stk=[];
-  for (let sy=0; sy<H; sy++) {
-    for (let sx=0; sx<W; sx++) {
-      const idx=sy*W+sx;
-      if (!trackMask[idx] || label[idx]!==-1) continue;
-      let count=0;
-      stk.push(idx); label[idx]=compId;
+  // ── Step 2: flood-fill → keep only the largest connected blob ──
+  // (removes noise specks and separate UI elements)
+  const label = new Int32Array(W * H).fill(-1);
+  let bestId = -1, bestCount = 0, compId = 0;
+  const stk = [];
+  for (let sy = 0; sy < H; sy++) {
+    for (let sx = 0; sx < W; sx++) {
+      const idx = sy * W + sx;
+      if (!trackMask[idx] || label[idx] !== -1) continue;
+      let count = 0;
+      stk.push(idx); label[idx] = compId;
       while (stk.length) {
-        const cur=stk.pop(); count++;
-        const cy=Math.floor(cur/W), cx=cur%W;
-        for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
-          if (!dy&&!dx) continue;
-          const ny=cy+dy, nx=cx+dx;
-          if (ny<0||ny>=H||nx<0||nx>=W) continue;
-          const ni=ny*W+nx;
-          if (trackMask[ni] && label[ni]===-1) { label[ni]=compId; stk.push(ni); }
+        const cur = stk.pop(); count++;
+        const cy = Math.floor(cur / W), cx = cur % W;
+        for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+          if (!dy && !dx) continue;
+          const ny = cy + dy, nx = cx + dx;
+          if (ny < 0 || ny >= H || nx < 0 || nx >= W) continue;
+          const ni = ny * W + nx;
+          if (trackMask[ni] && label[ni] === -1) { label[ni] = compId; stk.push(ni); }
         }
       }
-      if (count>bestCount) { bestCount=count; bestId=compId; }
+      if (count > bestCount) { bestCount = count; bestId = compId; }
       compId++;
     }
   }
-  if (bestId===-1 || bestCount<20) {
-    setAIStatus('No track component found — check background colour', 'err');
-    btn.disabled=false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
+
+  if (bestId === -1 || bestCount < 50) {
+    setAIStatus('No connected track found — re-pick colours or try a cleaner image', 'err');
+    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display = 'none';
     return;
   }
 
-  // Collect component pixels + compute mass centroid
-  let cxSum=0, cySum=0, compN=0;
-  let minX=W, maxX=0, minY=H, maxY=0;
-  const compPixels=[]; // [{x,y}]
-  for (let i=0; i<W*H; i++) {
-    if (label[i]!==bestId) continue;
-    const px=i%W, py=Math.floor(i/W);
-    compPixels.push({x:px,y:py});
-    cxSum+=px; cySum+=py; compN++;
-    if (px<minX) minX=px; if (px>maxX) maxX=px;
-    if (py<minY) minY=py; if (py>maxY) maxY=py;
-  }
-  const massCX = cxSum/compN;
-  const massCY = cySum/compN;
-  const trackWpx = maxX-minX;
-  const trackHpx = maxY-minY;
+  setAIStatus('Step 3/4 — Building grid centroids…', '');
+  setAIProgress(45);
+  await new Promise(r => setTimeout(r, 15));
 
-  // ── Step 4: angular slice centroids → centre-line waypoints ──
-  // For each of wpCount angular slices, compute the centroid of ALL
-  // track pixels in that slice. This lands on the centre of the track
-  // ribbon — not the edge — for any track shape.
-  setAIProgress(55);
-  await new Promise(r => setTimeout(r, 10));
+  // ── Step 3: grid of centroids ──
+  // cellSize is chosen so the grid is fine enough to capture all curves
+  // but coarse enough that each cell has multiple pixels → stable centroid.
+  // Target: ~4× more cells than wpCount so we have plenty to subsample from.
+  const targetCells = wpCount * 4;
+  const cellSize = Math.max(2, Math.min(16, Math.floor(Math.sqrt((W * H) / targetCells))));
+  const GW = Math.ceil(W / cellSize);
+  const GH = Math.ceil(H / cellSize);
 
-  const TWO_PI = Math.PI*2;
-  const sliceXSum = new Float64Array(wpCount);
-  const sliceYSum = new Float64Array(wpCount);
-  const sliceN    = new Int32Array(wpCount);
+  const cellXSum = new Float64Array(GW * GH);
+  const cellYSum = new Float64Array(GW * GH);
+  const cellN    = new Int32Array(GW * GH);
 
-  for (const p of compPixels) {
-    const a = Math.atan2(p.y - massCY, p.x - massCX); // -π..π
-    const norm = (a < 0 ? a + TWO_PI : a);              // 0..2π
-    const si = Math.min(wpCount-1, Math.floor(norm / TWO_PI * wpCount));
-    sliceXSum[si] += p.x;
-    sliceYSum[si] += p.y;
-    sliceN[si]++;
+  for (let i = 0; i < W * H; i++) {
+    if (label[i] !== bestId) continue;
+    const px = i % W, py = Math.floor(i / W);
+    const gx = Math.floor(px / cellSize), gy = Math.floor(py / cellSize);
+    const gi = gy * GW + gx;
+    cellXSum[gi] += px; cellYSum[gi] += py; cellN[gi]++;
   }
 
-  // Build raw waypoints from non-empty slices
-  const rawBins = [];
-  for (let si=0; si<wpCount; si++) {
-    if (sliceN[si] >= 2) {
-      rawBins.push({ si, x: sliceXSum[si]/sliceN[si], y: sliceYSum[si]/sliceN[si] });
+  const occupied = new Uint8Array(GW * GH);
+  for (let gi = 0; gi < GW * GH; gi++) if (cellN[gi] > 0) occupied[gi] = 1;
+
+  setAIStatus('Step 4/4 — Ordering waypoints…', '');
+  setAIProgress(62);
+  await new Promise(r => setTimeout(r, 15));
+
+  // ── Step 4: double-BFS to find true track endpoints, then greedy walk ──
+  function gridNeighbours8(gi) {
+    const gx = gi % GW, gy = Math.floor(gi / GW);
+    const nb = [];
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dy && !dx) continue;
+      const nx = gx + dx, ny = gy + dy;
+      if (nx < 0 || nx >= GW || ny < 0 || ny >= GH) continue;
+      const ni = ny * GW + nx;
+      if (occupied[ni]) nb.push(ni);
     }
+    return nb;
   }
 
-  if (rawBins.length < 4) {
-    setAIStatus('Not enough angular coverage — try more waypoints', 'err');
-    btn.disabled=false; setAIProgress(0); document.getElementById('ai-progress').style.display='none';
+  function bfsGrid(startGi) {
+    const dist = new Int32Array(GW * GH).fill(-1);
+    const q = [startGi]; dist[startGi] = 0; let qi = 0, far = startGi, maxD = 0;
+    while (qi < q.length) {
+      const cur = q[qi++];
+      for (const nb of gridNeighbours8(cur)) {
+        if (dist[nb] === -1) {
+          dist[nb] = dist[cur] + 1; q.push(nb);
+          if (dist[nb] > maxD) { maxD = dist[nb]; far = nb; }
+        }
+      }
+    }
+    return { dist, far };
+  }
+
+  let seed = -1;
+  for (let gi = 0; gi < GW * GH; gi++) if (occupied[gi]) { seed = gi; break; }
+
+  const r1 = bfsGrid(seed);
+  const endA = r1.far;
+  const r2 = bfsGrid(endA);
+  const endB = r2.far;
+
+  // Greedy walk: always step to the unvisited neighbour closest (in image space) to next point
+  const visitedG = new Uint8Array(GW * GH);
+  const chain = [];
+  let cur = endA;
+  visitedG[cur] = 1;
+  chain.push(cur);
+
+  for (let step = 0; step < GW * GH; step++) {
+    const nbs = gridNeighbours8(cur).filter(n => !visitedG[n]);
+    if (!nbs.length) break;
+    // prefer neighbour with lowest BFS distance to endB (guided walk)
+    let best = nbs[0], bestD = r2.dist[best] >= 0 ? r2.dist[best] : 9e9;
+    for (const nb of nbs) {
+      const d = r2.dist[nb] >= 0 ? r2.dist[nb] : 9e9;
+      if (d < bestD) { bestD = d; best = nb; }
+    }
+    visitedG[best] = 1;
+    chain.push(best);
+    cur = best;
+    if (cur === endB) break;
+  }
+
+  if (chain.length < 4) {
+    setAIStatus('Could not order the track — re-pick colours', 'err');
+    btn.disabled = false; setAIProgress(0); document.getElementById('ai-progress').style.display = 'none';
     return;
   }
 
-  // Fill empty bins by linear interpolation between neighbours
-  const filled = new Array(wpCount).fill(null);
-  for (const b of rawBins) filled[b.si] = { x:b.x, y:b.y };
-  for (let pass=0; pass<wpCount; pass++) {
-    for (let i=0; i<wpCount; i++) {
-      if (filled[i]) continue;
-      const prev = filled[(i-1+wpCount)%wpCount];
-      const next = filled[(i+1)%wpCount];
-      if (prev && next) filled[i] = { x:(prev.x+next.x)/2, y:(prev.y+next.y)/2 };
-      else if (prev)    filled[i] = { x:prev.x, y:prev.y };
-      else if (next)    filled[i] = { x:next.x, y:next.y };
-    }
-  }
-  const ordered = filled.filter(Boolean);
-
-  setAIStatus('Step 4/4 — Smoothing & scaling…', '');
-  setAIProgress(75);
+  setAIProgress(80);
   await new Promise(r => setTimeout(r, 10));
 
-  // ── Step 5: smooth 2 passes ──
+  // ── Step 5: centroid per cell → raw waypoints ──
+  const rawWPs = chain.map(gi => ({
+    x: cellXSum[gi] / cellN[gi],
+    y: cellYSum[gi] / cellN[gi]
+  }));
+
+  // ── Step 6: uniform downsample ──
+  const sampled = [];
+  const step = rawWPs.length / Math.min(wpCount, rawWPs.length);
+  for (let i = 0; i < Math.min(wpCount, rawWPs.length); i++) {
+    sampled.push(rawWPs[Math.min(rawWPs.length - 1, Math.round(i * step))]);
+  }
+
+  // ── Step 7: 2 passes of light smoothing (window=2) ──
   function smoothPass(pts, r) {
     return pts.map((p, i) => {
-      let sx=0, sy=0, cnt=0;
-      for (let k=-r; k<=r; k++) {
-        const idx=(i+k+pts.length)%pts.length;
-        sx+=pts[idx].x; sy+=pts[idx].y; cnt++;
+      let sx = 0, sy = 0, cnt = 0;
+      for (let k = -r; k <= r; k++) {
+        const idx = (i + k + pts.length) % pts.length;
+        sx += pts[idx].x; sy += pts[idx].y; cnt++;
       }
-      return {x:sx/cnt, y:sy/cnt};
+      return { x: sx / cnt, y: sy / cnt };
     });
   }
-  const smoothed = smoothPass(smoothPass(ordered, 2), 2);
+  const smoothed = smoothPass(smoothPass(sampled, 2), 2);
 
-  // ── Step 6: scale to world coords, centred, filling ~80% of canvas ──
-  const trackScreenW = mainCanvas.width  * 0.8;
-  const trackScreenH = mainCanvas.height * 0.8;
-  const scaleX = trackWpx > 0 ? trackScreenW/trackWpx : 1;
-  const scaleY = trackHpx > 0 ? trackScreenH/trackHpx : 1;
-  const scale  = Math.min(scaleX, scaleY) / cam.zoom;
-  const midX   = (minX+maxX)/2;
-  const midY   = (minY+maxY)/2;
+  // ── Step 8: scale to world coords ──
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const p of smoothed) {
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+  }
+  const tW = maxX - minX || 1, tH = maxY - minY || 1;
+  const scale = Math.min(mainCanvas.width * 0.82 / tW, mainCanvas.height * 0.82 / tH) / cam.zoom;
+  const midX = (minX + maxX) / 2, midY = (minY + maxY) / 2;
 
   const newWPs = smoothed.map(p => ({
     x: (p.x - midX) * scale,
@@ -2293,7 +2083,7 @@ async function runAIConvert() {
   waypoints = newWPs;
   updateWPList();
   render();
-  setAIStatus(`✓ ${newWPs.length} waypoints from ${compN} track pixels`, 'ok');
+  setAIStatus(`✓ ${newWPs.length} waypoints · ${bestCount.toLocaleString()} track pixels · cell ${cellSize}px`, 'ok');
   btn.disabled = false;
   showToast(`${newWPs.length} waypoints placed!`);
 }
