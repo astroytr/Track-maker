@@ -312,9 +312,9 @@ async function runAIConvert() {
   // ── Uniform resample ──
   const sampled = uniformResample(chain, wpCount);
 
-  // ── Smooth (3 passes, window 3) ──
+  // ── Smooth (2 passes, curvature-aware, tension 0.5) ──
   let pts = sampled;
-  for (let p = 0; p < 3; p++) pts = smoothPass(pts, 3);
+  for (let p = 0; p < 2; p++) pts = smoothPass(pts, 3, 0.5);
 
   // ── Scale to world coords ──
   let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
@@ -482,26 +482,94 @@ function walkSkeleton(skel, W, H) {
   return chain;
 }
 
-// Resample chain to exactly N evenly-spaced points
+// Resample chain to exactly N evenly-spaced points using true arc-length
+// parameterisation. This preserves shape: each output point sits at a
+// geometrically correct position along the polyline, not just a rounded
+// array index (which bunches points in dense sections and skips sparse ones).
 function uniformResample(chain, N) {
-  if (chain.length <= N) return chain;
-  const step = (chain.length - 1) / (N - 1);
+  if (chain.length < 2) return chain;
+
+  // Build cumulative arc-length table
+  const arcLen = [0];
+  for (let i = 1; i < chain.length; i++) {
+    const dx = chain[i].x - chain[i-1].x;
+    const dy = chain[i].y - chain[i-1].y;
+    arcLen.push(arcLen[i-1] + Math.sqrt(dx*dx + dy*dy));
+  }
+  const totalLen = arcLen[arcLen.length - 1];
+  if (totalLen === 0) return chain;
+
   const out = [];
+  let seg = 0; // current segment pointer (avoids O(n²) search)
+
   for (let i = 0; i < N; i++) {
-    out.push(chain[Math.min(chain.length-1, Math.round(i*step))]);
+    const target = (i / (N - 1)) * totalLen;
+
+    // Advance seg until arcLen[seg+1] >= target
+    while (seg < arcLen.length - 2 && arcLen[seg + 1] < target) seg++;
+
+    const t0 = arcLen[seg], t1 = arcLen[seg + 1];
+    const span = t1 - t0;
+    const alpha = span < 1e-9 ? 0 : (target - t0) / span; // 0..1 within segment
+
+    // Linearly interpolate between chain[seg] and chain[seg+1]
+    const p0 = chain[seg], p1 = chain[Math.min(seg + 1, chain.length - 1)];
+    out.push({
+      x: p0.x + alpha * (p1.x - p0.x),
+      y: p0.y + alpha * (p1.y - p0.y),
+    });
   }
   return out;
 }
 
-function smoothPass(pts, r) {
+// Curvature-aware Gaussian smooth.
+//
+// At each point we measure the local curvature (angle change between the two
+// flanking segments). High-curvature points (sharp corners like hairpins) get
+// a small effective window so the corner is preserved; low-curvature straights
+// get a wider window so noise is suppressed without introducing kinks.
+//
+// `tension` (0–1): 0 = no smoothing at all, 1 = max smoothing on straights.
+// The caller passes tension=0.5, which keeps corners crisp while still
+// cleaning up skeleton noise on the long straights.
+function smoothPass(pts, _unusedRadius, tension = 0.5) {
   const n = pts.length;
+  if (n < 3) return pts;
+
+  // Pre-compute curvature at every point (angle in radians, 0 = straight)
+  const curvature = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n];
+    const cur  = pts[i];
+    const next = pts[(i + 1) % n];
+    const ax = cur.x - prev.x, ay = cur.y - prev.y;
+    const bx = next.x - cur.x, by = next.y - cur.y;
+    const la = Math.sqrt(ax*ax + ay*ay), lb = Math.sqrt(bx*bx + by*by);
+    if (la < 1e-9 || lb < 1e-9) { curvature[i] = 0; continue; }
+    // Dot product of the two unit vectors → cosine of the turn angle
+    const cos = Math.max(-1, Math.min(1, (ax*bx + ay*by) / (la * lb)));
+    curvature[i] = Math.acos(cos); // 0 (straight) … π (U-turn)
+  }
+
+  // Max window radius on straights; shrinks to 1 at maximum curvature
+  const MAX_R = 5;
+
   return pts.map((p, i) => {
-    let sx=0, sy=0, cnt=0;
-    for (let k=-r; k<=r; k++) {
-      const j=(i+k+n)%n;
-      sx+=pts[j].x; sy+=pts[j].y; cnt++;
+    // Effective radius: high curvature → small window (min 1), low → MAX_R
+    const curv01 = Math.min(1, curvature[i] / Math.PI); // 0=straight, 1=uturn
+    const r = Math.max(1, Math.round(MAX_R * (1 - curv01) * tension));
+
+    // Gaussian weights over the window
+    const sigma = r / 2;
+    let sx = 0, sy = 0, sw = 0;
+    for (let k = -r; k <= r; k++) {
+      const j = (i + k + n) % n;
+      const w = Math.exp(-(k * k) / (2 * sigma * sigma));
+      sx += pts[j].x * w;
+      sy += pts[j].y * w;
+      sw += w;
     }
-    return { x:sx/cnt, y:sy/cnt };
+    return { x: sx / sw, y: sy / sw };
   });
 }
 
