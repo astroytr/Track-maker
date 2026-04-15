@@ -1,4 +1,4 @@
-// TRACK IMAGE → WAYPOINTS  v6.3
+// TRACK IMAGE → WAYPOINTS  v6.4
 // ═══════════════════════════════════════════════════
 let aiImageData = null;
 let aiImgW = 0, aiImgH = 0;
@@ -180,10 +180,11 @@ function aiCanvasTouchStart(e){ if (!aiEyedropperMode) return; e.preventDefault(
 function aiCanvasTouchMove(e) { if (!aiEyedropperMode) return; e.preventDefault(); aiShowLoupe(e.touches[0].clientX, e.touches[0].clientY); }
 function aiCanvasTouchEnd(e)  { if (!aiEyedropperMode) return; e.preventDefault(); aiPickColour(e.changedTouches[0].clientX, e.changedTouches[0].clientY); }
 
+// FIX #4: Preview overlay now uses the same midpoint classifier as the pipeline
+// (dT < dB) instead of the old fixed-tolerance approach, so what you see matches
+// what gets extracted.
 function aiUpdatePreviewOverlay() {
   if (!aiPreviewCtx || !aiImageData) return;
-  const tol = 40;
-  const tolSq = tol * tol;
   const pw = aiPreviewCanvas.width, ph = aiPreviewCanvas.height;
   const base = aiPreviewCtx.createImageData(pw, ph);
   for (let py = 0; py < ph; py++) {
@@ -200,6 +201,7 @@ function aiUpdatePreviewOverlay() {
   }
   aiPreviewCtx.putImageData(base, 0, 0);
   if (!aiTrackRGB && !aiBgRGB) return;
+
   for (let py = 0; py < ph; py++) {
     for (let px = 0; px < pw; px++) {
       const ix = Math.round(px * aiImgW / pw);
@@ -207,8 +209,19 @@ function aiUpdatePreviewOverlay() {
       const si = (iy * aiImgW + ix) * 4;
       const r = aiImageData.data[si], g = aiImageData.data[si+1], b = aiImageData.data[si+2];
       let isTrack = false, isBg = false;
-      if (aiTrackRGB) { const dr=r-aiTrackRGB.r,dg=g-aiTrackRGB.g,db=b-aiTrackRGB.b; if(dr*dr+dg*dg+db*db<tolSq) isTrack=true; }
-      if (aiBgRGB)    { const dr=r-aiBgRGB.r,   dg=g-aiBgRGB.g,   db=b-aiBgRGB.b;    if(dr*dr+dg*dg+db*db<tolSq) isBg=true; }
+      if (aiTrackRGB && aiBgRGB) {
+        // Use the same classifier as the pipeline: midpoint decision boundary
+        const dT = colDist2(r, g, b, aiTrackRGB);
+        const dB = colDist2(r, g, b, aiBgRGB);
+        isTrack = dT < dB;
+        isBg    = !isTrack;
+      } else if (aiTrackRGB) {
+        const dT = colDist2(r, g, b, aiTrackRGB);
+        isTrack = dT < 40*40;
+      } else if (aiBgRGB) {
+        const dB = colDist2(r, g, b, aiBgRGB);
+        isBg = dB < 40*40;
+      }
       if (isTrack) { aiPreviewCtx.globalAlpha=0.65; aiPreviewCtx.fillStyle='rgb(167,139,250)'; aiPreviewCtx.fillRect(px,py,1,1); }
       else if (isBg){ aiPreviewCtx.globalAlpha=0.55; aiPreviewCtx.fillStyle='rgb(0,0,0)';       aiPreviewCtx.fillRect(px,py,1,1); }
     }
@@ -232,19 +245,20 @@ function setBgColour(c)    { aiBgColour = c; }
 function aiPreviewThresh() {}
 
 // ═══════════════════════════════════════════════════════════════════
-// PIPELINE v6.3
+// PIPELINE v6.4
 //
-// The key insight this version gets right:
-//   1. Build a BINARY MASK: pixel is "track" if it's closer to aiTrackRGB
-//      than to aiBgRGB in colour space. This uses BOTH picked colours
-//      properly instead of just erasing background.
-//   2. Keep only the largest connected region (removes UI chrome, noise).
-//   3. Compute a TRUE MEDIAL AXIS via iterative border erosion (Zhang-Suen
-//      thinning). This gives a 1-pixel-wide skeleton that follows the
-//      exact centreline of the track band — no gaps, no doubles.
-//   4. Walk the skeleton with a simple chain-following algorithm that
-//      never backtracks, producing correctly ordered waypoints.
-//   5. Uniform resample + smooth → world coords.
+//   1. Build a BINARY MASK: pixel is "track" if closer to aiTrackRGB
+//      than to aiBgRGB in colour space.
+//   2. Morphological dilation (3×3) fills micro-gaps in thin stroke images
+//      before thinning, preventing skeleton fragmentation.  [NEW]
+//   3. Keep only the largest connected region (removes UI chrome, noise).
+//   4. Zhang-Suen thinning → 1px skeleton.
+//   5. Spur pruning: remove dead-end branches < 15px so the walker never
+//      has to choose at stub junctions.  [NEW]
+//   6. Walk skeleton with heading-continuity chain follower.
+//   7. Loop closure: if track is a closed circuit, explicitly append start
+//      point so waypoints form a true loop.  [NEW]
+//   8. Uniform resample + 3-pass curvature-aware smooth (tension 0.65).  [NEW]
 // ═══════════════════════════════════════════════════════════════════
 async function runAIConvert() {
   if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }
@@ -259,9 +273,7 @@ async function runAIConvert() {
   const wpCount = parseInt(document.getElementById('ai-wp-count').value);
 
   // ── Step 1: Colour-distance binary mask ──
-  // A pixel belongs to "track" if dist-to-trackRGB < dist-to-bgRGB.
-  // This properly uses BOTH colours — much more accurate than bg-only removal.
-  setAIStatus('Step 1/4 — Classifying pixels…', '');
+  setAIStatus('Step 1/5 — Classifying pixels…', '');
   setAIProgress(8);
   await tick();
 
@@ -279,23 +291,39 @@ async function runAIConvert() {
     btn.disabled = false; return;
   }
 
-  // ── Step 2: Keep largest connected component ──
-  setAIStatus('Step 2/4 — Finding track region…', '');
-  setAIProgress(20);
+  // ── Step 2: Morphological dilation to fill micro-gaps ──
+  // Thin stroke images (like reference outlines) can produce a fragmented mask.
+  // A single 3×3 dilation pass expands each track pixel to its 8-neighbours,
+  // bridging 1-pixel gaps so Zhang-Suen sees a continuous band to thin.
+  setAIStatus('Step 2/5 — Filling gaps…', '');
+  setAIProgress(16);
   await tick();
 
-  const comp = largestComponent(mask, W, H);
-  // comp is a Uint8Array where 1 = belongs to largest region
+  const dilated = morphDilate(mask, W, H);
 
-  // ── Step 3: Zhang-Suen thinning → 1px skeleton ──
-  setAIStatus('Step 3/4 — Skeletonising track…', '');
-  setAIProgress(35);
+  // ── Step 3: Keep largest connected component ──
+  setAIStatus('Step 3/5 — Finding track region…', '');
+  setAIProgress(26);
+  await tick();
+
+  const comp = largestComponent(dilated, W, H);
+
+  // ── Step 4: Zhang-Suen thinning → 1px skeleton ──
+  setAIStatus('Step 4/5 — Skeletonising track…', '');
+  setAIProgress(38);
   await tick();
 
   const skel = zhangSuenThin(comp, W, H);
 
-  // ── Step 4: Walk skeleton into ordered chain ──
-  setAIStatus('Step 4/4 — Ordering waypoints…', '');
+  // ── Spur pruning: remove dead-end branches shorter than MIN_SPUR px ──
+  // After thinning, junction artefacts leave short stubs. The walker's
+  // heading heuristic handles most of them, but explicitly removing short
+  // spurs means it never has to choose at those junctions at all.
+  const MIN_SPUR = 15;
+  pruneSpurs(skel, W, H, MIN_SPUR);
+
+  // ── Step 5: Walk skeleton into ordered chain ──
+  setAIStatus('Step 5/5 — Ordering waypoints…', '');
   setAIProgress(65);
   await tick();
 
@@ -306,15 +334,28 @@ async function runAIConvert() {
     btn.disabled = false; return;
   }
 
+  // ── Loop closure ──
+  // If the first and last skeleton points are within CLOSE_THRESH pixels,
+  // the track is a closed circuit. Append the start point so the resampler
+  // and smoother treat it as a true closed loop.
+  const CLOSE_THRESH = 8;
+  const fc = chain[0], lc = chain[chain.length - 1];
+  const closeDist = Math.sqrt((fc.x-lc.x)**2 + (fc.y-lc.y)**2);
+  if (closeDist <= CLOSE_THRESH && closeDist > 0) {
+    chain.push({ x: fc.x, y: fc.y });
+  }
+
   setAIProgress(82);
   await tick();
 
   // ── Uniform resample ──
   const sampled = uniformResample(chain, wpCount);
 
-  // ── Smooth (2 passes, curvature-aware, tension 0.5) ──
+  // ── Smooth (3 passes, curvature-aware, tension 0.65) ──
+  // Extra pass + higher tension cleans staircase pixel-grid artefacts on
+  // straights while the curvature-aware window still protects hairpins.
   let pts = sampled;
-  for (let p = 0; p < 2; p++) pts = smoothPass(pts, 3, 0.5);
+  for (let p = 0; p < 3; p++) pts = smoothPass(pts, 3, 0.65);
 
   // ── Scale to world coords ──
   let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
@@ -343,6 +384,26 @@ function tick() { return new Promise(r => setTimeout(r, 10)); }
 function colDist2(r, g, b, rgb) {
   const dr=r-rgb.r, dg=g-rgb.g, db=b-rgb.b;
   return dr*dr + dg*dg + db*db;
+}
+
+// Morphological 3×3 dilation.
+// Every background pixel adjacent (8-connected) to a foreground pixel becomes
+// foreground. Result is written to a new array so the pass is consistent.
+function morphDilate(mask, W, H) {
+  const out = new Uint8Array(mask);
+  for (let y = 1; y < H - 1; y++) {
+    for (let x = 1; x < W - 1; x++) {
+      if (mask[y*W+x]) continue; // already set
+      let hit = false;
+      outer: for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (mask[(y+dy)*W+(x+dx)]) { hit = true; break outer; }
+        }
+      }
+      if (hit) out[y*W+x] = 1;
+    }
+  }
+  return out;
 }
 
 function largestComponent(mask, W, H) {
@@ -433,21 +494,67 @@ function zsParams(img, x, y, W) {
   return [A, B, p2, p4, p6, p8];
 }
 
+// Spur pruning — iteratively removes dead-end branches shorter than minLen.
+//
+// A spur is a chain of pixels where one end has exactly 1 neighbour (endpoint)
+// and the chain is shorter than minLen before reaching a junction (3+ neighbours).
+// We repeatedly peel endpoints until no short spurs remain.
+// This runs in O(skelPx * minLen) worst case and typically converges in minLen passes.
+function pruneSpurs(skel, W, H, minLen) {
+  function nb8count(idx) {
+    const x = idx % W, y = Math.floor(idx / W);
+    let c = 0;
+    for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
+      if (!dy&&!dx) continue;
+      const nx=x+dx, ny=y+dy;
+      if (nx<0||nx>=W||ny<0||ny>=H) continue;
+      if (skel[ny*W+nx]) c++;
+    }
+    return c;
+  }
+
+  for (let pass = 0; pass < minLen; pass++) {
+    let removed = false;
+    for (let i = 0; i < W*H; i++) {
+      if (!skel[i]) continue;
+      if (nb8count(i) === 1) {
+        // It's an endpoint — walk the spur to see how long it is
+        let len = 0, cur = i;
+        const visited = new Set();
+        while (true) {
+          visited.add(cur);
+          len++;
+          if (len >= minLen) break; // spur is long enough, keep it
+          const cx = cur % W, cy = Math.floor(cur / W);
+          let next = -1;
+          for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
+            if (!dy&&!dx) continue;
+            const nx=cx+dx, ny=cy+dy;
+            if (nx<0||nx>=W||ny<0||ny>=H) continue;
+            const ni=ny*W+nx;
+            if (skel[ni] && !visited.has(ni)) { next=ni; break; }
+          }
+          if (next === -1) break; // dead end of short isolated segment
+          const nNb = nb8count(next);
+          if (nNb >= 3) break; // reached a junction — spur ends here
+          cur = next;
+        }
+        if (len < minLen) {
+          // Remove all pixels in this spur
+          for (const vi of visited) skel[vi] = 0;
+          removed = true;
+        }
+      }
+    }
+    if (!removed) break; // stable
+  }
+}
+
 // Walk skeleton into an ordered chain using direction continuity.
 //
-// The old greedy walker picked whichever unvisited neighbour was spatially
-// closest. At a branch point (3+ neighbours) "closest" is always distance 1
-// for all of them, so it was effectively random — often picking a spur that
-// cuts across the infield instead of continuing around the track.
-//
-// This version tracks the current heading (dx, dy from the last step) and
-// scores each candidate neighbour by how well it aligns with that heading
-// (dot product). The most-aligned neighbour wins, so the walker hugs the
-// existing direction of travel through every junction and spur.
-//
-// For a pure loop (no endpoint), we also do a post-pass that finds the
-// longest contiguous sub-chain and closes it, recovering any segment the
-// greedy walker abandoned at the first revisited pixel.
+// Tracks current heading (dx, dy) and scores each candidate neighbour by
+// alignment with that heading (dot product). The most-aligned neighbour wins,
+// so the walker hugs the existing direction of travel through every junction.
 function walkSkeleton(skel, W, H) {
   const skelPts = [];
   const idx2pt  = new Int32Array(W*H).fill(-1);
@@ -472,7 +579,7 @@ function walkSkeleton(skel, W, H) {
 
   // Find a true endpoint (exactly 1 neighbour) as the start.
   // If the skeleton is a pure closed loop there are no endpoints — fall back
-  // to any pixel (the loop closure logic handles the rest).
+  // to any pixel (the loop closure logic in runAIConvert handles the rest).
   let startPtIdx = 0;
   for (let k=0; k<skelPts.length; k++) {
     if (neighbours(skelPts[k]).length === 1) { startPtIdx = k; break; }
@@ -481,7 +588,6 @@ function walkSkeleton(skel, W, H) {
   const visited = new Uint8Array(skelPts.length);
   const chain   = [];
 
-  // Initial heading: towards first neighbour (set after first step)
   let hdx = 0, hdy = 0;
   let cur = startPtIdx;
 
@@ -495,15 +601,12 @@ function walkSkeleton(skel, W, H) {
     const cp = skelPts[cur];
 
     if (nbs.length === 1 || (hdx === 0 && hdy === 0)) {
-      // Unambiguous: only one choice, or no heading established yet
       cur = nbs[0];
     } else {
-      // Score by alignment with current heading (dot product of unit vectors)
       let best = nbs[0], bestScore = -Infinity;
       for (const n of nbs) {
         const dx = skelPts[n].x - cp.x;
         const dy = skelPts[n].y - cp.y;
-        // dot(heading, candidate_direction) — both are unit-ish (pixels)
         const score = hdx * dx + hdy * dy;
         if (score > bestScore) { bestScore = score; best = n; }
       }
@@ -520,10 +623,9 @@ function walkSkeleton(skel, W, H) {
   // If < 80% of skeleton pixels are in chain, the skeleton had branches and the
   // walker stopped early. Collect any unvisited segments and append the longest.
   if (chain.length < skelPts.length * 0.8) {
-    let bestExtra = [], cur2 = -1;
+    let bestExtra = [];
     for (let k=0; k<skelPts.length; k++) {
       if (visited[k]) continue;
-      // Walk this fragment
       const frag = [];
       let fc = k;
       const fvis = new Uint8Array(skelPts.length);
@@ -546,7 +648,6 @@ function walkSkeleton(skel, W, H) {
       }
       if (frag.length > bestExtra.length) bestExtra = frag;
     }
-    // Stitch: find where bestExtra connects to chain (nearest endpoint)
     if (bestExtra.length > chain.length * 0.1) {
       chain.push(...bestExtra);
     }
@@ -556,13 +657,10 @@ function walkSkeleton(skel, W, H) {
 }
 
 // Resample chain to exactly N evenly-spaced points using true arc-length
-// parameterisation. This preserves shape: each output point sits at a
-// geometrically correct position along the polyline, not just a rounded
-// array index (which bunches points in dense sections and skips sparse ones).
+// parameterisation.
 function uniformResample(chain, N) {
   if (chain.length < 2) return chain;
 
-  // Build cumulative arc-length table
   const arcLen = [0];
   for (let i = 1; i < chain.length; i++) {
     const dx = chain[i].x - chain[i-1].x;
@@ -573,19 +671,14 @@ function uniformResample(chain, N) {
   if (totalLen === 0) return chain;
 
   const out = [];
-  let seg = 0; // current segment pointer (avoids O(n²) search)
+  let seg = 0;
 
   for (let i = 0; i < N; i++) {
     const target = (i / (N - 1)) * totalLen;
-
-    // Advance seg until arcLen[seg+1] >= target
     while (seg < arcLen.length - 2 && arcLen[seg + 1] < target) seg++;
-
     const t0 = arcLen[seg], t1 = arcLen[seg + 1];
     const span = t1 - t0;
-    const alpha = span < 1e-9 ? 0 : (target - t0) / span; // 0..1 within segment
-
-    // Linearly interpolate between chain[seg] and chain[seg+1]
+    const alpha = span < 1e-9 ? 0 : (target - t0) / span;
     const p0 = chain[seg], p1 = chain[Math.min(seg + 1, chain.length - 1)];
     out.push({
       x: p0.x + alpha * (p1.x - p0.x),
@@ -596,20 +689,12 @@ function uniformResample(chain, N) {
 }
 
 // Curvature-aware Gaussian smooth.
-//
-// At each point we measure the local curvature (angle change between the two
-// flanking segments). High-curvature points (sharp corners like hairpins) get
-// a small effective window so the corner is preserved; low-curvature straights
-// get a wider window so noise is suppressed without introducing kinks.
-//
-// `tension` (0–1): 0 = no smoothing at all, 1 = max smoothing on straights.
-// The caller passes tension=0.5, which keeps corners crisp while still
-// cleaning up skeleton noise on the long straights.
-function smoothPass(pts, _unusedRadius, tension = 0.5) {
+// High-curvature points (hairpins) get a small window to preserve corners;
+// low-curvature straights get a wider window to suppress pixel-grid noise.
+function smoothPass(pts, _unusedRadius, tension = 0.65) {
   const n = pts.length;
   if (n < 3) return pts;
 
-  // Pre-compute curvature at every point (angle in radians, 0 = straight)
   const curvature = new Float32Array(n);
   for (let i = 0; i < n; i++) {
     const prev = pts[(i - 1 + n) % n];
@@ -619,20 +704,15 @@ function smoothPass(pts, _unusedRadius, tension = 0.5) {
     const bx = next.x - cur.x, by = next.y - cur.y;
     const la = Math.sqrt(ax*ax + ay*ay), lb = Math.sqrt(bx*bx + by*by);
     if (la < 1e-9 || lb < 1e-9) { curvature[i] = 0; continue; }
-    // Dot product of the two unit vectors → cosine of the turn angle
     const cos = Math.max(-1, Math.min(1, (ax*bx + ay*by) / (la * lb)));
-    curvature[i] = Math.acos(cos); // 0 (straight) … π (U-turn)
+    curvature[i] = Math.acos(cos);
   }
 
-  // Max window radius on straights; shrinks to 1 at maximum curvature
   const MAX_R = 5;
 
   return pts.map((p, i) => {
-    // Effective radius: high curvature → small window (min 1), low → MAX_R
-    const curv01 = Math.min(1, curvature[i] / Math.PI); // 0=straight, 1=uturn
+    const curv01 = Math.min(1, curvature[i] / Math.PI);
     const r = Math.max(1, Math.round(MAX_R * (1 - curv01) * tension));
-
-    // Gaussian weights over the window
     const sigma = r / 2;
     let sx = 0, sy = 0, sw = 0;
     for (let k = -r; k <= r; k++) {
