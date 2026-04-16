@@ -8,6 +8,8 @@ function buildExportCode() {
   const nPerSeg  = document.getElementById('nperseg').value;
   const key = name.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/__+/g, '_');
 
+  // ── Scale to match tracks.js real-world metre units (TW = 14m) ──
+  // Target span ~500m, matching the spa track (~600 units wide at 1 unit = 1 metre).
   let wps = waypoints;
   let scaleNote = '';
   if (wps.length > 0) {
@@ -15,30 +17,33 @@ function buildExportCode() {
     wps.forEach(w => { minX = Math.min(minX, w.x); maxX = Math.max(maxX, w.x); minY = Math.min(minY, w.y); maxY = Math.max(maxY, w.y); });
     const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
     const span = Math.max(maxX - minX, maxY - minY);
-    const factor = span > 0 ? 600 / span : 1;
+    const TARGET = 500;
+    const factor = span > 0 ? TARGET / span : 1;
     wps = wps.map(w => ({ x: (w.x - cx) * factor, y: (w.y - cy) * factor }));
-    scaleNote = `  // Auto-scaled: 1px ≈ ${(1 / factor).toFixed(2)} game-units.\n`;
+    scaleNote = `    // Scale: 1 canvas-px = ${(1 / factor).toFixed(3)} m. Span ~${TARGET} m.\n`;
   }
 
-  const surfaceCounts = {};
-  paintLayers.forEach(p => { surfaceCounts[p.surface] = (surfaceCounts[p.surface] || 0) + 1; });
-  const surfList = Object.entries(surfaceCounts).map(([k, v]) => `${SURFACES[k]?.label || k}(${v})`).join(', ');
+  // Rotate so startingPointIdx is first (SF line = index 0, matching tracks.js convention)
+  if (startingPointIdx > 0 && wps.length > 0) {
+    wps = [...wps.slice(startingPointIdx), ...wps.slice(0, startingPointIdx)];
+  }
+
   const wpLines = wps.map((w, i) => `      [${w.x.toFixed(1)}, ${w.y.toFixed(1)}],${i === 0 ? '  // SF line' : ''}`).join('\n');
-  const paintSummary = paintLayers.length > 0 ? `\n  // Paint zones: ${surfList}\n  // (${paintLayers.length} paint blobs)` : '';
+
   const barrierLines = barrierSegments.length > 0
     ? `\n    barriers_detail: [\n${barrierSegments.map(b => `      { from: ${b.from}, to: ${b.to}, surface: '${b.surface}', side: '${b.side || 'both'}', lane: ${b.lane || 0} }`).join(',\n')}\n    ],`
     : '';
 
-  return `  // ── ${name} ──────────────────────────────────────────
+  return `  // -- ${name} --
+  // Paste inside TRACK_DEFS in tracks.js
   ${key}: {
     name: '${name}',
     sub:  '${sub}',
     barriers: ${barriers},
-    startingPoint: ${startingPointIdx},
 ${scaleNote}    waypoints: [
 ${wpLines}
     ],
-    nPerSeg: ${nPerSeg},${barrierLines}${paintSummary}
+    nPerSeg: ${nPerSeg},${barrierLines}
   },`;
 }
 
@@ -59,7 +64,7 @@ function copyExport() {
 
 function downloadTrack() {
   const name = (document.getElementById('track-name').value.trim() || 'track').toLowerCase().replace(/[^a-z0-9]/g, '_');
-  const full = `// ── Track export from CIRCUIT FORGE ──\n// Paste inside TRACK_DEFS in tracks.js\n\n${buildExportCode()}\n`;
+  const full = `// -- Track export from CIRCUIT FORGE --\n// Paste inside TRACK_DEFS in tracks.js\n\n${buildExportCode()}\n`;
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([full], { type: 'text/javascript' }));
   a.download = `track_${name}.js`;
