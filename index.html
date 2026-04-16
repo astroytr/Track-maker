@@ -36,7 +36,7 @@
     <div id="upload-zone" onclick="document.getElementById('file-input').click()"
          ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
          ondragleave="this.style.borderColor=''"
-         ondrop="event.preventDefault();const f=event.dataTransfer.files[0];if(f)document.getElementById('file-input').dispatchEvent(Object.assign(new Event('change'),{target:{files:[f]}}))">
+         ondrop="event.preventDefault();const f=event.dataTransfer.files[0];if(f&&typeof loadBgImage==='function')loadBgImage(f)">
       <div class="uz-icon">📁</div>
       <div class="uz-text"><span class="uz-accent">Drop or click</span> to load<br>a background image</div>
     </div>
