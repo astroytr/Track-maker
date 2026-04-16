@@ -72,7 +72,7 @@ window.addEventListener('load', () => {
     const required = ['setTool', 'setSurface', 'openExport', 'openAIConvert', 'render', 'updateBrush'];
     const missing = required.filter(name => typeof window[name] !== 'function');
     if (missing.length) {
-      window.CFDebug.add('error', `Missing functions: ${missing.join(', ')}`);
+      window.CFDebug.add('error', `Missing functions: ${missing.join(', ')}. Make sure the JavaScript files are uploaded next to index.html.`);
     } else {
       window.CFDebug.add('ok', 'All click functions are available');
     }
@@ -393,10 +393,10 @@ window.addEventListener('load', () => {
 
 <div id="toast"></div>
 
-<script src="js/render.js" onload="cfScriptLoaded('js/render.js')" onerror="cfScriptFailed('js/render.js')"></script>
-<script src="js/tools.js" onload="cfScriptLoaded('js/tools.js')" onerror="cfScriptFailed('js/tools.js')"></script>
-<script src="js/export.js" onload="cfScriptLoaded('js/export.js')" onerror="cfScriptFailed('js/export.js')"></script>
-<script src="js/ai-convert.js" onload="cfScriptLoaded('js/ai-convert.js')" onerror="cfScriptFailed('js/ai-convert.js')"></script>
-<script src="js/init.js" onload="cfScriptLoaded('js/init.js')" onerror="cfScriptFailed('js/init.js')"></script>
+<script src="render.js" onload="cfScriptLoaded('render.js')" onerror="cfScriptFailed('render.js')"></script>
+<script src="tools.js" onload="cfScriptLoaded('tools.js')" onerror="cfScriptFailed('tools.js')"></script>
+<script src="export.js" onload="cfScriptLoaded('export.js')" onerror="cfScriptFailed('export.js')"></script>
+<script src="ai-convert.js" onload="cfScriptLoaded('ai-convert.js')" onerror="cfScriptFailed('ai-convert.js')"></script>
+<script src="init.js" onload="cfScriptLoaded('init.js')" onerror="cfScriptFailed('init.js')"></script>
 </body>
 </html>
