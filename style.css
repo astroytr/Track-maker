@@ -589,6 +589,8 @@ textarea {
   color: var(--text3);
   cursor: pointer;
   font-size: 18px;
+  flex: 0 0 auto;
+  z-index: 1;
 }
 
 .modal-body,

@@ -285,9 +285,9 @@ function drawBarrierSegments() {
 
   // Draw a colour band on the OUTSIDE only, plus an "INSIDE" label overlay if inside
   function drawBand(ptIndices, slot, colorRgba, side, isInside) {
-    const trackHalf = Math.max(MIN_TRACK_HALF / cam.zoom, TRACK_HALF_W);
-    const bandW     = Math.max(MIN_BAND_W     / cam.zoom, BAND_W_W);
-    const bandGap   = Math.max(MIN_BAND_GAP   / cam.zoom, BAND_GAP_W);
+    const trackHalf = TRACK_HALF_W;
+    const bandW     = BAND_W_W;
+    const bandGap   = BAND_GAP_W;
     const baseOff   = trackHalf + bandGap + slot * (bandW + bandGap) + bandW * 0.5;
 
     if (isInside) {
