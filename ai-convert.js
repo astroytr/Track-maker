@@ -270,7 +270,7 @@ async function runAIConvert() {
 
   const W = aiImgW, H = aiImgH;
   const data = aiImageData.data;
-  const wpCount = parseInt(document.getElementById('ai-wp-count').value);
+  const wpCount = 300;
 
   // ── Step 1: Colour-distance binary mask ──
   setAIStatus('Step 1/5 — Classifying pixels…', '');
@@ -374,9 +374,6 @@ async function runAIConvert() {
 
   // ── Auto-place barriers into barrierSegments so the renderer picks them up ──
   autoPlaceTrackFeatures(newWPs);
-
-  mergeAndCleanBarriers();
-  smoothBarrierTransitions();
 
   render();
   setAIStatus(`✓ ${newWPs.length} waypoints — barriers & surfaces auto-placed`, 'ok');
@@ -901,64 +898,4 @@ function autoPlaceTrackFeatures(wps) {
   if (typeof updateBarrierList === 'function') updateBarrierList();
 
   console.log(`[autoPlace] thresh=${CORNER_THRESH.toFixed(3)} · ${cornerZones.length} corner zones · ${straightZones.length} straight zones`);
-}
-
-
-// ── Barrier overlap cleanup + smoothing ─────────────────────────
-function mergeAndCleanBarriers() {
-  if (!barrierSegments || barrierSegments.length === 0) return;
-
-  barrierSegments.sort((a, b) => a.from - b.from);
-
-  const cleaned = [];
-
-  for (let seg of barrierSegments) {
-    if (cleaned.length === 0) {
-      cleaned.push({ ...seg });
-      continue;
-    }
-
-    let last = cleaned[cleaned.length - 1];
-
-    if (seg.from <= last.to) {
-      if (seg.surface === last.surface) {
-        last.to = Math.max(last.to, seg.to);
-      } else {
-        if (seg.to > last.to) {
-          cleaned.push({
-            from: last.to + 1,
-            to: seg.to,
-            surface: seg.surface,
-            auto: true
-          });
-        }
-      }
-    } else {
-      cleaned.push({ ...seg });
-    }
-  }
-
-  barrierSegments = cleaned;
-}
-
-function smoothBarrierTransitions() {
-  const SMOOTH_RANGE = 2;
-
-  for (let i = 1; i < barrierSegments.length; i++) {
-    const prev = barrierSegments[i - 1];
-    const curr = barrierSegments[i];
-
-    if (prev.to === curr.from - 1) {
-      const mid = Math.floor((prev.to + curr.from) / 2);
-
-      prev.to = mid;
-      curr.from = mid + 1;
-
-      prev.to -= SMOOTH_RANGE;
-      curr.from += SMOOTH_RANGE;
-
-      if (prev.to < prev.from) prev.to = prev.from;
-      if (curr.from > curr.to) curr.from = curr.to;
-    }
-  }
 }

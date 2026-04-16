@@ -296,7 +296,8 @@ function drawBarrierSegments() {
   }
 
   // ── Per-point slot cursor so overlapping segments stack cleanly ──
-  const slotCursor = new Int32Array(splinePts.length);
+  // removed slot stacking to prevent overlap
+const slotCursor = new Int32Array(splinePts.length);
 
   // ── Draw committed segments ──────────────────────────────
   if (hasSegments) {
@@ -310,7 +311,7 @@ function drawBarrierSegments() {
 
       // Assign the minimum slot currently in use across this segment
       const minSlot = Math.min(...ptIndices.map(pi => slotCursor[pi]));
-      drawBand(ptIndices, minSlot, cfg.color, '0.95');
+      drawBand(ptIndices, 0, cfg.color, '0.95');
 
       // Advance slot cursor for every point covered
       ptIndices.forEach(pi => slotCursor[pi]++);
@@ -329,7 +330,7 @@ function drawBarrierSegments() {
         .map(({ pi }) => pi);
       if (ptIndices.length >= 2) {
         const previewSlot = Math.max(...ptIndices.map(pi => slotCursor[pi]));
-        drawBand(ptIndices, previewSlot, SURFACES[surface].color, '0.55');
+        drawBand(ptIndices, 0, SURFACES[surface].color, '0.55');
       }
     }
   }
