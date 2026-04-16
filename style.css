@@ -761,7 +761,7 @@ textarea {
 
 #debug-badge {
   position: fixed;
-  right: 12px;
+  left: 12px;
   top: 12px;
   z-index: 19;
   border: 1px solid rgba(255, 255, 255, 0.25);
@@ -788,7 +788,7 @@ textarea {
 #debug-panel {
   display: none;
   position: fixed;
-  right: 12px;
+  left: 12px;
   top: 52px;
   z-index: 18;
   width: min(430px, calc(100vw - 24px));
