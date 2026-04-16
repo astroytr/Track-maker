@@ -278,11 +278,16 @@ function drawBarrierSegments() {
     ctx.stroke();
   }
 
-  // Draw both sides of a band at the given slot index.
-  function drawBand(ptIndices, slot, colorRgba) {
+  function drawBand(ptIndices, slot, colorRgba, side) {
     const baseOff = TRACK_HALF + BAND_GAP + slot * (BAND_W + BAND_GAP) + BAND_W * 0.5;
-    drawStrip(ptIndices, baseOff, colorRgba, BAND_W, +1);
-    drawStrip(ptIndices, baseOff, colorRgba, BAND_W, -1);
+    if (side === 1 || side === +1 || side === 'right') {
+      drawStrip(ptIndices, baseOff, colorRgba, BAND_W, +1);
+    } else if (side === -1 || side === '-1' || side === 'left') {
+      drawStrip(ptIndices, baseOff, colorRgba, BAND_W, -1);
+    } else {
+      drawStrip(ptIndices, baseOff, colorRgba, BAND_W, +1);
+      drawStrip(ptIndices, baseOff, colorRgba, BAND_W, -1);
+    }
   }
 
   // Committed segments
@@ -293,7 +298,7 @@ function drawBarrierSegments() {
       const ptIndices = [];
       splinePts.forEach((p, pi) => { if (p.seg >= seg.from && p.seg <= seg.to) ptIndices.push(pi); });
       if (ptIndices.length < 2) return;
-      drawBand(ptIndices, 0, cfg.color);
+      drawBand(ptIndices, seg.lane || 0, cfg.color, seg.side);
     });
   }
 
@@ -306,7 +311,7 @@ function drawBarrierSegments() {
       const ptIndices = splinePts.map((p,pi) => ({p,pi})).filter(({p}) => p.seg>=from&&p.seg<=to).map(({pi})=>pi);
       if (ptIndices.length >= 2) {
         const hcol = SURFACES[surface].color.replace(/[\d.]+\)$/, '0.5)');
-        drawBand(ptIndices, 0, hcol);
+        drawBand(ptIndices, 0, hcol, 'both');
       }
     }
   }

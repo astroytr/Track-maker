@@ -26,7 +26,7 @@ function buildExportCode() {
   const wpLines = wps.map((w, i) => `      [${w.x.toFixed(1)}, ${w.y.toFixed(1)}],${i === 0 ? '  // SF line' : ''}`).join('\n');
   const paintSummary = paintLayers.length > 0 ? `\n  // Paint zones: ${surfList}\n  // (${paintLayers.length} paint blobs)` : '';
   const barrierLines = barrierSegments.length > 0
-    ? `\n    barriers_detail: [\n${barrierSegments.map(b => `      { from: ${b.from}, to: ${b.to}, surface: '${b.surface}' }`).join(',\n')}\n    ],`
+    ? `\n    barriers_detail: [\n${barrierSegments.map(b => `      { from: ${b.from}, to: ${b.to}, surface: '${b.surface}', side: '${b.side || 'both'}', lane: ${b.lane || 0} }`).join(',\n')}\n    ],`
     : '';
 
   return `  // ── ${name} ──────────────────────────────────────────

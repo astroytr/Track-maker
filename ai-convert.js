@@ -7,6 +7,7 @@ let aiBgRGB    = null;
 let aiEyedropperMode = null;
 let aiPreviewCanvas  = null;
 let aiPreviewCtx     = null;
+const AI_MAX_WAYPOINTS = 500;
 
 function openAIConvert()  { document.getElementById('ai-modal').classList.add('open'); }
 function closeAIConvert() { document.getElementById('ai-modal').classList.remove('open'); aiEyedropperMode = null; }
@@ -232,8 +233,7 @@ async function runAIConvert() {
   const W = aiImgW, H = aiImgH;
   const data = aiImageData.data;
 
-  // FIX: read wpCount from the slider (was hardcoded to 300)
-  const wpCount = Math.max(40, Math.min(600, parseInt(document.getElementById('ai-wp-count').value) || 150));
+  const wpCount = AI_MAX_WAYPOINTS;
 
   try {
     // Step 1: Colour-distance binary mask
@@ -553,34 +553,35 @@ function smoothPass(pts, _r, tension=0.65) {
 }
 
 // ═══════════════════════════════════════════════════
-// AUTO FEATURE PLACEMENT  v3.1  — F1 / GT3 logic
+// AUTO FEATURE PLACEMENT  v4.0  — circuit safety layout logic
 //
-// Surface assignment (FIA / SRO circuit design standard):
-//   CORNERS only:
-//     Entry (first 25%)   → rumble strip  (warns driver on approach)
-//     Apex  (middle 50%)  → sausage kerb  (raised — prevents cutting)
-//     Exit  (last 25%)    → flat kerb     (driver can use to unwind)
-//     Outside whole zone  → gravel        (normal corner)
-//                        OR armco         (tight hairpin > 80° turn)
-//   STRAIGHTS → no automatic kerb placement
-//             (add armco/tecpro barriers manually with the Barrier tool)
-//
-// FIX v3.1: raised CORNER_THRESH so only genuinely curved sections are
-// tagged as corners (was mean+0.3σ, now mean+0.8σ). This eliminates the
-// "kerbs everywhere" problem on tracks traced from images.
+// Placement model:
+//   - Kerbs belong on the INSIDE of a corner.
+//   - Rumble strip marks corner entry.
+//   - Sausage kerb marks apex / anti-cut zone.
+//   - Flat kerb marks corner exit.
+//   - Runoff/barriers belong on the OUTSIDE of the corner.
+//   - Normal corners get gravel runoff.
+//   - Fast corners get Tecpro protection.
+//   - Tight hairpins get Armco/tyre wall protection.
+//   - Long straights get Armco guide rails only, not kerbs.
 // ═══════════════════════════════════════════════════
 function autoPlaceTrackFeatures(wps) {
   if (!wps || wps.length < 4) return;
   const n = wps.length;
 
-  // Compute raw curvature (turning angle) at each waypoint
+  // Compute raw curvature, signed turn direction, and segment speed proxy.
   const rawCurv = new Float32Array(n);
+  const signedTurn = new Float32Array(n);
+  const segLen = new Float32Array(n);
   for (let i=0; i<n; i++) {
     const prev=wps[(i-1+n)%n], cur=wps[i], next=wps[(i+1)%n];
     const ax=cur.x-prev.x,ay=cur.y-prev.y, bx=next.x-cur.x,by=next.y-cur.y;
     const la=Math.sqrt(ax*ax+ay*ay), lb=Math.sqrt(bx*bx+by*by);
+    segLen[i] = lb;
     if (la<1e-9||lb<1e-9) continue;
     rawCurv[i]=Math.acos(Math.max(-1,Math.min(1,(ax*bx+ay*by)/(la*lb))));
+    signedTurn[i]=(ax*by-ay*bx)/(la*lb);
   }
 
   // 5-point moving average to reduce skeleton jitter
@@ -624,8 +625,30 @@ function autoPlaceTrackFeatures(wps) {
     window.barrierSegments = [];
   }
 
-  function pushZone(zone, surf) {
-    barrierSegments.push({ from:zone.from, to:zone.to, surface:surf, auto:true });
+  function wrapIndex(i) {
+    return ((i % n) + n) % n;
+  }
+
+  function zoneStats(zone) {
+    let turn=0, curv=0, len=0, samples=0;
+    for (let i=zone.from; i<=zone.to; i++) {
+      const idx = wrapIndex(i);
+      turn += signedTurn[idx];
+      curv = Math.max(curv, curvatures[idx]);
+      len += segLen[idx];
+      samples++;
+    }
+    const avgTurn = samples ? turn / samples : 0;
+    return {
+      insideSide: avgTurn >= 0 ? 1 : -1,
+      outsideSide: avgTurn >= 0 ? -1 : 1,
+      maxCurv: curv,
+      avgSegLen: samples ? len / samples : 0
+    };
+  }
+
+  function pushZone(zone, surf, side, lane) {
+    barrierSegments.push({ from:zone.from, to:zone.to, surface:surf, side, lane:lane || 0, auto:true });
   }
 
   // Place kerbs only at corners — not on straights
@@ -634,26 +657,39 @@ function autoPlaceTrackFeatures(wps) {
     const apex = Math.floor((z.from + z.to) / 2);
     const entryLen = Math.max(1, Math.floor(len * 0.25));
     const exitLen  = Math.max(1, Math.floor(len * 0.25));
+    const stats = zoneStats(z);
+    const isTight = stats.maxCurv > Math.PI * 0.40;
+    const isFast = stats.maxCurv < Math.PI * 0.22 && stats.avgSegLen > 4;
 
-    // How tight is this corner?
-    let maxC=0;
-    for (let i=z.from;i<=z.to;i++) maxC=Math.max(maxC,curvatures[i]);
-    const isTight = maxC > Math.PI * 0.40; // ~72° turning angle = tight/hairpin
+    pushZone({ from:z.from, to:Math.min(z.from+entryLen, z.to) }, 'rumble', stats.insideSide, 0);
 
-    // Entry: rumble strip (inside; warns of corner approach)
-    pushZone({ from:z.from, to:Math.min(z.from+entryLen, z.to) }, 'rumble');
-
-    // Apex: sausage kerb (inside; prevents corner cutting)
     pushZone({
       from: Math.max(z.from, apex - Math.floor(len*0.2)),
       to:   Math.min(z.to,   apex + Math.floor(len*0.2))
-    }, 'sausage');
+    }, 'sausage', stats.insideSide, 1);
 
-    // Exit: flat kerb (inside; driver uses to unwind on exit)
-    pushZone({ from:Math.max(z.from, z.to-exitLen), to:z.to }, 'flat_kerb');
+    pushZone({ from:Math.max(z.from, z.to-exitLen), to:z.to }, 'flat_kerb', stats.insideSide, 0);
 
-    // Outside runoff: gravel for normal corners, armco for tight hairpins
-    pushZone(z, isTight ? 'armco' : 'gravel');
+    pushZone(z, isTight ? 'armco' : isFast ? 'tecpro' : 'gravel', stats.outsideSide, 0);
+    if (isTight) {
+      pushZone({
+        from: Math.max(z.from, apex - Math.floor(len*0.12)),
+        to:   Math.min(z.to,   apex + Math.floor(len*0.12))
+      }, 'tyrewall', stats.outsideSide, 1);
+    }
+  });
+
+  const straightFlags = isCorner.map(v => !v);
+  const straightZones = buildZones(straightFlags).filter(z => z.to - z.from + 1 >= Math.max(8, Math.floor(n * 0.05)));
+  straightZones.forEach(z => {
+    const len = z.to - z.from + 1;
+    const trimmed = {
+      from: Math.min(z.to, z.from + Math.floor(len * 0.18)),
+      to: Math.max(z.from, z.to - Math.floor(len * 0.18))
+    };
+    if (trimmed.to > trimmed.from) {
+      pushZone(trimmed, 'armco', 'both', 0);
+    }
   });
 
   if (typeof updateBarrierList === 'function') updateBarrierList();

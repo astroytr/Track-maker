@@ -226,7 +226,7 @@ function handleDown(pos, isTouch) {
         showToast(`Start: WP ${seg} — now tap end`); render();
       } else {
         if (seg !== barrierSelStart) {
-          barrierSegments.push({ from: Math.min(barrierSelStart, seg), to: Math.max(barrierSelStart, seg), surface });
+          barrierSegments.push({ from: Math.min(barrierSelStart, seg), to: Math.max(barrierSelStart, seg), surface, side: 'both', lane: 0 });
           showToast(`✓ ${SURFACES[surface].label} barrier added`);
           updateBarrierList();
         }
@@ -362,7 +362,7 @@ function updateBarrierList() {
     const div = document.createElement('div');
     div.style.cssText = 'display:flex;align-items:center;gap:6px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,0.05);';
     div.innerHTML = `<div style="width:10px;height:10px;border-radius:2px;flex-shrink:0;background:${cfg.dot};"></div>
-      <span style="font-family:'Barlow Condensed',sans-serif;font-size:11px;color:var(--text2);flex:1;">${cfg.label} WP${b.from}→${b.to}</span>
+      <span style="font-family:'Barlow Condensed',sans-serif;font-size:11px;color:var(--text2);flex:1;">${cfg.label} ${b.side === 'both' || !b.side ? 'both sides' : b.side > 0 ? 'inside/right' : 'inside/left'} WP${b.from}→${b.to}</span>
       <span onclick="deleteBarrier(${i})" style="font-size:10px;color:var(--text3);cursor:pointer;padding:2px 5px;border-radius:2px;"
         onmouseover="this.style.color='#ff4747'" onmouseout="this.style.color='var(--text3)'">✕</span>`;
     list.appendChild(div);

@@ -368,13 +368,10 @@ window.addEventListener('load', () => {
           <span class="ai-tol-val" id="ai-tol-val">40</span>
         </div>
 
-        <!-- Waypoint count slider -->
-        <div class="ai-slider-row">
-          <span class="ai-slider-label">Waypoints</span>
-          <input type="range" min="40" max="500" value="150" id="ai-wp-count" style="flex:1;accent-color:#a78bfa;"
-            oninput="document.getElementById('ai-wp-val').textContent=this.value">
-          <span class="ai-slider-val" id="ai-wp-val">150</span>
-        </div>
+      <div class="ai-slider-row">
+        <span class="ai-slider-label">Waypoints</span>
+        <span class="ai-slider-val" id="ai-wp-val" style="min-width:auto;text-align:left;">Maximum detail · 500 points</span>
+      </div>
       </div>
 
       <!-- Progress bar -->
