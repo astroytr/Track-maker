@@ -111,6 +111,9 @@ function render() {
     drawCentreline();
   }
 
+  // Rainbow legend
+  drawLegend();
+
   // Waypoints
   for (let i = 0; i < waypoints.length; i++) {
     const wp = waypoints[i];
@@ -159,16 +162,16 @@ function buildSplinePoints(segs) {
 
 // Draw a two-colour road: dark asphalt body + coloured kerb stripes on edges
 function drawTrackRoad() {
-  const splinePts = buildSplinePoints(10);
+  const splinePts = buildSplinePoints(16);  // more segments = smoother tight turns
   if (splinePts.length < 2) return;
   const screenPts = splinePts.map(p => ({ s: worldToScreen(p.pt.x, p.pt.y), seg: p.seg }));
 
   const trackW = Math.max(6, 14 * cam.zoom);   // total road half-width in px
   const kerbW  = Math.max(2, 4  * cam.zoom);   // kerb stripe width in px
 
-  // Draw asphalt body
-  ctx.strokeStyle = 'rgba(60,60,65,0.85)';
-  ctx.lineWidth = trackW * 2;
+  // ── Layer 1: outer white edge (widest, drawn first) ──
+  ctx.strokeStyle = 'rgba(200,200,200,0.45)';
+  ctx.lineWidth = trackW * 2 + kerbW * 2;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
   ctx.beginPath();
@@ -176,23 +179,9 @@ function drawTrackRoad() {
   ctx.closePath();
   ctx.stroke();
 
-  // Draw outer white edge line
-  ctx.strokeStyle = 'rgba(220,220,220,0.5)';
-  ctx.lineWidth = trackW * 2 + kerbW * 2;
-  ctx.beginPath();
-  screenPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.s.x, p.s.y) : ctx.lineTo(p.s.x, p.s.y));
-  ctx.closePath();
-  ctx.stroke();
-
-  // Redraw asphalt on top to mask centre of outer line
-  ctx.strokeStyle = 'rgba(55,55,60,0.9)';
-  ctx.lineWidth = trackW * 2;
-  ctx.beginPath();
-  screenPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.s.x, p.s.y) : ctx.lineTo(p.s.x, p.s.y));
-  ctx.closePath();
-  ctx.stroke();
-
-  // Alternating red/white kerb chevrons on edge (simplified: alternating colour every ~20px)
+  // ── Layer 2: alternating red/white kerb chevrons ──
+  // Draw chevrons as full-width lines, THEN mask centre with asphalt.
+  // This prevents the "bleed" in tight turns where the thin mask was too narrow.
   let dist = 0;
   for (let i = 1; i < screenPts.length; i++) {
     const a = screenPts[i-1].s, b = screenPts[i].s;
@@ -201,20 +190,25 @@ function drawTrackRoad() {
     dist += segLen;
     const chevronSize = 20;
     const phase = Math.floor(dist / chevronSize);
-    ctx.strokeStyle = phase % 2 === 0 ? 'rgba(220,30,30,0.7)' : 'rgba(220,220,220,0.6)';
-    ctx.lineWidth = kerbW * 2;
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
-    // Mask centre again
-    ctx.strokeStyle = 'rgba(55,55,60,0.9)';
-    ctx.lineWidth = trackW * 2 - kerbW * 2;
+    ctx.strokeStyle = phase % 2 === 0 ? 'rgba(220,30,30,0.75)' : 'rgba(230,230,230,0.65)';
+    ctx.lineWidth = trackW * 2 + kerbW * 2;  // full outer width
+    ctx.lineCap = 'butt';  // butt caps prevent chevron overlap in tight turns
+    ctx.lineJoin = 'miter';
     ctx.beginPath();
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.stroke();
   }
+
+  // ── Layer 3: asphalt body — masks chevron centres cleanly ──
+  ctx.strokeStyle = 'rgba(55,55,60,0.95)';
+  ctx.lineWidth = trackW * 2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  screenPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.s.x, p.s.y) : ctx.lineTo(p.s.x, p.s.y));
+  ctx.closePath();
+  ctx.stroke();
 
   // Start/finish line
   if (startingPointIdx < waypoints.length) {
@@ -339,6 +333,49 @@ function drawBarrierSegments() {
       }
     }
   }
+}
+
+// Rainbow legend: used surfaces/barriers side-by-side as colour swatches
+function drawLegend() {
+  if (typeof barrierSegments === 'undefined') return;
+  // Collect unique surfaces in use (barriers + paint)
+  const usedSet = new Set();
+  barrierSegments.forEach(s => usedSet.add(s.surface));
+  paintLayers.forEach(p => usedSet.add(p.surface));
+  if (usedSet.size === 0) return;
+
+  const used = [...usedSet];
+  const swatchW = 44, swatchH = 18, pad = 4, radius = 5;
+  const totalW = used.length * (swatchW + pad) - pad + pad * 2;
+  const startX = 8, startY = mainCanvas.height - swatchH - 10;
+
+  // Background pill
+  ctx.save();
+  ctx.globalAlpha = 0.78;
+  ctx.fillStyle = '#1a1a22';
+  ctx.beginPath();
+  ctx.roundRect(startX - pad, startY - pad, totalW, swatchH + pad * 2, radius + 2);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+
+  used.forEach((surf, i) => {
+    const cfg = SURFACES[surf];
+    if (!cfg) return;
+    const x = startX + i * (swatchW + pad);
+    const y = startY;
+    // Colour swatch
+    ctx.fillStyle = cfg.dot;
+    ctx.beginPath();
+    ctx.roundRect(x, y, swatchW, swatchH, radius);
+    ctx.fill();
+    // Label
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 7.5px Barlow Condensed, sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(cfg.label.toUpperCase(), x + swatchW / 2, y + swatchH / 2);
+  });
+  ctx.restore();
 }
 
 function drawCentreline() {

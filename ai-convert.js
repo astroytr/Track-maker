@@ -660,11 +660,12 @@ function walkSkeleton(skel, W, H) {
   return chain;
 }
 
-// Resample chain to exactly N evenly-spaced points using true arc-length
-// parameterisation.
+// Curvature-adaptive resample: places more waypoints in tight corners
+// so track shape is preserved in hairpins without needing huge total counts.
 function uniformResample(chain, N) {
   if (chain.length < 2) return chain;
 
+  // Build arc-length parameterisation
   const arcLen = [0];
   for (let i = 1; i < chain.length; i++) {
     const dx = chain[i].x - chain[i-1].x;
@@ -674,20 +675,55 @@ function uniformResample(chain, N) {
   const totalLen = arcLen[arcLen.length - 1];
   if (totalLen === 0) return chain;
 
+  // Compute per-point curvature (turning angle) along the chain
+  const curvW = new Float64Array(chain.length);
+  for (let i = 1; i < chain.length - 1; i++) {
+    const ax = chain[i].x - chain[i-1].x, ay = chain[i].y - chain[i-1].y;
+    const bx = chain[i+1].x - chain[i].x, by = chain[i+1].y - chain[i].y;
+    const la = Math.sqrt(ax*ax+ay*ay), lb = Math.sqrt(bx*bx+by*by);
+    if (la < 1e-9 || lb < 1e-9) continue;
+    const cos = Math.max(-1, Math.min(1, (ax*bx+ay*by)/(la*lb)));
+    curvW[i] = Math.acos(cos);  // 0 = straight, π = U-turn
+  }
+
+  // Build cumulative "density" weight: blend arc-length + curvature weight
+  // Straights use arc-length; corners get extra budget proportional to curvature.
+  const CURV_BOOST = 3.5;  // how much more density to give hairpins
+  const density = new Float64Array(chain.length);
+  let totalDensity = 0;
+  for (let i = 0; i < chain.length - 1; i++) {
+    const segArc = arcLen[i+1] - arcLen[i];
+    const avgCurv = (curvW[i] + curvW[Math.min(i+1, chain.length-1)]) * 0.5;
+    density[i] = segArc * (1 + CURV_BOOST * avgCurv);
+    totalDensity += density[i];
+  }
+
+  // Build cumulative density array
+  const cumDensity = [0];
+  for (let i = 0; i < density.length - 1; i++) {
+    cumDensity.push(cumDensity[i] + density[i]);
+  }
+
+  // Sample N points uniformly in density space, then map back to arc-length
   const out = [];
   let seg = 0;
-
   for (let i = 0; i < N; i++) {
-    const target = (i / (N - 1)) * totalLen;
-    while (seg < arcLen.length - 2 && arcLen[seg + 1] < target) seg++;
-    const t0 = arcLen[seg], t1 = arcLen[seg + 1];
+    const target = (i / (N - 1)) * totalDensity;
+    while (seg < cumDensity.length - 2 && cumDensity[seg + 1] < target) seg++;
+    const t0 = cumDensity[seg], t1 = cumDensity[Math.min(seg+1, cumDensity.length-1)];
     const span = t1 - t0;
     const alpha = span < 1e-9 ? 0 : (target - t0) / span;
-    const p0 = chain[seg], p1 = chain[Math.min(seg + 1, chain.length - 1)];
-    out.push({
-      x: p0.x + alpha * (p1.x - p0.x),
-      y: p0.y + alpha * (p1.y - p0.y),
-    });
+    // Map seg back to arc-length position for interpolation
+    const al0 = arcLen[seg], al1 = arcLen[Math.min(seg+1, arcLen.length-1)];
+    const targetArc = al0 + alpha * (al1 - al0);
+    // Find position in chain at this arc length
+    let cseg = 0;
+    while (cseg < arcLen.length - 2 && arcLen[cseg+1] < targetArc) cseg++;
+    const ca0 = arcLen[cseg], ca1 = arcLen[Math.min(cseg+1, arcLen.length-1)];
+    const cspan = ca1 - ca0;
+    const calpha = cspan < 1e-9 ? 0 : (targetArc - ca0) / cspan;
+    const p0 = chain[cseg], p1 = chain[Math.min(cseg+1, chain.length-1)];
+    out.push({ x: p0.x + calpha*(p1.x-p0.x), y: p0.y + calpha*(p1.y-p0.y) });
   }
   return out;
 }
@@ -824,10 +860,39 @@ function autoPlaceTrackFeatures(wps) {
   // Straights → flat_kerb (red/white kerb stripe)
   straightZones.forEach(z => pushZone(z, 'flat_kerb'));
 
-  // Corners: sausage kerb first (slot 0), then gravel runoff (slot 1, stacks outside)
+  // Corners: layered surface placement based on motorsport standards
+  // (FIA/FIM circuit design: sausage at apex, rumble on entry/exit, gravel/grass runoff)
   cornerZones.forEach(z => {
-    pushZone(z, 'sausage');   // yellow raised kerb — inner slot
-    pushZone(z, 'gravel');    // tan runoff — stacks outside sausage
+    const len = z.to - z.from + 1;
+    const apex = Math.floor((z.from + z.to) / 2);
+    const entryLen = Math.max(1, Math.floor(len * 0.25));
+    const exitLen  = Math.max(1, Math.floor(len * 0.25));
+
+    // Compute peak curvature to decide barrier type
+    let maxC = 0;
+    for (let i = z.from; i <= z.to; i++) maxC = Math.max(maxC, curvatures[i]);
+    const isTight = maxC > Math.PI * 0.45;  // ~80° turning = hairpin
+
+    // Entry rumble strip (warns driver they're going wide)
+    if (entryLen > 0) {
+      pushZone({ from: z.from, to: Math.min(z.from + entryLen, z.to) }, 'rumble');
+    }
+
+    // Apex: sausage kerb (raised — discourages cutting)
+    pushZone({ from: Math.max(z.from, apex - Math.floor(len*0.2)),
+               to:   Math.min(z.to,   apex + Math.floor(len*0.2)) }, 'sausage');
+
+    // Exit rumble strip
+    if (exitLen > 0) {
+      pushZone({ from: Math.max(z.from, z.to - exitLen), to: z.to }, 'rumble');
+    }
+
+    // Runoff: gravel for normal corners, armco for tight hairpins
+    if (isTight) {
+      pushZone(z, 'armco');   // tight hairpin → armco barrier outside
+    } else {
+      pushZone(z, 'gravel');  // normal corner → gravel runoff (stacks outside sausage)
+    }
   });
 
   if (typeof updateBarrierList === 'function') updateBarrierList();
