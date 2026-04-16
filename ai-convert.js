@@ -1,4 +1,4 @@
-// TRACK IMAGE → WAYPOINTS  v6.4
+// TRACK IMAGE → WAYPOINTS  v6.5
 // ═══════════════════════════════════════════════════
 let aiImageData = null;
 let aiImgW = 0, aiImgH = 0;
@@ -170,6 +170,8 @@ function aiCanvasTouchEnd(e)  { if (!aiEyedropperMode) return; e.preventDefault(
 // Preview overlay: single putImageData pass (no per-pixel fillRect)
 function aiUpdatePreviewOverlay() {
   if (!aiPreviewCtx || !aiImageData) return;
+  const tol = parseInt(document.getElementById('ai-tolerance')?.value || '40');
+  const tolSq = tol * tol;
   const pw = aiPreviewCanvas.width, ph = aiPreviewCanvas.height;
   const out = aiPreviewCtx.createImageData(pw, ph);
   for (let py=0; py<ph; py++) {
@@ -181,8 +183,8 @@ function aiUpdatePreviewOverlay() {
       if (aiTrackRGB&&aiBgRGB) {
         const dT=colDist2(r,g,b,aiTrackRGB), dB=colDist2(r,g,b,aiBgRGB);
         isTrack=dT<dB; isBg=!isTrack;
-      } else if (aiTrackRGB) { isTrack=colDist2(r,g,b,aiTrackRGB)<40*40; }
-        else if (aiBgRGB)    { isBg   =colDist2(r,g,b,aiBgRGB)   <40*40; }
+      } else if (aiTrackRGB) { isTrack=colDist2(r,g,b,aiTrackRGB)<tolSq; }
+        else if (aiBgRGB)    { isBg   =colDist2(r,g,b,aiBgRGB)   <tolSq; }
       if (isTrack) {
         out.data[di]=Math.round(r*.25+167*.75); out.data[di+1]=Math.round(g*.25+139*.75);
         out.data[di+2]=Math.round(b*.25+250*.75); out.data[di+3]=255;
@@ -211,16 +213,7 @@ function tick() { return new Promise(r => setTimeout(r, 10)); }
 function colDist2(r,g,b,rgb) { const dr=r-rgb.r,dg=g-rgb.g,db=b-rgb.b; return dr*dr+dg*dg+db*db; }
 
 // ═══════════════════════════════════════════════════
-// PIPELINE v6.4
-// 1. Midpoint colour classifier → binary mask
-// 2. 3×3 morphological dilation (bridges micro-gaps in thin strokes)
-// 3. Largest connected component (4-connectivity)
-// 4. Zhang-Suen thinning → 1px skeleton
-// 5. Spur pruning < 15px
-// 6. Skeleton walk with heading-continuity EMA
-// 7. Loop closure
-// 8. Curvature-adaptive resample + smooth
-// 9. Auto-place F1/GT3 barriers & surfaces
+// PIPELINE v6.5
 // ═══════════════════════════════════════════════════
 async function runAIConvert() {
   if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }
@@ -553,18 +546,11 @@ function smoothPass(pts, _r, tension=0.65) {
 }
 
 // ═══════════════════════════════════════════════════
-// AUTO FEATURE PLACEMENT  v4.0  — circuit safety layout logic
+// AUTO FEATURE PLACEMENT  v4.1 — SMARTER THRESHOLD
 //
-// Placement model:
-//   - Kerbs belong on the INSIDE of a corner.
-//   - Rumble strip marks corner entry.
-//   - Sausage kerb marks apex / anti-cut zone.
-//   - Flat kerb marks corner exit.
-//   - Runoff/barriers belong on the OUTSIDE of the corner.
-//   - Normal corners get gravel runoff.
-//   - Fast corners get Tecpro protection.
-//   - Tight hairpins get Armco/tyre wall protection.
-//   - Long straights get Armco guide rails only, not kerbs.
+// FIX: Lowered threshold from mean+0.8σ to mean+0.3σ
+// so more gentle corners get kerbs and barriers placed.
+// Also added straight-side armco with better side detection.
 // ═══════════════════════════════════════════════════
 function autoPlaceTrackFeatures(wps) {
   if (!wps || wps.length < 4) return;
@@ -590,13 +576,13 @@ function autoPlaceTrackFeatures(wps) {
     curvatures[i]=(rawCurv[(i-2+n)%n]+rawCurv[(i-1+n)%n]+rawCurv[i]+rawCurv[(i+1)%n]+rawCurv[(i+2)%n])/5;
   }
 
-  // Adaptive threshold: mean + 0.8σ  (only genuine corners pass)
+  // Adaptive threshold: mean + 0.3σ (was 0.8σ — lowered to catch more corners)
   let sum=0, sum2=0;
   for (let i=0;i<n;i++) { sum+=curvatures[i]; sum2+=curvatures[i]**2; }
   const mean=sum/n;
   const stddev=Math.sqrt(Math.max(0, sum2/n-mean*mean));
-  const CORNER_THRESH = Math.max(0.25, mean + 0.8 * stddev);
-  const MIN_ZONE = Math.max(3, Math.floor(n * 0.025)); // min 2.5% of track per zone
+  const CORNER_THRESH = Math.max(0.12, mean + 0.3 * stddev);   // was max(0.25, mean + 0.8*stddev)
+  const MIN_ZONE = Math.max(2, Math.floor(n * 0.015));           // was max(3, floor(n*0.025)) — smaller zones allowed
 
   const isCorner = Array.from(curvatures).map(c => c > CORNER_THRESH);
 
@@ -640,7 +626,7 @@ function autoPlaceTrackFeatures(wps) {
     }
     const avgTurn = samples ? turn / samples : 0;
     return {
-      insideSide: avgTurn >= 0 ? 1 : -1,
+      insideSide:  avgTurn >= 0 ? 1 : -1,
       outsideSide: avgTurn >= 0 ? -1 : 1,
       maxCurv: curv,
       avgSegLen: samples ? len / samples : 0
@@ -659,39 +645,55 @@ function autoPlaceTrackFeatures(wps) {
     const exitLen  = Math.max(1, Math.floor(len * 0.25));
     const stats = zoneStats(z);
     const isTight = stats.maxCurv > Math.PI * 0.40;
-    const isFast = stats.maxCurv < Math.PI * 0.22 && stats.avgSegLen > 4;
+    const isFast  = stats.maxCurv < Math.PI * 0.22 && stats.avgSegLen > 4;
+    const isMed   = !isTight && !isFast;
 
+    // Corner entry: rumble strip inside
     pushZone({ from:z.from, to:Math.min(z.from+entryLen, z.to) }, 'rumble', stats.insideSide, 0);
 
+    // Corner apex: sausage kerb inside
     pushZone({
       from: Math.max(z.from, apex - Math.floor(len*0.2)),
       to:   Math.min(z.to,   apex + Math.floor(len*0.2))
     }, 'sausage', stats.insideSide, 1);
 
+    // Corner exit: flat kerb inside
     pushZone({ from:Math.max(z.from, z.to-exitLen), to:z.to }, 'flat_kerb', stats.insideSide, 0);
 
+    // Outside runoff barrier
     pushZone(z, isTight ? 'armco' : isFast ? 'tecpro' : 'gravel', stats.outsideSide, 0);
+
+    // Tight hairpin: tyre wall at apex outside + grass behind gravel for medium corners
     if (isTight) {
       pushZone({
         from: Math.max(z.from, apex - Math.floor(len*0.12)),
         to:   Math.min(z.to,   apex + Math.floor(len*0.12))
       }, 'tyrewall', stats.outsideSide, 1);
+    } else if (isMed) {
+      // Medium corners also get grass behind the gravel
+      pushZone({
+        from: Math.max(z.from, apex - Math.floor(len*0.35)),
+        to:   Math.min(z.to,   apex + Math.floor(len*0.35))
+      }, 'grass', stats.outsideSide, 1);
     }
   });
 
+  // Straights: armco guide rails on both sides, trimmed to avoid corner overlap
   const straightFlags = isCorner.map(v => !v);
-  const straightZones = buildZones(straightFlags).filter(z => z.to - z.from + 1 >= Math.max(8, Math.floor(n * 0.05)));
+  const straightZones = buildZones(straightFlags).filter(z => z.to - z.from + 1 >= Math.max(6, Math.floor(n * 0.04)));
   straightZones.forEach(z => {
     const len = z.to - z.from + 1;
     const trimmed = {
-      from: Math.min(z.to, z.from + Math.floor(len * 0.18)),
-      to: Math.max(z.from, z.to - Math.floor(len * 0.18))
+      from: Math.min(z.to, z.from + Math.floor(len * 0.15)),
+      to: Math.max(z.from, z.to - Math.floor(len * 0.15))
     };
     if (trimmed.to > trimmed.from) {
-      pushZone(trimmed, 'armco', 'both', 0);
+      // Both sides for straights — one side is outside, one is inside but well-separated
+      pushZone(trimmed, 'armco', 1, 0);
+      pushZone(trimmed, 'armco', -1, 0);
     }
   });
 
   if (typeof updateBarrierList === 'function') updateBarrierList();
-  console.log(`[autoPlace] thresh=${CORNER_THRESH.toFixed(3)} · ${cornerZones.length} corner zones`);
+  console.log(`[autoPlace v4.1] thresh=${CORNER_THRESH.toFixed(3)} · ${cornerZones.length} corner zones · ${straightZones.length} straights`);
 }

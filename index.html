@@ -1,14 +1,13 @@
 <!DOCTYPE html>
 <!--
-  CIRCUIT FORGE — Track Studio  v6.4
-  FILE STRUCTURE:
-    index.html   — HTML shell
-    style.css    — all styles
-    js/render.js — state, camera, rendering
-    js/tools.js  — tools, paint, input, waypoints
-    js/export.js — export modal
-    js/ai-convert.js — image→waypoints pipeline
-    js/init.js   — bootstrap
+  CIRCUIT FORGE — Track Studio  v6.5
+  FIXES in v6.5:
+    1. Auto-barrier smarter: threshold lowered to mean+0.3σ (was mean+0.8σ),
+       min zone size reduced, medium corners get grass runoff too.
+    2. Colour strips only on OUTSIDE of track; inside placements show "INSIDE" text.
+    3. Zoom stability: barrier offsets computed in world-space then projected once,
+       eliminating double-scaling that caused strip drift on zoom.
+    4. Legend moved to bottom-right (outside the track area).
 -->
 <html lang="en">
 <head>
@@ -16,7 +15,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>CIRCUIT FORGE v6.4 — Track Maker</title>
+<title>CIRCUIT FORGE v6.5 — Track Maker</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 <script>
@@ -84,7 +83,7 @@ window.addEventListener('load', () => {
 <button id="debug-badge" class="debug-ok" onclick="CFDebug.toggle()">DEBUG: OK</button>
 <div id="debug-panel">
   <div id="debug-title">Circuit Forge Debug</div>
-  <div id="debug-help">If buttons do not work on GitHub, send a screenshot of this box.</div>
+  <div id="debug-help">If buttons do not work, check this box for script errors.</div>
   <div id="debug-list"></div>
 </div>
 <div id="app">
@@ -94,9 +93,9 @@ window.addEventListener('load', () => {
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v6.4</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v6.5</span>
       </div>
-      <div class="sb-sub">Track Studio · v6.4</div>
+      <div class="sb-sub">Track Studio · v6.5</div>
     </div>
 
     <div id="upload-zone" onclick="document.getElementById('file-input').click()"
@@ -198,7 +197,7 @@ window.addEventListener('load', () => {
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v6.4</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v6.5</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
@@ -310,13 +309,11 @@ window.addEventListener('load', () => {
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v6.4</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v6.5</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
     <div class="ai-body">
-
-      <!-- Step 1: Upload drop zone -->
       <div id="ai-drop"
            onclick="document.getElementById('ai-file').click()"
            ondragover="event.preventDefault();this.classList.add('drag-over')"
@@ -331,7 +328,6 @@ window.addEventListener('load', () => {
       <input type="file" id="ai-file" accept="image/*" onchange="aiLoadFile(this)">
       <input type="hidden" id="ai-wp-count" value="500">
 
-      <!-- Colour pickers — always visible -->
       <div class="ai-colour-row">
         <div class="ai-colour-col">
           <div class="ai-colour-label">Track Colour</div>
@@ -351,17 +347,14 @@ window.addEventListener('load', () => {
         </div>
       </div>
 
-      <!-- Eyedropper active hint -->
       <div id="eyedropper-hint">🎯 TAP ON THE IMAGE TO PICK COLOUR — then release</div>
 
-      <!-- Preview canvas (shown after image upload) -->
       <div id="ai-preview-wrap">
         <div class="ai-canvas-wrap">
           <canvas id="ai-preview-canvas" style="touch-action:none;"></canvas>
           <canvas id="ai-loupe"></canvas>
         </div>
 
-        <!-- Tolerance slider -->
         <div class="ai-tol-row">
           <span class="ai-tol-label">Colour Tolerance</span>
           <input type="range" min="10" max="120" value="40" id="ai-tolerance" style="flex:1;accent-color:#a78bfa;"
@@ -369,18 +362,14 @@ window.addEventListener('load', () => {
           <span class="ai-tol-val" id="ai-tol-val">40</span>
         </div>
 
-      <div class="ai-slider-row">
-        <span class="ai-slider-label">Waypoints</span>
-        <span class="ai-slider-val" id="ai-wp-val" style="min-width:auto;text-align:left;">Maximum detail · 500 points</span>
-      </div>
+        <div class="ai-slider-row">
+          <span class="ai-slider-label">Waypoints</span>
+          <span class="ai-slider-val" id="ai-wp-val" style="min-width:auto;text-align:left;">Maximum detail · 500 points</span>
+        </div>
       </div>
 
-      <!-- Progress bar -->
       <div class="ai-progress" id="ai-progress"><div class="ai-progress-bar" id="ai-progress-bar"></div></div>
-
-      <!-- Status message -->
       <div id="ai-status">Upload a track image to get started</div>
-
     </div>
     <div class="ai-footer">
       <button class="ai-btn cancel" onclick="closeAIConvert()">Cancel</button>

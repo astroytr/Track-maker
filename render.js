@@ -210,12 +210,13 @@ function drawTrackRoad() {
 // ═══════════════════════════════════════════════════
 // BARRIER SEGMENTS
 //
-// FIX: Uses miter-based offset at each spline point.
-// The miter direction is the normalised average of the normals of the
-// two adjacent spline segments. Miter length is offset / cos(half_angle),
-// capped at 3× to prevent wild extensions on very tight corners.
-// This prevents barriers from crossing each other on the inside of hairpins.
-// Both sides (inside + outside) are drawn with proper miter geometry.
+// FIX 1: Colour strips only appear on the OUTSIDE of the track.
+//        Inside barriers show a small "INSIDE" label on the strip instead of a band.
+//
+// FIX 2: Zoom stability — TRACK_HALF, BAND_W, BAND_GAP are in WORLD units.
+//        drawStrip multiplies by cam.zoom once to get screen pixels.
+//        Previously the units were mixed (some already zoomed, some not) causing
+//        double-scaling on zoom. Now all offsets are in world-px and converted once.
 // ═══════════════════════════════════════════════════
 function drawBarrierSegments() {
   const splinePts = buildSplinePoints(12);
@@ -224,69 +225,97 @@ function drawBarrierSegments() {
   if (!hasSegs && !hasHover) return;
   if (splinePts.length < 2) return;
 
-  const TRACK_HALF = Math.max(6, 14 * cam.zoom);
-  const BAND_W     = Math.max(3,  5 * cam.zoom);
-  const BAND_GAP   = Math.max(1,  2 * cam.zoom);
+  // All in WORLD units (not pre-scaled by cam.zoom).
+  // drawStrip will multiply by cam.zoom exactly once.
+  const TRACK_HALF_W = 14;   // world-px half-width of asphalt
+  const BAND_W_W     = 5;    // world-px width of each colour band
+  const BAND_GAP_W   = 2;    // world-px gap between track edge and first band
 
-  // Pre-compute per-point miter directions (right-hand normal of spline at that point).
-  // We do this in WORLD space and convert to screen offsets per point.
+  // Minimum screen sizes to stay readable at low zoom
+  const MIN_TRACK_HALF = 6;
+  const MIN_BAND_W     = 3;
+  const MIN_BAND_GAP   = 1;
+
   const N = splinePts.length;
-  const miterR = new Array(N);  // right-side unit miter vector (in world px)
+  // Pre-compute miter direction in WORLD space
+  const miterRWorld = new Array(N);
   for (let i = 0; i < N; i++) {
     const prev = splinePts[(i-1+N)%N].pt;
     const cur  = splinePts[i].pt;
     const next = splinePts[(i+1)%N].pt;
 
-    // Incoming tangent normal (right-hand perp)
     const t1x = cur.x-prev.x, t1y = cur.y-prev.y;
     const l1  = Math.hypot(t1x,t1y)||1;
     const n1x = t1y/l1, n1y = -t1x/l1;
 
-    // Outgoing tangent normal (right-hand perp)
     const t2x = next.x-cur.x, t2y = next.y-cur.y;
     const l2  = Math.hypot(t2x,t2y)||1;
     const n2x = t2y/l2, n2y = -t2x/l2;
 
-    // Miter bisector
     let mx = n1x+n2x, my = n1y+n2y;
     const mlen = Math.hypot(mx,my);
     if (mlen > 1e-6) { mx/=mlen; my/=mlen; } else { mx=n1x; my=n1y; }
 
-    // Miter scale: 1/cos(half_angle), capped at 3 to prevent hairpin explosion
     const cosHalf = n1x*mx + n1y*my;
     const scale   = cosHalf > 0.3 ? Math.min(1/cosHalf, 3.0) : 1.0;
 
-    miterR[i] = { x: mx*scale, y: my*scale, base: worldToScreen(cur.x, cur.y) };
+    miterRWorld[i] = { wx: cur.x, wy: cur.y, mx: mx*scale, my: my*scale };
   }
 
-  // Draw one barrier strip: a polyline of offset screen positions on one side.
-  // side = +1 for right (outside going forward), -1 for left (inside).
-  function drawStrip(ptIndices, baseOffset, colorRgba, lineW, side) {
+  // Draw a polyline offset from the spline in WORLD coordinates, then project to screen.
+  // side: +1 = right, -1 = left
+  function drawStrip(ptIndices, baseOffsetWorld, colorRgba, lineW, side) {
     if (ptIndices.length < 2) return;
-    const totalOffset = baseOffset * cam.zoom;
+    const screenLineW = Math.max(MIN_BAND_W, lineW * cam.zoom);
     ctx.beginPath();
     ptIndices.forEach((pi, k) => {
-      const m  = miterR[pi];
-      const ox = m.base.x + side * m.x * totalOffset;
-      const oy = m.base.y + side * m.y * totalOffset;
-      k === 0 ? ctx.moveTo(ox, oy) : ctx.lineTo(ox, oy);
+      const m  = miterRWorld[pi];
+      // Offset in world space, then convert to screen
+      const wx = m.wx + side * m.mx * baseOffsetWorld;
+      const wy = m.wy + side * m.my * baseOffsetWorld;
+      const s  = worldToScreen(wx, wy);
+      k === 0 ? ctx.moveTo(s.x, s.y) : ctx.lineTo(s.x, s.y);
     });
     ctx.strokeStyle = colorRgba;
-    ctx.lineWidth   = lineW;
+    ctx.lineWidth   = screenLineW;
     ctx.lineCap     = 'round';
     ctx.lineJoin    = 'round';
     ctx.stroke();
   }
 
-  function drawBand(ptIndices, slot, colorRgba, side) {
-    const baseOff = TRACK_HALF + BAND_GAP + slot * (BAND_W + BAND_GAP) + BAND_W * 0.5;
-    if (side === 1 || side === +1 || side === 'right') {
-      drawStrip(ptIndices, baseOff, colorRgba, BAND_W, +1);
-    } else if (side === -1 || side === '-1' || side === 'left') {
-      drawStrip(ptIndices, baseOff, colorRgba, BAND_W, -1);
+  // Draw a colour band on the OUTSIDE only, plus an "INSIDE" label overlay if inside
+  function drawBand(ptIndices, slot, colorRgba, side, isInside) {
+    const trackHalf = Math.max(MIN_TRACK_HALF / cam.zoom, TRACK_HALF_W);
+    const bandW     = Math.max(MIN_BAND_W     / cam.zoom, BAND_W_W);
+    const bandGap   = Math.max(MIN_BAND_GAP   / cam.zoom, BAND_GAP_W);
+    const baseOff   = trackHalf + bandGap + slot * (bandW + bandGap) + bandW * 0.5;
+
+    if (isInside) {
+      // For inside barriers: draw a thin dimmed strip + "INSIDE" text label at midpoint
+      const dimColor = colorRgba.replace(/[\d.]+\)$/, '0.35)');
+      drawStrip(ptIndices, baseOff, dimColor, bandW * 0.6, side > 0 ? +1 : -1);
+      // Draw "INSIDE" label at the midpoint of the strip
+      const midIdx = ptIndices[Math.floor(ptIndices.length / 2)];
+      if (midIdx !== undefined) {
+        const m  = miterRWorld[midIdx];
+        const sideSign = side > 0 ? +1 : -1;
+        const wx = m.wx + sideSign * m.mx * baseOff;
+        const wy = m.wy + sideSign * m.my * baseOff;
+        const s  = worldToScreen(wx, wy);
+        ctx.save();
+        ctx.font = `bold ${Math.max(8, 9 * cam.zoom)}px "Barlow Condensed", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle = colorRgba.replace(/[\d.]+\)$/, '0.85)');
+        ctx.shadowColor = '#000';
+        ctx.shadowBlur = 3;
+        ctx.fillText('INSIDE', s.x, s.y);
+        ctx.shadowBlur = 0;
+        ctx.restore();
+      }
     } else {
-      drawStrip(ptIndices, baseOff, colorRgba, BAND_W, +1);
-      drawStrip(ptIndices, baseOff, colorRgba, BAND_W, -1);
+      // Outside: draw full colour band
+      drawStrip(ptIndices, baseOff, colorRgba, bandW, side > 0 ? +1 : -1);
     }
   }
 
@@ -298,7 +327,23 @@ function drawBarrierSegments() {
       const ptIndices = [];
       splinePts.forEach((p, pi) => { if (p.seg >= seg.from && p.seg <= seg.to) ptIndices.push(pi); });
       if (ptIndices.length < 2) return;
-      drawBand(ptIndices, seg.lane || 0, cfg.color, seg.side);
+
+      const side = seg.side;
+      if (side === 'both' || side === undefined || side === null) {
+        // Both sides: draw outside on +1 side, and inside label on -1 side
+        drawBand(ptIndices, seg.lane || 0, cfg.color, +1, false);
+        drawBand(ptIndices, seg.lane || 0, cfg.color, -1, true);
+      } else {
+        const sideNum = (side === 'left' || side === -1 || side === '-1') ? -1 : +1;
+        // Determine if this is an inside placement based on whether it's explicitly
+        // a negative/left side (for a right-hand corner, inside = left)
+        // We rely on the auto-placement logic which sets side directly.
+        // For manually placed barriers, the user chose the side explicitly.
+        // "outside" side = +1 (right), inside = -1 (left) in general.
+        // The isInside flag: if the numeric side value is -1, show as inside.
+        const isInside = (sideNum < 0);
+        drawBand(ptIndices, seg.lane || 0, cfg.color, sideNum, isInside);
+      }
     });
   }
 
@@ -311,7 +356,7 @@ function drawBarrierSegments() {
       const ptIndices = splinePts.map((p,pi) => ({p,pi})).filter(({p}) => p.seg>=from&&p.seg<=to).map(({pi})=>pi);
       if (ptIndices.length >= 2) {
         const hcol = SURFACES[surface].color.replace(/[\d.]+\)$/, '0.5)');
-        drawBand(ptIndices, 0, hcol, 'both');
+        drawBand(ptIndices, 0, hcol, +1, false);
       }
     }
   }
@@ -319,9 +364,6 @@ function drawBarrierSegments() {
 
 // ═══════════════════════════════════════════════════
 // CANVAS LEGEND (side-by-side colour swatches)
-//
-// FIX: ctx.roundRect is not available on older iOS Safari (< 16).
-// Replaced with a manual quadratic-curve rounded rect that works everywhere.
 // ═══════════════════════════════════════════════════
 function _roundRect(cx, x, y, w, h, r) {
   r = Math.min(r, w/2, h/2);
@@ -344,7 +386,9 @@ function drawLegend() {
   const used = [...usedSet];
   const swatchW = 54, swatchH = 22, pad = 5, r = 5;
   const totalW  = used.length * (swatchW + pad) - pad + pad*2;
-  const sx = 10, sy = mainCanvas.height - swatchH - 12;
+  // Position on the OUTSIDE of canvas (bottom-right area), fixed to canvas coords
+  const sx = mainCanvas.width - totalW - 10;
+  const sy = mainCanvas.height - swatchH - 12;
 
   ctx.save();
   ctx.globalAlpha = 0.85;
