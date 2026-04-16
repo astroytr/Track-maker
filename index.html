@@ -19,8 +19,74 @@
 <title>CIRCUIT FORGE v6.4 — Track Maker</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
+<script>
+window.CFDebug = {
+  entries: [],
+  add(type, message) {
+    this.entries.push({ type, message, time: new Date().toLocaleTimeString() });
+    this.render();
+  },
+  render() {
+    const panel = document.getElementById('debug-panel');
+    const list = document.getElementById('debug-list');
+    const badge = document.getElementById('debug-badge');
+    if (!panel || !list || !badge) return;
+    const hasError = this.entries.some(e => e.type === 'error');
+    badge.textContent = hasError ? 'DEBUG: ERROR' : 'DEBUG: OK';
+    badge.className = hasError ? 'debug-error' : 'debug-ok';
+    list.innerHTML = this.entries.map(e => `<div class="debug-row ${e.type}"><span>${e.time}</span> ${e.message}</div>`).join('');
+    panel.style.display = hasError ? 'block' : panel.style.display;
+  },
+  toggle() {
+    const panel = document.getElementById('debug-panel');
+    if (panel) panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
+  }
+};
+
+window.addEventListener('error', event => {
+  if (event.target && event.target.tagName) {
+    const tag = event.target.tagName.toLowerCase();
+    const url = event.target.src || event.target.href || '';
+    if (tag === 'script' || tag === 'link') {
+      window.CFDebug.add('error', `Failed to load ${tag}: ${url}`);
+      return;
+    }
+  }
+  window.CFDebug.add('error', `${event.message || 'JavaScript error'} at ${event.filename || 'unknown file'}:${event.lineno || 0}`);
+});
+
+window.addEventListener('unhandledrejection', event => {
+  window.CFDebug.add('error', `Promise error: ${event.reason && event.reason.message ? event.reason.message : event.reason}`);
+});
+
+function cfScriptLoaded(name) {
+  window.CFDebug.add('ok', `Loaded ${name}`);
+}
+
+function cfScriptFailed(name) {
+  window.CFDebug.add('error', `Missing or blocked: ${name}`);
+}
+
+window.addEventListener('load', () => {
+  setTimeout(() => {
+    const required = ['setTool', 'setSurface', 'openExport', 'openAIConvert', 'render', 'updateBrush'];
+    const missing = required.filter(name => typeof window[name] !== 'function');
+    if (missing.length) {
+      window.CFDebug.add('error', `Missing functions: ${missing.join(', ')}`);
+    } else {
+      window.CFDebug.add('ok', 'All click functions are available');
+    }
+  }, 250);
+});
+</script>
 </head>
 <body>
+<button id="debug-badge" class="debug-ok" onclick="CFDebug.toggle()">DEBUG: OK</button>
+<div id="debug-panel">
+  <div id="debug-title">Circuit Forge Debug</div>
+  <div id="debug-help">If buttons do not work on GitHub, send a screenshot of this box.</div>
+  <div id="debug-list"></div>
+</div>
 <div id="app">
 
   <!-- ══ LEFT SIDEBAR ══ -->
@@ -327,10 +393,10 @@
 
 <div id="toast"></div>
 
-<script src="js/render.js"></script>
-<script src="js/tools.js"></script>
-<script src="js/export.js"></script>
-<script src="js/ai-convert.js"></script>
-<script src="js/init.js"></script>
+<script src="js/render.js" onload="cfScriptLoaded('js/render.js')" onerror="cfScriptFailed('js/render.js')"></script>
+<script src="js/tools.js" onload="cfScriptLoaded('js/tools.js')" onerror="cfScriptFailed('js/tools.js')"></script>
+<script src="js/export.js" onload="cfScriptLoaded('js/export.js')" onerror="cfScriptFailed('js/export.js')"></script>
+<script src="js/ai-convert.js" onload="cfScriptLoaded('js/ai-convert.js')" onerror="cfScriptFailed('js/ai-convert.js')"></script>
+<script src="js/init.js" onload="cfScriptLoaded('js/init.js')" onerror="cfScriptFailed('js/init.js')"></script>
 </body>
 </html>
