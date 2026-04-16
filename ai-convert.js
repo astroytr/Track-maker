@@ -351,11 +351,11 @@ async function runAIConvert() {
   // ── Uniform resample ──
   const sampled = uniformResample(chain, wpCount);
 
-  // ── Smooth (3 passes, curvature-aware, tension 0.65) ──
-  // Extra pass + higher tension cleans staircase pixel-grid artefacts on
-  // straights while the curvature-aware window still protects hairpins.
+  // ── Smooth (curvature-aware, tension 0.65) ──
+  // More passes for higher wp counts to suppress pixel-grid staircase artefacts.
   let pts = sampled;
-  for (let p = 0; p < 3; p++) pts = smoothPass(pts, 3, 0.65);
+  const smoothPasses = wpCount >= 200 ? 5 : wpCount >= 100 ? 4 : 3;
+  for (let p = 0; p < smoothPasses; p++) pts = smoothPass(pts, 3, 0.65);
 
   // ── Scale to world coords ──
   let minX=Infinity, maxX=-Infinity, minY=Infinity, maxY=-Infinity;
@@ -731,62 +731,74 @@ function smoothPass(pts, _unusedRadius, tension = 0.65) {
 }
 
 // ═══════════════════════════════════════════════════
-// ═══════════════════════════════════════════════════
-// AUTO FEATURE PLACEMENT  v2.0
+// AUTO FEATURE PLACEMENT  v3.0
 //
 // Analyses curvature of the extracted waypoints and writes
-// directly into barrierSegments[] — the same array the renderer
-// already uses for the manual barrier tool — so barriers appear
-// immediately after AI extraction with no extra steps.
+// directly into barrierSegments[].
 //
-// Surface mapping:
-//   Straights  → flat_kerb  (red/white)
-//   Corners    → gravel     (tan)     ← outer runoff
-//   Corners    → sausage    (yellow)  ← inner raised kerb
-// Each zone becomes one barrierSegments entry, stacking as
-// parallel bands thanks to the updated drawBarrierSegments().
+// Surface mapping (both sides of track):
+//   Straights  → flat_kerb  (red/white striped kerb)
+//   Corners    → sausage    (yellow raised kerb — inner)
+//   Corners    → gravel     (tan runoff — outer, stacks beyond sausage)
+//
+// FIXED: Uses correct segment indices that match p.seg in the spline renderer.
+// FIXED: Smarter curvature with moving average to reduce noise.
+// FIXED: Zones are padded slightly so bands don't end abruptly.
 // ═══════════════════════════════════════════════════
 
 function autoPlaceTrackFeatures(wps) {
   if (!wps || wps.length < 4) return;
 
   const n = wps.length;
-  const isClosed = (() => {
-    const dx = wps[0].x - wps[n-1].x, dy = wps[0].y - wps[n-1].y;
-    return Math.sqrt(dx*dx + dy*dy) < 20;
-  })();
 
-  // ── Curvature per waypoint ──────────────────────────────
-  // Angle (radians) between incoming and outgoing tangents.
-  // High = sharp corner, low = straight.
-  const curvatures = wps.map((p, i) => {
-    if (!isClosed && (i === 0 || i === n - 1)) return 0;
+  // ── Curvature per waypoint (turning angle in radians) ──
+  // Use a 3-point moving average of curvature to reduce jitter from
+  // imperfect skeletonisation.
+  const rawCurv = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
     const prev = wps[(i - 1 + n) % n];
+    const cur  = wps[i];
     const next = wps[(i + 1) % n];
-    const ax = p.x - prev.x, ay = p.y - prev.y;
-    const bx = next.x - p.x, by = next.y - p.y;
-    const la = Math.sqrt(ax*ax + ay*ay), lb = Math.sqrt(bx*bx + by*by);
-    if (la < 1e-9 || lb < 1e-9) return 0;
+    const ax = cur.x - prev.x, ay = cur.y - prev.y;
+    const bx = next.x - cur.x, by = next.y - cur.y;
+    const la = Math.sqrt(ax*ax + ay*ay);
+    const lb = Math.sqrt(bx*bx + by*by);
+    if (la < 1e-9 || lb < 1e-9) { rawCurv[i] = 0; continue; }
     const dot = (ax*bx + ay*by) / (la * lb);
-    return Math.acos(Math.max(-1, Math.min(1, dot)));
-  });
+    rawCurv[i] = Math.acos(Math.max(-1, Math.min(1, dot)));
+  }
 
-  // ── Tunable thresholds ──────────────────────────────────
-  const CORNER_THRESH  = 0.22;   // rad — above = corner
-  const MIN_ZONE_LEN   = 3;      // min consecutive wps to form a zone
-  // ────────────────────────────────────────────────────────
+  // Smooth curvature with 3-point moving average
+  const curvatures = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    curvatures[i] = (rawCurv[(i-1+n)%n] + rawCurv[i] + rawCurv[(i+1)%n]) / 3;
+  }
 
-  const isCorner = curvatures.map(c => c > CORNER_THRESH);
+  // Dynamic threshold: use mean + 0.3*stddev so it adapts to each track
+  let sum = 0, sum2 = 0;
+  for (let i = 0; i < n; i++) { sum += curvatures[i]; sum2 += curvatures[i]**2; }
+  const mean = sum / n;
+  const stddev = Math.sqrt(sum2 / n - mean * mean);
+  const CORNER_THRESH = Math.max(0.12, mean + 0.3 * stddev);
+  const MIN_ZONE_LEN  = Math.max(2, Math.floor(n * 0.02)); // 2% of track
 
-  // Group consecutive same-type waypoints into zones
-  function buildZones(flag) {
+  const isCorner = Array.from(curvatures).map(c => c > CORNER_THRESH);
+
+  // Group consecutive same-type indices into zones, with 1-pt padding each side
+  function buildZones(flags) {
     const zones = [];
     let start = -1;
     for (let i = 0; i <= n; i++) {
-      const on = i < n && flag[i];
-      if (on  && start === -1) { start = i; }
+      const on = i < n && flags[i];
+      if (on  && start === -1) start = i;
       if (!on && start !== -1) {
-        if (i - start >= MIN_ZONE_LEN) zones.push({ from: start, to: i - 1 });
+        const len = i - start;
+        if (len >= MIN_ZONE_LEN) {
+          zones.push({
+            from: Math.max(0, start - 1),
+            to:   Math.min(n - 1, i)       // segment index = waypoint index
+          });
+        }
         start = -1;
       }
     }
@@ -796,10 +808,8 @@ function autoPlaceTrackFeatures(wps) {
   const cornerZones   = buildZones(isCorner);
   const straightZones = buildZones(isCorner.map(c => !c));
 
-  // Clear any previous auto-placed barriers so re-running doesn't stack duplicates.
-  // We tag auto-placed entries so manual ones are untouched.
+  // Clear previously auto-placed barriers
   if (typeof barrierSegments !== 'undefined') {
-    // Remove entries previously auto-placed (tagged with auto:true)
     for (let i = barrierSegments.length - 1; i >= 0; i--) {
       if (barrierSegments[i].auto) barrierSegments.splice(i, 1);
     }
@@ -807,29 +817,20 @@ function autoPlaceTrackFeatures(wps) {
     window.barrierSegments = [];
   }
 
-  // Helper to push a zone as a barrier segment
   function pushZone(zone, surfaceType) {
-    barrierSegments.push({
-      from:    zone.from,
-      to:      zone.to,
-      surface: surfaceType,
-      auto:    true          // flag so we can clear on re-run
-    });
+    barrierSegments.push({ from: zone.from, to: zone.to, surface: surfaceType, auto: true });
   }
 
-  // Straights → flat_kerb (the red/white edge stripe)
+  // Straights → flat_kerb (red/white kerb stripe)
   straightZones.forEach(z => pushZone(z, 'flat_kerb'));
 
-  // Corners → two bands: gravel on the outside runoff, sausage as raised inner kerb
+  // Corners: sausage kerb first (slot 0), then gravel runoff (slot 1, stacks outside)
   cornerZones.forEach(z => {
-    pushZone(z, 'gravel');   // outer runoff — tan
-    pushZone(z, 'sausage');  // raised kerb  — yellow, stacks inside gravel
+    pushZone(z, 'sausage');   // yellow raised kerb — inner slot
+    pushZone(z, 'gravel');    // tan runoff — stacks outside sausage
   });
 
-  // Update the sidebar barrier list if it exists
   if (typeof updateBarrierList === 'function') updateBarrierList();
 
-  const nCorner   = cornerZones.length;
-  const nStraight = straightZones.length;
-  console.log(`[autoPlace] ${nCorner} corner zones (gravel+sausage) · ${nStraight} straight zones (flat_kerb)`);
+  console.log(`[autoPlace] thresh=${CORNER_THRESH.toFixed(3)} · ${cornerZones.length} corner zones · ${straightZones.length} straight zones`);
 }

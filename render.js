@@ -243,77 +243,68 @@ function drawTrackRoad() {
 }
 
 // Draw barrier segments as stacked parallel bands offset from the track edge.
-// Multiple segments covering the same waypoint range stack outward, one band
-// per surface, so you can see every applied surface simultaneously.
+// Bands are drawn in WORLD space normals (not screen space) so zoom doesn't
+// flip directions. Both sides of the track are drawn for each segment.
+// Multiple segments on the same waypoint range stack outward slot by slot.
 function drawBarrierSegments() {
   const splinePts = buildSplinePoints(10);
   const hasSegments = barrierSegments && barrierSegments.length > 0;
   const hasHover    = tool === 'barrier' && barrierSelStart >= 0;
   if (!hasSegments && !hasHover) return;
+  if (splinePts.length < 2) return;
 
-  // ── Per-spline-point outward unit normals ──────────────
-  // Right-hand perpendicular of the travel tangent (pointing away from track centre).
-  const normals = splinePts.map((_, i) => {
-    const prev = splinePts[Math.max(0, i - 1)];
-    const next = splinePts[Math.min(splinePts.length - 1, i + 1)];
-    const sp = worldToScreen(prev.pt.x, prev.pt.y);
-    const sn = worldToScreen(next.pt.x, next.pt.y);
-    const tx = sn.x - sp.x, ty = sn.y - sp.y;
+  // ── Per-spline-point WORLD-space unit normals ──────────
+  // Right-hand perp of tangent in world coords, then we offset in screen space.
+  // Compute tangent in world coords, rotate 90° → both +normal and -normal sides.
+  const worldNormals = splinePts.map((_, i) => {
+    const prev = splinePts[Math.max(0, i - 1)].pt;
+    const next = splinePts[Math.min(splinePts.length - 1, i + 1)].pt;
+    const tx = next.x - prev.x;
+    const ty = next.y - prev.y;
     const len = Math.hypot(tx, ty) || 1;
+    // right-hand perp: (ty, -tx) normalised
     return { nx: ty / len, ny: -tx / len };
   });
 
-  // ── Band sizing (zoom-aware) ────────────────────────────
-  const TRACK_HALF = Math.max(6, 14 * cam.zoom);  // matches drawTrackRoad trackW
-  const BAND_W     = Math.max(2.5, 4.5 * cam.zoom);
-  const BAND_GAP   = Math.max(0.8, 1.2 * cam.zoom);
+  // ── Band sizing (in screen pixels, zoom-aware) ──────────
+  const TRACK_HALF = Math.max(6, 14 * cam.zoom);   // must match drawTrackRoad
+  const BAND_W     = Math.max(3, 5 * cam.zoom);
+  const BAND_GAP   = Math.max(1, 1.5 * cam.zoom);
 
-  // ── Per-point coverage count (for slot assignment) ─────
-  // coverage[ptIdx] = number of segments whose range includes this point
-  const coverage = new Int32Array(splinePts.length);
-  if (hasSegments) {
-    barrierSegments.forEach(seg => {
-      splinePts.forEach((p, pi) => {
-        if (p.seg >= seg.from && p.seg <= seg.to) coverage[pi]++;
-      });
+  // ── Helper: draw one strip along ptIndices at slot offset, one side ─
+  function drawStrip(ptIndices, offset, colorStr, alpha, lineW) {
+    if (ptIndices.length < 2) return;
+    const col = colorStr.replace(/[\d.]+\)$/, alpha + ')');
+    ctx.strokeStyle = col;
+    ctx.lineWidth   = lineW;
+    ctx.lineCap     = 'round';
+    ctx.lineJoin    = 'round';
+    ctx.beginPath();
+    ptIndices.forEach((pi, i) => {
+      const s  = worldToScreen(splinePts[pi].pt.x, splinePts[pi].pt.y);
+      // Offset in screen space using world normal scaled by cam.zoom
+      const ox = s.x + worldNormals[pi].nx * offset;
+      const oy = s.y + worldNormals[pi].ny * offset;
+      i === 0 ? ctx.moveTo(ox, oy) : ctx.lineTo(ox, oy);
     });
+    ctx.stroke();
   }
 
-  // ── Draw one band (both sides) at a given stack slot ───
+  // Draw one band: both sides of track at the given slot index
   function drawBand(ptIndices, slotIndex, colorStr, alpha) {
     if (ptIndices.length < 2) return;
-    // Offset from track edge outward: edge + gap + (slot * (bandW + gap)) + half-band
+    // slot 0 = just outside track edge; each slot stacks further out
     const offset = TRACK_HALF + BAND_GAP + slotIndex * (BAND_W + BAND_GAP) + BAND_W * 0.5;
-    ctx.lineWidth = BAND_W;
-    ctx.lineCap   = 'round';
-    ctx.lineJoin  = 'round';
-    ctx.strokeStyle = colorStr.replace(/[\d.]+\)$/, alpha + ')');
-
-    // Outer side (+normal direction)
-    ctx.beginPath();
-    ptIndices.forEach((pi, i) => {
-      const s  = worldToScreen(splinePts[pi].pt.x, splinePts[pi].pt.y);
-      const ox = s.x + normals[pi].nx * offset;
-      const oy = s.y + normals[pi].ny * offset;
-      i === 0 ? ctx.moveTo(ox, oy) : ctx.lineTo(ox, oy);
-    });
-    ctx.stroke();
-
-    // Inner side (-normal direction)
-    ctx.beginPath();
-    ptIndices.forEach((pi, i) => {
-      const s  = worldToScreen(splinePts[pi].pt.x, splinePts[pi].pt.y);
-      const ox = s.x - normals[pi].nx * offset;
-      const oy = s.y - normals[pi].ny * offset;
-      i === 0 ? ctx.moveTo(ox, oy) : ctx.lineTo(ox, oy);
-    });
-    ctx.stroke();
+    // +normal side (right of travel direction)
+    drawStrip(ptIndices, +offset, colorStr, alpha, BAND_W);
+    // -normal side (left of travel direction)
+    drawStrip(ptIndices, -offset, colorStr, alpha, BAND_W);
   }
 
-  // ── Draw each committed segment ─────────────────────────
-  // Track a per-point slot cursor so overlapping segments stack cleanly.
+  // ── Per-point slot cursor so overlapping segments stack cleanly ──
   const slotCursor = new Int32Array(splinePts.length);
 
+  // ── Draw committed segments ──────────────────────────────
   if (hasSegments) {
     barrierSegments.forEach(seg => {
       const cfg = SURFACES[seg.surface];
@@ -323,14 +314,11 @@ function drawBarrierSegments() {
       });
       if (ptIndices.length < 2) return;
 
-      // Use the median slot value across this segment for a stable, non-jittery assignment
-      const slots = ptIndices.map(pi => slotCursor[pi]);
-      slots.sort((a, b) => a - b);
-      const slot = slots[Math.floor(slots.length / 2)];
+      // Assign the minimum slot currently in use across this segment
+      const minSlot = Math.min(...ptIndices.map(pi => slotCursor[pi]));
+      drawBand(ptIndices, minSlot, cfg.color, '0.95');
 
-      drawBand(ptIndices, slot, cfg.color, '0.92');
-
-      // Advance slot cursor for every point in this segment
+      // Advance slot cursor for every point covered
       ptIndices.forEach(pi => slotCursor[pi]++);
     });
   }
@@ -346,12 +334,8 @@ function drawBarrierSegments() {
         .filter(({ p }) => p.seg >= from && p.seg <= to)
         .map(({ pi }) => pi);
       if (ptIndices.length >= 2) {
-        // Preview band stacks on top of whatever is already there
-        const previewSlot = ptIndices.length
-          ? Math.max(...ptIndices.map(pi => slotCursor[pi]))
-          : 0;
-        const cfg = SURFACES[surface];
-        drawBand(ptIndices, previewSlot, cfg.color, '0.50');
+        const previewSlot = Math.max(...ptIndices.map(pi => slotCursor[pi]));
+        drawBand(ptIndices, previewSlot, SURFACES[surface].color, '0.55');
       }
     }
   }

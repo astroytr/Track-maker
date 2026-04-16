@@ -4,13 +4,16 @@ function getSegmentNear(wx, wy) {
   if (waypoints.length < 2) return -1;
   let best = -1, bestD = Infinity;
   const n = waypoints.length;
+  // Max snap distance scales with zoom: 40px in screen space
+  const maxWorldDist = 40 / cam.zoom;
+  const maxD2 = maxWorldDist * maxWorldDist;
   for (let i = 0; i < n; i++) {
     const w = waypoints[i];
     const dx = w.x - wx, dy = w.y - wy;
     const d = dx*dx + dy*dy;
     if (d < bestD) { bestD = d; best = i; }
   }
-  return best;
+  return bestD <= maxD2 ? best : -1;
 }
 
 function setStartingPoint() {
