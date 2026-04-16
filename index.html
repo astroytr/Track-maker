@@ -1,40 +1,22 @@
 <!DOCTYPE html>
 <!--
-  ╔══════════════════════════════════════════════════════════════╗
-  ║  CIRCUIT FORGE — Track Studio                                ║
-  ║  VERSION: 6.1                                                ║
-  ║                                                              ║
-  ║  VERSIONING RULE (read before making any changes):           ║
-  ║  • Bump the version number in ALL of these places per edit:  ║
-  ║    1. This comment block (VERSION: X.Y)                      ║
-  ║    2. #version-badge span in the sidebar (in index.html)     ║
-  ║    3. .sb-sub div in the sidebar (in index.html)             ║
-  ║    4. The v-badge span in the AI Convert modal (index.html)  ║
-  ║    5. The #version-hud div in canvas-wrap (index.html)       ║
-  ║  • Minor fix  → bump patch  (6.1 → 6.2)                     ║
-  ║  • New feature → bump minor (6.1 → 6.2) or major (6 → 7)    ║
-  ║                                                              ║
-  ║  FILE STRUCTURE:                                             ║
-  ║  index.html       — this shell + all HTML markup             ║
-  ║  style.css        — all CSS styles                           ║
-  ║  js/render.js     — state, camera, surface config, rendering ║
-  ║  js/tools.js      — tools, paint/erase, input, waypoints     ║
-  ║  js/export.js     — export modal & download logic            ║
-  ║  js/ai-convert.js — image→waypoints pipeline (upload this   ║
-  ║                     one when asking for converter changes)   ║
-  ║  js/init.js       — app bootstrap                            ║
-  ╚══════════════════════════════════════════════════════════════╝
+  CIRCUIT FORGE — Track Studio  v6.4
+  FILE STRUCTURE:
+    index.html   — HTML shell
+    style.css    — all styles
+    js/render.js — state, camera, rendering
+    js/tools.js  — tools, paint, input, waypoints
+    js/export.js — export modal
+    js/ai-convert.js — image→waypoints pipeline
+    js/init.js   — bootstrap
 -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-<meta http-equiv="Pragma" content="no-cache">
-<meta http-equiv="Expires" content="0">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>CIRCUIT FORGE v6 — Track Maker</title>
+<title>CIRCUIT FORGE v6.4 — Track Maker</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -46,21 +28,22 @@
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span id="version-badge" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v6.1</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v6.4</span>
       </div>
-      <div class="sb-sub">Track Studio · v6.1</div>
+      <div class="sb-sub">Track Studio · v6.4</div>
     </div>
 
-    <!-- Upload -->
-    <div id="upload-zone" onclick="document.getElementById('file-input').click()">
+    <div id="upload-zone" onclick="document.getElementById('file-input').click()"
+         ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
+         ondragleave="this.style.borderColor=''"
+         ondrop="event.preventDefault();const f=event.dataTransfer.files[0];if(f)document.getElementById('file-input').dispatchEvent(Object.assign(new Event('change'),{target:{files:[f]}}))">
       <div class="uz-icon">📁</div>
-      <div class="uz-text"><span class="uz-accent">Drop or click</span> to load<br>a track image</div>
+      <div class="uz-text"><span class="uz-accent">Drop or click</span> to load<br>a background image</div>
     </div>
     <input type="file" id="file-input" accept="image/*">
 
     <div class="divider"></div>
 
-    <!-- Tools -->
     <div class="sb-section">
       <div class="sb-label">Tool</div>
       <div class="tool-grid">
@@ -85,7 +68,6 @@
       </div>
     </div>
 
-    <!-- Surface type (paint mode) -->
     <div class="sb-section" id="surface-section">
       <div class="sb-label">Surface Type</div>
       <div class="surf-list">
@@ -116,7 +98,6 @@
       </div>
     </div>
 
-    <!-- Brush size -->
     <div class="sb-section" id="brush-section">
       <div class="sb-label">Brush Size</div>
       <div class="brush-row">
@@ -127,14 +108,11 @@
 
     <div class="divider"></div>
 
-    <!-- Keyboard hints -->
     <div class="kb-hint">
       <div class="sb-label">Controls</div>
       <div class="kb-row"><span class="kb-key">Scroll</span><span class="kb-desc">Zoom</span></div>
-      <div class="kb-row"><span class="kb-key">Space+Drag</span><span class="kb-desc">Pan camera</span></div>
-      <div class="kb-row"><span class="kb-key">W</span><span class="kb-desc">Waypoint tool</span></div>
-      <div class="kb-row"><span class="kb-key">P</span><span class="kb-desc">Paint tool</span></div>
-      <div class="kb-row"><span class="kb-key">E</span><span class="kb-desc">Erase tool</span></div>
+      <div class="kb-row"><span class="kb-key">Space+Drag</span><span class="kb-desc">Pan</span></div>
+      <div class="kb-row"><span class="kb-key">W / P / E</span><span class="kb-desc">Switch tool</span></div>
       <div class="kb-row"><span class="kb-key">Del</span><span class="kb-desc">Delete last WP</span></div>
       <div class="kb-row"><span class="kb-key">Ctrl+Z</span><span class="kb-desc">Undo paint</span></div>
     </div>
@@ -154,7 +132,7 @@
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v6.1</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v6.4</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
@@ -162,9 +140,7 @@
 
   <!-- ══ RIGHT PANEL ══ -->
   <div id="right-panel">
-    <div class="rp-header">
-      <div class="rp-title">Track Info</div>
-    </div>
+    <div class="rp-header"><div class="rp-title">Track Info</div></div>
     <div class="rp-section">
       <div class="rp-label">Name</div>
       <input class="track-name-input" id="track-name" type="text" value="MY CIRCUIT" maxlength="24" placeholder="TRACK NAME">
@@ -187,7 +163,6 @@
       <div class="info-row"><span class="info-key">Paint layers</span><span class="info-val" id="stat-paint">0</span></div>
       <div class="info-row"><span class="info-key">Zoom</span><span class="info-val" id="stat-zoom">100%</span></div>
     </div>
-
     <div class="rp-section">
       <div class="rp-label">Legend</div>
       <div class="legend-item"><div class="legend-dot" style="background:#e8ff47;"></div><span class="legend-label">Waypoint</span></div>
@@ -200,13 +175,10 @@
       <div class="legend-item"><div class="legend-dot" style="background:#3a5fa8;"></div><span class="legend-label">Tecpro</span></div>
       <div class="legend-item"><div class="legend-dot" style="background:#222;border:1px solid #555;"></div><span class="legend-label">Tyre Wall</span></div>
     </div>
-
     <div class="rp-section" style="border-top:1px solid var(--border);margin-top:auto;">
       <div class="rp-label" style="margin-top:8px;">Waypoints</div>
     </div>
     <div id="wp-list"></div>
-
-    <!-- Barrier list -->
     <div id="barrier-list-section" style="display:none;border-top:1px solid var(--border);">
       <div class="rp-section" style="padding-bottom:0;">
         <div class="rp-label" style="margin-top:8px;">Barrier Segments <span id="barrier-count" style="color:var(--accent2);">0</span></div>
@@ -218,66 +190,31 @@
 
 <!-- ══ MOBILE BOTTOM BAR ══ -->
 <div id="mobile-bar">
-  <div class="mb-btn active" id="mb-waypoint" onclick="setTool('waypoint');closeSurfOverlay()">
-    <span class="mb-icon">📍</span>Waypoint
-  </div>
-  <div class="mb-btn" id="mb-paint" onclick="setTool('paint');closeSurfOverlay()">
-    <span class="mb-icon">🖌️</span>Paint
-  </div>
-  <div class="mb-btn" id="mb-erase" onclick="setTool('erase');closeSurfOverlay()">
-    <span class="mb-icon">⬜</span>Erase
-  </div>
-  <div class="mb-btn" id="mb-pan" onclick="setTool('pan');closeSurfOverlay()">
-    <span class="mb-icon">✋</span>Pan
-  </div>
-  <div class="mb-btn" id="mb-barrier" onclick="setTool('barrier');closeSurfOverlay()">
-    <span class="mb-icon">🚧</span>Barrier
-  </div>
-  <div class="mb-btn" onclick="setStartingPoint();closeSurfOverlay()">
-    <span class="mb-icon">🏁</span>Start
-  </div>
+  <div class="mb-btn active" id="mb-waypoint" onclick="setTool('waypoint');closeSurfOverlay()"><span class="mb-icon">📍</span>Waypoint</div>
+  <div class="mb-btn" id="mb-paint" onclick="setTool('paint');closeSurfOverlay()"><span class="mb-icon">🖌️</span>Paint</div>
+  <div class="mb-btn" id="mb-erase" onclick="setTool('erase');closeSurfOverlay()"><span class="mb-icon">⬜</span>Erase</div>
+  <div class="mb-btn" id="mb-pan" onclick="setTool('pan');closeSurfOverlay()"><span class="mb-icon">✋</span>Pan</div>
+  <div class="mb-btn" id="mb-barrier" onclick="setTool('barrier');closeSurfOverlay()"><span class="mb-icon">🚧</span>Barrier</div>
+  <div class="mb-btn" onclick="setStartingPoint();closeSurfOverlay()"><span class="mb-icon">🏁</span>Start</div>
   <div class="mb-sep"></div>
-  <div class="mb-btn" id="mb-surf" onclick="toggleSurfOverlay()">
-    <span class="mb-icon" id="mb-surf-dot">🟥</span>Surface
-  </div>
+  <div class="mb-btn" id="mb-surf" onclick="toggleSurfOverlay()"><span class="mb-icon" id="mb-surf-dot">🟥</span>Surface</div>
   <div class="mb-sep"></div>
-  <div class="mb-btn" onclick="openExport()">
-    <span class="mb-icon">💾</span>Export
-  </div>
-  <div class="mb-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;flex-shrink:0;">
-    <span class="mb-icon">✦</span>Convert
-  </div>
+  <div class="mb-btn" onclick="openExport()"><span class="mb-icon">💾</span>Export</div>
+  <div class="mb-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;flex-shrink:0;"><span class="mb-icon">✦</span>Convert</div>
 </div>
 
 <!-- ══ MOBILE SURFACE OVERLAY ══ -->
 <div id="surf-overlay">
-  <div class="so-btn active" id="so-flat_kerb" onclick="setSurface('flat_kerb');closeSurfOverlay()">
-    <div class="so-dot" style="background:#e8392a;"></div>Flat Kerb
-  </div>
-  <div class="so-btn" id="so-sausage" onclick="setSurface('sausage');closeSurfOverlay()">
-    <div class="so-dot" style="background:#f5c518;"></div>Sausage
-  </div>
-  <div class="so-btn" id="so-rumble" onclick="setSurface('rumble');closeSurfOverlay()">
-    <div class="so-dot" style="background:#d44;"></div>Rumble
-  </div>
-  <div class="so-btn" id="so-gravel" onclick="setSurface('gravel');closeSurfOverlay()">
-    <div class="so-dot" style="background:#c8b89a;"></div>Gravel
-  </div>
-  <div class="so-btn" id="so-grass" onclick="setSurface('grass');closeSurfOverlay()">
-    <div class="so-dot" style="background:#3a7a3a;"></div>Grass
-  </div>
-  <div class="so-btn" id="so-armco" onclick="setSurface('armco');closeSurfOverlay()">
-    <div class="so-dot" style="background:#aaa;"></div>Armco
-  </div>
-  <div class="so-btn" id="so-tecpro" onclick="setSurface('tecpro');closeSurfOverlay()">
-    <div class="so-dot" style="background:#3a5fa8;"></div>Tecpro
-  </div>
-  <div class="so-btn" id="so-tyrewall" onclick="setSurface('tyrewall');closeSurfOverlay()">
-    <div class="so-dot" style="background:#333;border:1px solid #555;"></div>Tyre Wall
-  </div>
+  <div class="so-btn active" id="so-flat_kerb" onclick="setSurface('flat_kerb');closeSurfOverlay()"><div class="so-dot" style="background:#e8392a;"></div>Flat Kerb</div>
+  <div class="so-btn" id="so-sausage" onclick="setSurface('sausage');closeSurfOverlay()"><div class="so-dot" style="background:#f5c518;"></div>Sausage</div>
+  <div class="so-btn" id="so-rumble" onclick="setSurface('rumble');closeSurfOverlay()"><div class="so-dot" style="background:#d44;"></div>Rumble</div>
+  <div class="so-btn" id="so-gravel" onclick="setSurface('gravel');closeSurfOverlay()"><div class="so-dot" style="background:#c8b89a;"></div>Gravel</div>
+  <div class="so-btn" id="so-grass" onclick="setSurface('grass');closeSurfOverlay()"><div class="so-dot" style="background:#3a7a3a;"></div>Grass</div>
+  <div class="so-btn" id="so-armco" onclick="setSurface('armco');closeSurfOverlay()"><div class="so-dot" style="background:#aaa;"></div>Armco</div>
+  <div class="so-btn" id="so-tecpro" onclick="setSurface('tecpro');closeSurfOverlay()"><div class="so-dot" style="background:#3a5fa8;"></div>Tecpro</div>
+  <div class="so-btn" id="so-tyrewall" onclick="setSurface('tyrewall');closeSurfOverlay()"><div class="so-dot" style="background:#333;border:1px solid #555;"></div>Tyre Wall</div>
 </div>
 
-<!-- ══ MOBILE ACTION BUTTONS ══ -->
 <div id="mobile-actions">
   <div class="ma-btn" onclick="undoPaint()" title="Undo">↩️</div>
   <div class="ma-btn" onclick="mobileDeleteLast()" title="Delete last waypoint">🗑️</div>
@@ -291,7 +228,7 @@
       <button class="modal-close" onclick="closeExport()">✕</button>
     </div>
     <div class="modal-body">
-      <p style="font-size:12px;color:var(--text3);margin-bottom:10px;">Paste this block into <strong style="color:var(--text2)">tracks.js</strong> inside the <code style="color:var(--accent)">TRACK_DEFS</code> object. Then add a card in <strong style="color:var(--text2)">index.html</strong>.</p>
+      <p style="font-size:12px;color:var(--text3);margin-bottom:10px;">Paste this block into <strong style="color:var(--text2)">tracks.js</strong> inside the <code style="color:var(--accent)">TRACK_DEFS</code> object.</p>
       <textarea id="export-code" readonly></textarea>
     </div>
     <div class="modal-footer">
@@ -303,95 +240,83 @@
 
 <!-- ══ AI CONVERT MODAL ══ -->
 <div id="ai-modal">
-  <div class="ai-box" style="width:560px;">
+  <div class="ai-box">
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v6.1</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v6.4</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
     <div class="ai-body">
 
-      <!-- Colour pickers — ALWAYS VISIBLE -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;">
-        <!-- Track colour -->
-        <div>
-          <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;margin-bottom:5px;">TRACK COLOUR</div>
-          <div style="display:flex;align-items:center;gap:7px;">
-            <div id="track-swatch" style="width:32px;height:32px;border-radius:5px;background:#555;border:2px solid var(--border2);flex-shrink:0;"></div>
-            <button id="track-pick-btn" onclick="startEyedropper('track')"
-              style="padding:5px 10px;background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.4);border-radius:4px;
-                     color:#a78bfa;font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px;
-                     cursor:pointer;text-transform:uppercase;">
-              🎯 Pick
-            </button>
-            <span id="track-hex" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;color:var(--text3);letter-spacing:1px;">not set</span>
-          </div>
-        </div>
-        <!-- Background colour -->
-        <div>
-          <div style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;margin-bottom:5px;">BACKGROUND COLOUR</div>
-          <div style="display:flex;align-items:center;gap:7px;">
-            <div id="bg-swatch" style="width:32px;height:32px;border-radius:5px;background:#555;border:2px solid var(--border2);flex-shrink:0;"></div>
-            <button id="bg-pick-btn" onclick="startEyedropper('bg')"
-              style="padding:5px 10px;background:rgba(167,139,250,0.12);border:1px solid rgba(167,139,250,0.4);border-radius:4px;
-                     color:#a78bfa;font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px;
-                     cursor:pointer;text-transform:uppercase;">
-              🎯 Pick
-            </button>
-            <span id="bg-hex" style="font-family:'Barlow Condensed',sans-serif;font-size:10px;color:var(--text3);letter-spacing:1px;">not set</span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Eyedropper hint -->
-      <div id="eyedropper-hint" style="display:none;padding:6px 10px;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);
-           border-radius:4px;font-size:11px;color:#a78bfa;font-family:'Barlow Condensed',sans-serif;letter-spacing:1px;
-           text-align:center;margin-bottom:8px;">
-        🎯 TAP ON THE IMAGE TO PICK COLOUR
-      </div>
-
-      <!-- Step 1: Upload -->
-      <div id="ai-drop" onclick="document.getElementById('ai-file').click()"
+      <!-- Step 1: Upload drop zone -->
+      <div id="ai-drop"
+           onclick="document.getElementById('ai-file').click()"
            ondragover="event.preventDefault();this.classList.add('drag-over')"
            ondragleave="this.classList.remove('drag-over')"
            ondrop="aiHandleDrop(event)">
         <div class="ad-icon">🗺️</div>
-        <div class="ad-text"><span class="ad-accent">Drop or click</span> to upload a track image<br><span style="color:var(--text3);font-size:10px;">Then tap 🎯 Pick to sample track &amp; background colours</span></div>
+        <div class="ad-text">
+          <span class="ad-accent">Drop or click</span> to upload a track image<br>
+          <span style="color:var(--text3);font-size:10px;">Then pick track &amp; background colours with the eyedropper</span>
+        </div>
       </div>
       <input type="file" id="ai-file" accept="image/*" onchange="aiLoadFile(this)">
 
-      <!-- Preview canvas + sliders (shown after upload) -->
-      <div id="ai-preview-wrap" style="display:none;">
-
-        <!-- Preview canvas (eyedropper taps on this) -->
-        <div style="position:relative;text-align:center;">
-          <canvas id="ai-preview-canvas"
-            style="max-width:100%;border-radius:6px;border:1px solid var(--border2);cursor:crosshair;display:block;margin:0 auto;touch-action:none;">
-          </canvas>
-          <!-- Magnifier loupe -->
-          <canvas id="ai-loupe" style="display:none;position:absolute;border-radius:50%;border:2px solid #a78bfa;pointer-events:none;box-shadow:0 2px 12px #0008;"></canvas>
+      <!-- Colour pickers — always visible -->
+      <div class="ai-colour-row">
+        <div class="ai-colour-col">
+          <div class="ai-colour-label">Track Colour</div>
+          <div class="ai-colour-pick">
+            <div id="track-swatch" class="ai-swatch"></div>
+            <button id="track-pick-btn" class="ai-pick-btn" onclick="startEyedropper('track')">🎯 Pick</button>
+            <span id="track-hex" class="ai-hex">not set</span>
+          </div>
         </div>
-
-        <!-- Waypoint count -->
-        <div style="margin-top:10px;display:flex;align-items:center;gap:8px;">
-          <span style="font-size:9px;letter-spacing:2px;text-transform:uppercase;color:var(--text3);font-family:'Barlow Condensed',sans-serif;font-weight:600;white-space:nowrap;">WAYPOINTS</span>
-          <input type="range" min="20" max="200" value="80" id="ai-wp-count"
-            style="flex:1;accent-color:#a78bfa;"
-            oninput="document.getElementById('ai-wp-val').textContent=this.value">
-          <span id="ai-wp-val" style="font-family:'Barlow Condensed',sans-serif;font-size:13px;font-weight:700;color:#a78bfa;min-width:28px;">80</span>
+        <div class="ai-colour-col">
+          <div class="ai-colour-label">Background Colour</div>
+          <div class="ai-colour-pick">
+            <div id="bg-swatch" class="ai-swatch"></div>
+            <button id="bg-pick-btn" class="ai-pick-btn" onclick="startEyedropper('bg')">🎯 Pick</button>
+            <span id="bg-hex" class="ai-hex">not set</span>
+          </div>
         </div>
-
       </div>
 
-      <!-- hidden inputs kept for JS compat -->
-      <input type="hidden" id="ai-thresh" value="128">
-      <input type="hidden" id="ai-smooth" value="3">
-      <input type="hidden" id="ai-invert" value="0">
-      <input type="hidden" id="ai-tolerance" value="40">
+      <!-- Eyedropper active hint -->
+      <div id="eyedropper-hint">🎯 TAP ON THE IMAGE TO PICK COLOUR — then release</div>
+
+      <!-- Preview canvas (shown after image upload) -->
+      <div id="ai-preview-wrap">
+        <div class="ai-canvas-wrap">
+          <canvas id="ai-preview-canvas" style="touch-action:none;"></canvas>
+          <canvas id="ai-loupe"></canvas>
+        </div>
+
+        <!-- Tolerance slider -->
+        <div class="ai-tol-row">
+          <span class="ai-tol-label">Colour Tolerance</span>
+          <input type="range" min="10" max="120" value="40" id="ai-tolerance" style="flex:1;accent-color:#a78bfa;"
+            oninput="document.getElementById('ai-tol-val').textContent=this.value;aiUpdatePreviewOverlay()">
+          <span class="ai-tol-val" id="ai-tol-val">40</span>
+        </div>
+
+        <!-- Waypoint count slider -->
+        <div class="ai-slider-row">
+          <span class="ai-slider-label">Waypoints</span>
+          <input type="range" min="40" max="500" value="150" id="ai-wp-count" style="flex:1;accent-color:#a78bfa;"
+            oninput="document.getElementById('ai-wp-val').textContent=this.value">
+          <span class="ai-slider-val" id="ai-wp-val">150</span>
+        </div>
+      </div>
+
+      <!-- Progress bar -->
       <div class="ai-progress" id="ai-progress"><div class="ai-progress-bar" id="ai-progress-bar"></div></div>
-      <div id="ai-status">Upload an image, then pick track &amp; background colours</div>
+
+      <!-- Status message -->
+      <div id="ai-status">Upload a track image to get started</div>
+
     </div>
     <div class="ai-footer">
       <button class="ai-btn cancel" onclick="closeAIConvert()">Cancel</button>
@@ -400,13 +325,12 @@
   </div>
 </div>
 
-<div id="toast">Copied!</div>
+<div id="toast"></div>
 
-
-<script src="render.js"></script>
-<script src="tools.js"></script>
-<script src="export.js"></script>
-<script src="ai-convert.js"></script>
-<script src="init.js"></script>
+<script src="js/render.js"></script>
+<script src="js/tools.js"></script>
+<script src="js/export.js"></script>
+<script src="js/ai-convert.js"></script>
+<script src="js/init.js"></script>
 </body>
 </html>

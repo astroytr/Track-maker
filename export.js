@@ -1,3 +1,4 @@
+// ═══════════════════════════════════════════════════
 // EXPORT
 // ═══════════════════════════════════════════════════
 function buildExportCode() {
@@ -24,7 +25,6 @@ function buildExportCode() {
   const surfList = Object.entries(surfaceCounts).map(([k, v]) => `${SURFACES[k]?.label || k}(${v})`).join(', ');
   const wpLines = wps.map((w, i) => `      [${w.x.toFixed(1)}, ${w.y.toFixed(1)}],${i === 0 ? '  // SF line' : ''}`).join('\n');
   const paintSummary = paintLayers.length > 0 ? `\n  // Paint zones: ${surfList}\n  // (${paintLayers.length} paint blobs)` : '';
-
   const barrierLines = barrierSegments.length > 0
     ? `\n    barriers_detail: [\n${barrierSegments.map(b => `      { from: ${b.from}, to: ${b.to}, surface: '${b.surface}' }`).join(',\n')}\n    ],`
     : '';
@@ -72,5 +72,3 @@ function showToast(msg) {
   t.classList.add('show');
   setTimeout(() => t.classList.remove('show'), 2200);
 }
-
-// ═══════════════════════════════════════════════════

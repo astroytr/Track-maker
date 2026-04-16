@@ -23,7 +23,7 @@ let panStart = { x: 0, y: 0, camX: 0, camY: 0 };
 let selectedWP = -1;
 let mouseWorld = { x: 0, y: 0 };
 let startingPointIdx = 0;
-let barrierSegments = [];   // {from, to, surface}
+let barrierSegments = [];
 let barrierSelStart = -1;
 
 // ═══════════════════════════════════════════════════
@@ -58,14 +58,14 @@ function screenToWorld(sx, sy) {
 // SURFACE CONFIG
 // ═══════════════════════════════════════════════════
 const SURFACES = {
-  flat_kerb: { color: 'rgba(232,57,42,0.55)',  label: 'Flat Kerb',    dot: '#e8392a' },
-  sausage:   { color: 'rgba(245,197,24,0.65)',  label: 'Sausage Kerb', dot: '#f5c518' },
-  rumble:    { color: 'rgba(200,50,50,0.50)',   label: 'Rumble Strip', dot: '#d44444' },
-  gravel:    { color: 'rgba(200,184,154,0.60)', label: 'Gravel/Sand',  dot: '#c8b89a' },
-  grass:     { color: 'rgba(40,110,40,0.55)',   label: 'Grass',        dot: '#3a7a3a' },
-  armco:     { color: 'rgba(180,180,180,0.70)', label: 'Armco Wall',   dot: '#aaaaaa' },
-  tecpro:    { color: 'rgba(40,80,180,0.65)',   label: 'Tecpro',       dot: '#3a5fa8' },
-  tyrewall:  { color: 'rgba(30,30,30,0.80)',    label: 'Tyre Wall',    dot: '#333333' },
+  flat_kerb: { color: 'rgba(232,57,42,0.85)',   label: 'Flat Kerb',    dot: '#e8392a' },
+  sausage:   { color: 'rgba(245,197,24,0.90)',   label: 'Sausage Kerb', dot: '#f5c518' },
+  rumble:    { color: 'rgba(200,50,50,0.75)',    label: 'Rumble Strip', dot: '#dd3333' },
+  gravel:    { color: 'rgba(200,184,154,0.75)',  label: 'Gravel/Sand',  dot: '#c8b89a' },
+  grass:     { color: 'rgba(40,110,40,0.70)',    label: 'Grass',        dot: '#3a7a3a' },
+  armco:     { color: 'rgba(180,180,180,0.90)',  label: 'Armco Wall',   dot: '#bbbbbb' },
+  tecpro:    { color: 'rgba(40,80,180,0.85)',    label: 'Tecpro',       dot: '#3a5fa8' },
+  tyrewall:  { color: 'rgba(55,55,55,0.90)',     label: 'Tyre Wall',    dot: '#555555' },
 };
 
 // ═══════════════════════════════════════════════════
@@ -75,7 +75,6 @@ function render() {
   const W = mainCanvas.width, H = mainCanvas.height;
 
   bgCtx.clearRect(0, 0, W, H);
-  // Grid
   bgCtx.strokeStyle = 'rgba(255,255,255,0.04)';
   bgCtx.lineWidth = 1;
   const gridSize = 50 * cam.zoom;
@@ -84,7 +83,6 @@ function render() {
   for (let x = offX; x < W; x += gridSize) { bgCtx.beginPath(); bgCtx.moveTo(x, 0); bgCtx.lineTo(x, H); bgCtx.stroke(); }
   for (let y = offY; y < H; y += gridSize) { bgCtx.beginPath(); bgCtx.moveTo(0, y); bgCtx.lineTo(W, y); bgCtx.stroke(); }
 
-  // Background image
   if (bgImage) {
     const s = worldToScreen(bgImageBounds.x, bgImageBounds.y);
     bgCtx.globalAlpha = 0.55;
@@ -94,39 +92,34 @@ function render() {
 
   ctx.clearRect(0, 0, W, H);
 
-  // Paint layers
   for (const p of paintLayers) {
     const s = worldToScreen(p.x, p.y);
-    const cfg = SURFACES[p.surface];
     ctx.beginPath();
     ctx.arc(s.x, s.y, p.r * cam.zoom, 0, Math.PI * 2);
-    ctx.fillStyle = cfg.color;
+    ctx.fillStyle = SURFACES[p.surface].color;
     ctx.fill();
   }
 
-  // Draw track centreline as a two-colour road strip
   if (waypoints.length >= 2) {
     drawTrackRoad();
     drawBarrierSegments();
     drawCentreline();
   }
 
-  // Rainbow legend
   drawLegend();
 
-  // Waypoints
   for (let i = 0; i < waypoints.length; i++) {
     const wp = waypoints[i];
     const s = worldToScreen(wp.x, wp.y);
     const isStart = i === startingPointIdx;
-    const isSel = i === selectedWP;
+    const isSel   = i === selectedWP;
     const isBarrierStart = tool === 'barrier' && i === barrierSelStart;
     ctx.beginPath();
     ctx.arc(s.x, s.y, isBarrierStart ? 11 : (isSel ? 9 : (isStart ? 8 : 6)), 0, Math.PI * 2);
     ctx.fillStyle = isBarrierStart ? '#ff8c00' : (isStart ? '#00ff88' : '#e8ff47');
     ctx.fill();
     ctx.strokeStyle = isBarrierStart ? '#fff' : '#000';
-    ctx.lineWidth = isBarrierStart ? 2.5 : 1.5;
+    ctx.lineWidth   = isBarrierStart ? 2.5 : 1.5;
     ctx.stroke();
     ctx.fillStyle = '#000';
     ctx.font = 'bold 8px Barlow Condensed';
@@ -136,245 +129,238 @@ function render() {
   }
 }
 
+// ═══════════════════════════════════════════════════
+// SPLINE
+// ═══════════════════════════════════════════════════
 function catmullPoint(p0, p1, p2, p3, t) {
-  const t2 = t * t, t3 = t2 * t;
+  const t2 = t*t, t3 = t2*t;
   return {
-    x: 0.5 * ((2 * p1.x) + (-p0.x + p2.x) * t + (2 * p0.x - 5 * p1.x + 4 * p2.x - p3.x) * t2 + (-p0.x + 3 * p1.x - 3 * p2.x + p3.x) * t3),
-    y: 0.5 * ((2 * p1.y) + (-p0.y + p2.y) * t + (2 * p0.y - 5 * p1.y + 4 * p2.y - p3.y) * t2 + (-p0.y + 3 * p1.y - 3 * p2.y + p3.y) * t3)
+    x: 0.5*((2*p1.x)+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
+    y: 0.5*((2*p1.y)+(-p0.y+p2.y)*t+(2*p0.y-5*p1.y+4*p2.y-p3.y)*t2+(-p0.y+3*p1.y-3*p2.y+p3.y)*t3)
   };
 }
 
-// Build full spline point array
 function buildSplinePoints(segs) {
   const n = waypoints.length;
   const pts = [];
   for (let i = 0; i < n; i++) {
-    const p0 = waypoints[(i - 1 + n) % n];
-    const p1 = waypoints[i];
-    const p2 = waypoints[(i + 1) % n];
-    const p3 = waypoints[(i + 2) % n];
-    for (let j = 0; j < segs; j++) {
-      pts.push({ pt: catmullPoint(p0, p1, p2, p3, j / segs), seg: i });
-    }
+    const p0 = waypoints[(i-1+n)%n], p1 = waypoints[i];
+    const p2 = waypoints[(i+1)%n],   p3 = waypoints[(i+2)%n];
+    for (let j = 0; j < segs; j++) pts.push({ pt: catmullPoint(p0,p1,p2,p3,j/segs), seg: i });
   }
   return pts;
 }
 
-// Draw a two-colour road: dark asphalt body + coloured kerb stripes on edges
+// ═══════════════════════════════════════════════════
+// TRACK ROAD
+// ═══════════════════════════════════════════════════
 function drawTrackRoad() {
-  const splinePts = buildSplinePoints(16);  // more segments = smoother tight turns
+  const splinePts = buildSplinePoints(16);
   if (splinePts.length < 2) return;
   const screenPts = splinePts.map(p => ({ s: worldToScreen(p.pt.x, p.pt.y), seg: p.seg }));
 
-  const trackW = Math.max(6, 14 * cam.zoom);   // total road half-width in px
-  const kerbW  = Math.max(2, 4  * cam.zoom);   // kerb stripe width in px
+  const trackW = Math.max(6, 14 * cam.zoom);
+  const kerbW  = Math.max(2, 4  * cam.zoom);
 
-  // ── Layer 1: outer white edge (widest, drawn first) ──
+  // White outer edge
   ctx.strokeStyle = 'rgba(200,200,200,0.45)';
-  ctx.lineWidth = trackW * 2 + kerbW * 2;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  ctx.lineWidth = trackW*2 + kerbW*2;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.beginPath();
-  screenPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.s.x, p.s.y) : ctx.lineTo(p.s.x, p.s.y));
-  ctx.closePath();
-  ctx.stroke();
+  screenPts.forEach((p, i) => i===0 ? ctx.moveTo(p.s.x,p.s.y) : ctx.lineTo(p.s.x,p.s.y));
+  ctx.closePath(); ctx.stroke();
 
-  // ── Layer 2: alternating red/white kerb chevrons ──
-  // Draw chevrons as full-width lines, THEN mask centre with asphalt.
-  // This prevents the "bleed" in tight turns where the thin mask was too narrow.
+  // Red/white kerb chevrons
   let dist = 0;
   for (let i = 1; i < screenPts.length; i++) {
     const a = screenPts[i-1].s, b = screenPts[i].s;
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const segLen = Math.hypot(dx, dy);
-    dist += segLen;
-    const chevronSize = 20;
-    const phase = Math.floor(dist / chevronSize);
-    ctx.strokeStyle = phase % 2 === 0 ? 'rgba(220,30,30,0.75)' : 'rgba(230,230,230,0.65)';
-    ctx.lineWidth = trackW * 2 + kerbW * 2;  // full outer width
-    ctx.lineCap = 'butt';  // butt caps prevent chevron overlap in tight turns
-    ctx.lineJoin = 'miter';
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+    dist += Math.hypot(b.x-a.x, b.y-a.y);
+    const phase = Math.floor(dist / 20);
+    ctx.strokeStyle = phase%2===0 ? 'rgba(220,30,30,0.75)' : 'rgba(230,230,230,0.65)';
+    ctx.lineWidth = trackW*2 + kerbW*2;
+    ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
   }
 
-  // ── Layer 3: asphalt body — masks chevron centres cleanly ──
+  // Asphalt centre
   ctx.strokeStyle = 'rgba(55,55,60,0.95)';
-  ctx.lineWidth = trackW * 2;
-  ctx.lineCap = 'round';
-  ctx.lineJoin = 'round';
+  ctx.lineWidth = trackW*2;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.beginPath();
-  screenPts.forEach((p, i) => i === 0 ? ctx.moveTo(p.s.x, p.s.y) : ctx.lineTo(p.s.x, p.s.y));
-  ctx.closePath();
-  ctx.stroke();
+  screenPts.forEach((p, i) => i===0 ? ctx.moveTo(p.s.x,p.s.y) : ctx.lineTo(p.s.x,p.s.y));
+  ctx.closePath(); ctx.stroke();
 
   // Start/finish line
   if (startingPointIdx < waypoints.length) {
     const sfPt = worldToScreen(waypoints[startingPointIdx].x, waypoints[startingPointIdx].y);
     ctx.save();
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 3;
-    ctx.setLineDash([4, 4]);
-    const perpLen = trackW + 4;
-    // Draw a short perpendicular bar
-    const i1 = Math.min(startingPointIdx * 10, screenPts.length - 1);
-    const i2 = Math.min(i1 + 1, screenPts.length - 1);
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.setLineDash([4,4]);
+    const i1 = Math.min(startingPointIdx*16, screenPts.length-1);
+    const i2 = Math.min(i1+1, screenPts.length-1);
     if (i2 > i1) {
-      const dx = screenPts[i2].s.x - screenPts[i1].s.x;
-      const dy = screenPts[i2].s.y - screenPts[i1].s.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const px = -dy / len * perpLen, py = dx / len * perpLen;
-      ctx.beginPath();
-      ctx.moveTo(sfPt.x - px, sfPt.y - py);
-      ctx.lineTo(sfPt.x + px, sfPt.y + py);
-      ctx.stroke();
+      const dx = screenPts[i2].s.x-screenPts[i1].s.x, dy = screenPts[i2].s.y-screenPts[i1].s.y;
+      const len = Math.hypot(dx,dy)||1;
+      const px = -dy/len*(trackW+4), py = dx/len*(trackW+4);
+      ctx.beginPath(); ctx.moveTo(sfPt.x-px,sfPt.y-py); ctx.lineTo(sfPt.x+px,sfPt.y+py); ctx.stroke();
     }
-    ctx.setLineDash([]);
-    ctx.restore();
+    ctx.setLineDash([]); ctx.restore();
   }
 }
 
-// Draw barrier segments as stacked parallel bands offset from the track edge.
-// Bands are drawn in WORLD space normals (not screen space) so zoom doesn't
-// flip directions. Both sides of the track are drawn for each segment.
-// Multiple segments on the same waypoint range stack outward slot by slot.
+// ═══════════════════════════════════════════════════
+// BARRIER SEGMENTS
+//
+// FIX: Uses miter-based offset at each spline point.
+// The miter direction is the normalised average of the normals of the
+// two adjacent spline segments. Miter length is offset / cos(half_angle),
+// capped at 3× to prevent wild extensions on very tight corners.
+// This prevents barriers from crossing each other on the inside of hairpins.
+// Both sides (inside + outside) are drawn with proper miter geometry.
+// ═══════════════════════════════════════════════════
 function drawBarrierSegments() {
-  const splinePts = buildSplinePoints(10);
-  const hasSegments = barrierSegments && barrierSegments.length > 0;
-  const hasHover    = tool === 'barrier' && barrierSelStart >= 0;
-  if (!hasSegments && !hasHover) return;
+  const splinePts = buildSplinePoints(12);
+  const hasSegs  = barrierSegments && barrierSegments.length > 0;
+  const hasHover = tool === 'barrier' && barrierSelStart >= 0;
+  if (!hasSegs && !hasHover) return;
   if (splinePts.length < 2) return;
 
-  // ── Per-spline-point WORLD-space unit normals ──────────
-  // Right-hand perp of tangent in world coords, then we offset in screen space.
-  // Compute tangent in world coords, rotate 90° → both +normal and -normal sides.
-  const worldNormals = splinePts.map((_, i) => {
-    const prev = splinePts[Math.max(0, i - 1)].pt;
-    const next = splinePts[Math.min(splinePts.length - 1, i + 1)].pt;
-    const tx = next.x - prev.x;
-    const ty = next.y - prev.y;
-    const len = Math.hypot(tx, ty) || 1;
-    // right-hand perp: (ty, -tx) normalised
-    return { nx: ty / len, ny: -tx / len };
-  });
+  const TRACK_HALF = Math.max(6, 14 * cam.zoom);
+  const BAND_W     = Math.max(3,  5 * cam.zoom);
+  const BAND_GAP   = Math.max(1,  2 * cam.zoom);
 
-  // ── Band sizing (in screen pixels, zoom-aware) ──────────
-  const TRACK_HALF = Math.max(6, 14 * cam.zoom);   // must match drawTrackRoad
-  const BAND_W     = Math.max(3, 5 * cam.zoom);
-  const BAND_GAP   = Math.max(1, 1.5 * cam.zoom);
+  // Pre-compute per-point miter directions (right-hand normal of spline at that point).
+  // We do this in WORLD space and convert to screen offsets per point.
+  const N = splinePts.length;
+  const miterR = new Array(N);  // right-side unit miter vector (in world px)
+  for (let i = 0; i < N; i++) {
+    const prev = splinePts[(i-1+N)%N].pt;
+    const cur  = splinePts[i].pt;
+    const next = splinePts[(i+1)%N].pt;
 
-  // ── Helper: draw one strip along ptIndices at slot offset, one side ─
-  function drawStrip(ptIndices, offset, colorStr, alpha, lineW) {
+    // Incoming tangent normal (right-hand perp)
+    const t1x = cur.x-prev.x, t1y = cur.y-prev.y;
+    const l1  = Math.hypot(t1x,t1y)||1;
+    const n1x = t1y/l1, n1y = -t1x/l1;
+
+    // Outgoing tangent normal (right-hand perp)
+    const t2x = next.x-cur.x, t2y = next.y-cur.y;
+    const l2  = Math.hypot(t2x,t2y)||1;
+    const n2x = t2y/l2, n2y = -t2x/l2;
+
+    // Miter bisector
+    let mx = n1x+n2x, my = n1y+n2y;
+    const mlen = Math.hypot(mx,my);
+    if (mlen > 1e-6) { mx/=mlen; my/=mlen; } else { mx=n1x; my=n1y; }
+
+    // Miter scale: 1/cos(half_angle), capped at 3 to prevent hairpin explosion
+    const cosHalf = n1x*mx + n1y*my;
+    const scale   = cosHalf > 0.3 ? Math.min(1/cosHalf, 3.0) : 1.0;
+
+    miterR[i] = { x: mx*scale, y: my*scale, base: worldToScreen(cur.x, cur.y) };
+  }
+
+  // Draw one barrier strip: a polyline of offset screen positions on one side.
+  // side = +1 for right (outside going forward), -1 for left (inside).
+  function drawStrip(ptIndices, baseOffset, colorRgba, lineW, side) {
     if (ptIndices.length < 2) return;
-    const col = colorStr.replace(/[\d.]+\)$/, alpha + ')');
-    ctx.strokeStyle = col;
+    const totalOffset = baseOffset * cam.zoom;
+    ctx.beginPath();
+    ptIndices.forEach((pi, k) => {
+      const m  = miterR[pi];
+      const ox = m.base.x + side * m.x * totalOffset;
+      const oy = m.base.y + side * m.y * totalOffset;
+      k === 0 ? ctx.moveTo(ox, oy) : ctx.lineTo(ox, oy);
+    });
+    ctx.strokeStyle = colorRgba;
     ctx.lineWidth   = lineW;
     ctx.lineCap     = 'round';
     ctx.lineJoin    = 'round';
-    ctx.beginPath();
-    ptIndices.forEach((pi, i) => {
-      const s  = worldToScreen(splinePts[pi].pt.x, splinePts[pi].pt.y);
-      // Offset in screen space using world normal scaled by cam.zoom
-      const ox = s.x + worldNormals[pi].nx * offset;
-      const oy = s.y + worldNormals[pi].ny * offset;
-      i === 0 ? ctx.moveTo(ox, oy) : ctx.lineTo(ox, oy);
-    });
     ctx.stroke();
   }
 
-  // Draw one band: both sides of track at the given slot index
-  function drawBand(ptIndices, slotIndex, colorStr, alpha) {
-    if (ptIndices.length < 2) return;
-    // slot 0 = just outside track edge; each slot stacks further out
-    const offset = TRACK_HALF + BAND_GAP + slotIndex * (BAND_W + BAND_GAP) + BAND_W * 0.5;
-    // +normal side (right of travel direction)
-    drawStrip(ptIndices, +offset, colorStr, alpha, BAND_W);
-    // -normal side (left of travel direction)
-    drawStrip(ptIndices, -offset, colorStr, alpha, BAND_W);
+  // Draw both sides of a band at the given slot index.
+  function drawBand(ptIndices, slot, colorRgba) {
+    const baseOff = TRACK_HALF + BAND_GAP + slot * (BAND_W + BAND_GAP) + BAND_W * 0.5;
+    drawStrip(ptIndices, baseOff, colorRgba, BAND_W, +1);
+    drawStrip(ptIndices, baseOff, colorRgba, BAND_W, -1);
   }
 
-  // ── Per-point slot cursor so overlapping segments stack cleanly ──
-  // removed slot stacking to prevent overlap
-const slotCursor = new Int32Array(splinePts.length);
-
-  // ── Draw committed segments ──────────────────────────────
-  if (hasSegments) {
+  // Committed segments
+  if (hasSegs) {
     barrierSegments.forEach(seg => {
       const cfg = SURFACES[seg.surface];
+      if (!cfg) return;
       const ptIndices = [];
-      splinePts.forEach((p, pi) => {
-        if (p.seg >= seg.from && p.seg <= seg.to) ptIndices.push(pi);
-      });
+      splinePts.forEach((p, pi) => { if (p.seg >= seg.from && p.seg <= seg.to) ptIndices.push(pi); });
       if (ptIndices.length < 2) return;
-
-      // Assign the minimum slot currently in use across this segment
-      const minSlot = Math.min(...ptIndices.map(pi => slotCursor[pi]));
-      drawBand(ptIndices, 0, cfg.color, '0.95');
-
-      // Advance slot cursor for every point covered
-      ptIndices.forEach(pi => slotCursor[pi]++);
+      drawBand(ptIndices, 0, cfg.color);
     });
   }
 
-  // ── Hover preview while placing ─────────────────────────
+  // Hover preview
   if (hasHover) {
     const hoverSeg = getSegmentNear(mouseWorld.x, mouseWorld.y);
     if (hoverSeg >= 0) {
       const from = Math.min(barrierSelStart, hoverSeg);
       const to   = Math.max(barrierSelStart, hoverSeg);
-      const ptIndices = splinePts
-        .map((p, pi) => ({ p, pi }))
-        .filter(({ p }) => p.seg >= from && p.seg <= to)
-        .map(({ pi }) => pi);
+      const ptIndices = splinePts.map((p,pi) => ({p,pi})).filter(({p}) => p.seg>=from&&p.seg<=to).map(({pi})=>pi);
       if (ptIndices.length >= 2) {
-        const previewSlot = Math.max(...ptIndices.map(pi => slotCursor[pi]));
-        drawBand(ptIndices, 0, SURFACES[surface].color, '0.55');
+        const hcol = SURFACES[surface].color.replace(/[\d.]+\)$/, '0.5)');
+        drawBand(ptIndices, 0, hcol);
       }
     }
   }
 }
 
-// Rainbow legend: used surfaces/barriers side-by-side as colour swatches
+// ═══════════════════════════════════════════════════
+// CANVAS LEGEND (side-by-side colour swatches)
+//
+// FIX: ctx.roundRect is not available on older iOS Safari (< 16).
+// Replaced with a manual quadratic-curve rounded rect that works everywhere.
+// ═══════════════════════════════════════════════════
+function _roundRect(cx, x, y, w, h, r) {
+  r = Math.min(r, w/2, h/2);
+  cx.beginPath();
+  cx.moveTo(x+r, y);
+  cx.lineTo(x+w-r, y);  cx.quadraticCurveTo(x+w, y,   x+w, y+r);
+  cx.lineTo(x+w, y+h-r); cx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  cx.lineTo(x+r, y+h);  cx.quadraticCurveTo(x,   y+h, x,   y+h-r);
+  cx.lineTo(x,   y+r);  cx.quadraticCurveTo(x,   y,   x+r, y);
+  cx.closePath();
+}
+
 function drawLegend() {
   if (typeof barrierSegments === 'undefined') return;
-  // Collect unique surfaces in use (barriers + paint)
   const usedSet = new Set();
   barrierSegments.forEach(s => usedSet.add(s.surface));
   paintLayers.forEach(p => usedSet.add(p.surface));
   if (usedSet.size === 0) return;
 
   const used = [...usedSet];
-  const swatchW = 44, swatchH = 18, pad = 4, radius = 5;
-  const totalW = used.length * (swatchW + pad) - pad + pad * 2;
-  const startX = 8, startY = mainCanvas.height - swatchH - 10;
+  const swatchW = 54, swatchH = 22, pad = 5, r = 5;
+  const totalW  = used.length * (swatchW + pad) - pad + pad*2;
+  const sx = 10, sy = mainCanvas.height - swatchH - 12;
 
-  // Background pill
   ctx.save();
-  ctx.globalAlpha = 0.78;
-  ctx.fillStyle = '#1a1a22';
-  ctx.beginPath();
-  ctx.roundRect(startX - pad, startY - pad, totalW, swatchH + pad * 2, radius + 2);
+  ctx.globalAlpha = 0.85;
+  ctx.fillStyle = '#0d0d18';
+  _roundRect(ctx, sx-pad, sy-pad, totalW, swatchH+pad*2, r+2);
   ctx.fill();
   ctx.globalAlpha = 1;
 
   used.forEach((surf, i) => {
     const cfg = SURFACES[surf];
     if (!cfg) return;
-    const x = startX + i * (swatchW + pad);
-    const y = startY;
-    // Colour swatch
+    const x = sx + i*(swatchW+pad), y = sy;
     ctx.fillStyle = cfg.dot;
-    ctx.beginPath();
-    ctx.roundRect(x, y, swatchW, swatchH, radius);
+    _roundRect(ctx, x, y, swatchW, swatchH, r);
     ctx.fill();
-    // Label
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 7.5px Barlow Condensed, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(cfg.label.toUpperCase(), x + swatchW / 2, y + swatchH / 2);
+    ctx.shadowColor = '#000'; ctx.shadowBlur = 4;
+    ctx.font = 'bold 8px "Barlow Condensed", sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(cfg.label.toUpperCase(), x+swatchW/2, y+swatchH/2);
+    ctx.shadowBlur = 0;
   });
   ctx.restore();
 }
@@ -383,24 +369,16 @@ function drawCentreline() {
   const n = waypoints.length;
   ctx.strokeStyle = 'rgba(232,255,71,0.25)';
   ctx.lineWidth = 1;
-  ctx.setLineDash([4, 8]);
+  ctx.setLineDash([4,8]);
   ctx.beginPath();
-  const segs = 8;
   for (let i = 0; i < n; i++) {
-    const p0 = waypoints[(i - 1 + n) % n];
-    const p1 = waypoints[i];
-    const p2 = waypoints[(i + 1) % n];
-    const p3 = waypoints[(i + 2) % n];
-    for (let j = 0; j < segs; j++) {
-      const pt = catmullPoint(p0, p1, p2, p3, j / segs);
-      const s = worldToScreen(pt.x, pt.y);
-      if (i === 0 && j === 0) ctx.moveTo(s.x, s.y);
-      else ctx.lineTo(s.x, s.y);
+    const p0 = waypoints[(i-1+n)%n], p1 = waypoints[i];
+    const p2 = waypoints[(i+1)%n],   p3 = waypoints[(i+2)%n];
+    for (let j = 0; j < 8; j++) {
+      const pt = catmullPoint(p0,p1,p2,p3,j/8);
+      const s  = worldToScreen(pt.x, pt.y);
+      i===0&&j===0 ? ctx.moveTo(s.x,s.y) : ctx.lineTo(s.x,s.y);
     }
   }
-  ctx.closePath();
-  ctx.stroke();
-  ctx.setLineDash([]);
+  ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
 }
-
-// ═══════════════════════════════════════════════════
