@@ -242,118 +242,117 @@ function drawTrackRoad() {
   }
 }
 
-// Draw barrier segments as stacked parallel offset bands.
-// Every segment placed on the same spline region stacks outward so you can
-// see ALL surfaces applied at once — like coloured kerb stripes.
+// Draw barrier segments as stacked parallel bands offset from the track edge.
+// Multiple segments covering the same waypoint range stack outward, one band
+// per surface, so you can see every applied surface simultaneously.
 function drawBarrierSegments() {
   const splinePts = buildSplinePoints(10);
-  if (!barrierSegments.length && !(tool === 'barrier' && barrierSelStart >= 0)) return;
+  const hasSegments = barrierSegments && barrierSegments.length > 0;
+  const hasHover    = tool === 'barrier' && barrierSelStart >= 0;
+  if (!hasSegments && !hasHover) return;
 
-  // Band geometry constants (screen pixels, then scaled by zoom)
-  const BAND_W      = Math.max(3, 5  * cam.zoom);   // width of each individual band
-  const BAND_GAP    = Math.max(0.5, 0.8 * cam.zoom); // gap between stacked bands
-  const TRACK_HALF  = Math.max(6, 14 * cam.zoom);   // must match drawTrackRoad's trackW
-
-  // Build per-spline-point normals (perpendicular to travel direction, pointing outward).
-  // We approximate the outward direction by comparing adjacent screen points.
-  const normals = splinePts.map((p, i) => {
-    const prev = splinePts[i > 0 ? i - 1 : 0];
-    const next = splinePts[i < splinePts.length - 1 ? i + 1 : splinePts.length - 1];
+  // ── Per-spline-point outward unit normals ──────────────
+  // Right-hand perpendicular of the travel tangent (pointing away from track centre).
+  const normals = splinePts.map((_, i) => {
+    const prev = splinePts[Math.max(0, i - 1)];
+    const next = splinePts[Math.min(splinePts.length - 1, i + 1)];
     const sp = worldToScreen(prev.pt.x, prev.pt.y);
-    const sn = worldToScreen(next.pt.x,  next.pt.y);
+    const sn = worldToScreen(next.pt.x, next.pt.y);
     const tx = sn.x - sp.x, ty = sn.y - sp.y;
     const len = Math.hypot(tx, ty) || 1;
-    // Right-hand perpendicular of travel = (ty, -tx) normalised
     return { nx: ty / len, ny: -tx / len };
   });
 
-  // For each spline index, count how many barrier segments cover it and
-  // which stack slot each belongs to (so they draw without overlap).
-  // Stack index = how many segments covering this point come before this one.
-  // We draw each segment at its slot offset from the track edge.
+  // ── Band sizing (zoom-aware) ────────────────────────────
+  const TRACK_HALF = Math.max(6, 14 * cam.zoom);  // matches drawTrackRoad trackW
+  const BAND_W     = Math.max(2.5, 4.5 * cam.zoom);
+  const BAND_GAP   = Math.max(0.8, 1.2 * cam.zoom);
 
-  // Helper: draw one band polyline offset by `slotIndex` band-widths from track edge
-  function drawBand(relevant, slotIndex, colour, alpha) {
-    if (relevant.length < 2) return;
+  // ── Per-point coverage count (for slot assignment) ─────
+  // coverage[ptIdx] = number of segments whose range includes this point
+  const coverage = new Int32Array(splinePts.length);
+  if (hasSegments) {
+    barrierSegments.forEach(seg => {
+      splinePts.forEach((p, pi) => {
+        if (p.seg >= seg.from && p.seg <= seg.to) coverage[pi]++;
+      });
+    });
+  }
+
+  // ── Draw one band (both sides) at a given stack slot ───
+  function drawBand(ptIndices, slotIndex, colorStr, alpha) {
+    if (ptIndices.length < 2) return;
+    // Offset from track edge outward: edge + gap + (slot * (bandW + gap)) + half-band
     const offset = TRACK_HALF + BAND_GAP + slotIndex * (BAND_W + BAND_GAP) + BAND_W * 0.5;
-    ctx.strokeStyle = colour.replace(/[\d.]+\)$/, alpha + ')');
-    ctx.lineWidth   = BAND_W;
-    ctx.lineCap     = 'round';
-    ctx.lineJoin    = 'round';
+    ctx.lineWidth = BAND_W;
+    ctx.lineCap   = 'round';
+    ctx.lineJoin  = 'round';
+    ctx.strokeStyle = colorStr.replace(/[\d.]+\)$/, alpha + ')');
+
+    // Outer side (+normal direction)
     ctx.beginPath();
-    relevant.forEach(({ ptIdx }, i) => {
-      const s  = worldToScreen(splinePts[ptIdx].pt.x, splinePts[ptIdx].pt.y);
-      const nx = normals[ptIdx].nx, ny = normals[ptIdx].ny;
-      const ox = s.x + nx * offset;
-      const oy = s.y + ny * offset;
+    ptIndices.forEach((pi, i) => {
+      const s  = worldToScreen(splinePts[pi].pt.x, splinePts[pi].pt.y);
+      const ox = s.x + normals[pi].nx * offset;
+      const oy = s.y + normals[pi].ny * offset;
       i === 0 ? ctx.moveTo(ox, oy) : ctx.lineTo(ox, oy);
     });
     ctx.stroke();
 
-    // Mirror band on the inside edge too (other side of track)
+    // Inner side (-normal direction)
     ctx.beginPath();
-    relevant.forEach(({ ptIdx }, i) => {
-      const s  = worldToScreen(splinePts[ptIdx].pt.x, splinePts[ptIdx].pt.y);
-      const nx = normals[ptIdx].nx, ny = normals[ptIdx].ny;
-      const ox = s.x - nx * offset;
-      const oy = s.y - ny * offset;
+    ptIndices.forEach((pi, i) => {
+      const s  = worldToScreen(splinePts[pi].pt.x, splinePts[pi].pt.y);
+      const ox = s.x - normals[pi].nx * offset;
+      const oy = s.y - normals[pi].ny * offset;
       i === 0 ? ctx.moveTo(ox, oy) : ctx.lineTo(ox, oy);
     });
     ctx.stroke();
   }
 
-  // Build a per-splinePt coverage map: ptIdx → array of { segIdx }
-  const coverage = new Array(splinePts.length).fill(null).map(() => []);
-  barrierSegments.forEach((seg, segIdx) => {
-    splinePts.forEach((p, ptIdx) => {
-      if (p.seg >= seg.from && p.seg <= seg.to) {
-        coverage[ptIdx].push(segIdx);
-      }
+  // ── Draw each committed segment ─────────────────────────
+  // Track a per-point slot cursor so overlapping segments stack cleanly.
+  const slotCursor = new Int32Array(splinePts.length);
+
+  if (hasSegments) {
+    barrierSegments.forEach(seg => {
+      const cfg = SURFACES[seg.surface];
+      const ptIndices = [];
+      splinePts.forEach((p, pi) => {
+        if (p.seg >= seg.from && p.seg <= seg.to) ptIndices.push(pi);
+      });
+      if (ptIndices.length < 2) return;
+
+      // Use the median slot value across this segment for a stable, non-jittery assignment
+      const slots = ptIndices.map(pi => slotCursor[pi]);
+      slots.sort((a, b) => a - b);
+      const slot = slots[Math.floor(slots.length / 2)];
+
+      drawBand(ptIndices, slot, cfg.color, '0.92');
+
+      // Advance slot cursor for every point in this segment
+      ptIndices.forEach(pi => slotCursor[pi]++);
     });
-  });
+  }
 
-  // For each barrier segment, collect its spline points tagged with their local slot
-  barrierSegments.forEach((seg, segIdx) => {
-    const relevant = [];
-    splinePts.forEach((p, ptIdx) => {
-      if (p.seg >= seg.from && p.seg <= seg.to) {
-        // slot = position of this segIdx within the coverage list at this point
-        const slot = coverage[ptIdx].indexOf(segIdx);
-        relevant.push({ ptIdx, slot });
-      }
-    });
-    if (relevant.length < 2) return;
-
-    // Most points share the same slot — use the median for a stable assignment
-    const slots = relevant.map(r => r.slot);
-    slots.sort((a, b) => a - b);
-    const slotIndex = slots[Math.floor(slots.length / 2)];
-
-    const cfg = SURFACES[seg.surface];
-    drawBand(relevant, slotIndex, cfg.color, '0.92');
-  });
-
-  // Hover preview while placing a barrier
-  if (tool === 'barrier' && barrierSelStart >= 0) {
+  // ── Hover preview while placing ─────────────────────────
+  if (hasHover) {
     const hoverSeg = getSegmentNear(mouseWorld.x, mouseWorld.y);
     if (hoverSeg >= 0) {
       const from = Math.min(barrierSelStart, hoverSeg);
       const to   = Math.max(barrierSelStart, hoverSeg);
-
-      // Determine what slot the new segment would occupy
-      let maxStack = 0;
-      splinePts.forEach((p, ptIdx) => {
-        if (p.seg >= from && p.seg <= to) {
-          maxStack = Math.max(maxStack, coverage[ptIdx].length);
-        }
-      });
-
-      const relevant = splinePts
-        .map((p, ptIdx) => ({ ptIdx }))
-        .filter((_, ptIdx) => splinePts[ptIdx].seg >= from && splinePts[ptIdx].seg <= to);
-
-      const cfg = SURFACES[surface];
-      drawBand(relevant, maxStack, cfg.color, '0.55');
+      const ptIndices = splinePts
+        .map((p, pi) => ({ p, pi }))
+        .filter(({ p }) => p.seg >= from && p.seg <= to)
+        .map(({ pi }) => pi);
+      if (ptIndices.length >= 2) {
+        // Preview band stacks on top of whatever is already there
+        const previewSlot = ptIndices.length
+          ? Math.max(...ptIndices.map(pi => slotCursor[pi]))
+          : 0;
+        const cfg = SURFACES[surface];
+        drawBand(ptIndices, previewSlot, cfg.color, '0.50');
+      }
     }
   }
 }

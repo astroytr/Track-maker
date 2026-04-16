@@ -372,13 +372,13 @@ async function runAIConvert() {
   waypoints = newWPs;
   updateWPList();
 
-  // ── Auto-place barriers, gravel traps & surfaces ──
+  // ── Auto-place barriers into barrierSegments so the renderer picks them up ──
   autoPlaceTrackFeatures(newWPs);
 
   render();
-  setAIStatus(`✓ ${newWPs.length} waypoints extracted — barriers, gravel & surfaces auto-placed`, 'ok');
+  setAIStatus(`✓ ${newWPs.length} waypoints — barriers & surfaces auto-placed`, 'ok');
   btn.disabled = false;
-  showToast(`${newWPs.length} waypoints placed! Barriers & surfaces auto-generated.`);
+  showToast(`${newWPs.length} waypoints placed! Barriers auto-generated.`);
 }
 
 // ── Helpers ──
@@ -692,7 +692,7 @@ function uniformResample(chain, N) {
   return out;
 }
 
-// ── Curvature-aware Gaussian smooth.
+// Curvature-aware Gaussian smooth.
 // High-curvature points (hairpins) get a small window to preserve corners;
 // low-curvature straights get a wider window to suppress pixel-grid noise.
 function smoothPass(pts, _unusedRadius, tension = 0.65) {
@@ -731,12 +731,20 @@ function smoothPass(pts, _unusedRadius, tension = 0.65) {
 }
 
 // ═══════════════════════════════════════════════════
-// AUTO FEATURE PLACEMENT  v1.0
-// Runs after waypoints are extracted. Derives:
-//   • Inner & outer barrier lines (offset from centreline)
-//   • Gravel traps on the outside of corners
-//   • Surface type per segment (straight / corner)
-// Results written into globals: barriers[], gravelTraps[], surfaceSegments[]
+// ═══════════════════════════════════════════════════
+// AUTO FEATURE PLACEMENT  v2.0
+//
+// Analyses curvature of the extracted waypoints and writes
+// directly into barrierSegments[] — the same array the renderer
+// already uses for the manual barrier tool — so barriers appear
+// immediately after AI extraction with no extra steps.
+//
+// Surface mapping:
+//   Straights  → flat_kerb  (red/white)
+//   Corners    → gravel     (tan)     ← outer runoff
+//   Corners    → sausage    (yellow)  ← inner raised kerb
+// Each zone becomes one barrierSegments entry, stacking as
+// parallel bands thanks to the updated drawBarrierSegments().
 // ═══════════════════════════════════════════════════
 
 function autoPlaceTrackFeatures(wps) {
@@ -748,125 +756,10 @@ function autoPlaceTrackFeatures(wps) {
     return Math.sqrt(dx*dx + dy*dy) < 20;
   })();
 
-  // ── Tunable parameters ──────────────────────────────
-  // Half-width auto-scales to the track's actual waypoint spacing
-  const avgSpacing = (() => {
-    let s = 0;
-    for (let i = 1; i < Math.min(n, 20); i++) {
-      const dx = wps[i].x - wps[i-1].x, dy = wps[i].y - wps[i-1].y;
-      s += Math.sqrt(dx*dx + dy*dy);
-    }
-    return s / Math.min(n - 1, 19);
-  })();
-
-  const HALF_WIDTH     = avgSpacing * 2.2;   // barrier distance from centreline
-  const GRAVEL_WIDTH   = HALF_WIDTH * 0.9;   // gravel extends this far past outer barrier
-  const CORNER_THRESH  = 0.28;               // curvature (rad) above which = corner
-  const GRAVEL_MIN_ARC = 3;                  // min consecutive corner wps for a gravel zone
-  // ────────────────────────────────────────────────────
-
-  const normals    = computeAutoNormals(wps, isClosed);
-  const curvatures = computeAutoCurvatures(wps, isClosed);
-
-  // Barrier polylines
-  const innerBarrier = wps.map((p, i) => ({
-    x: p.x + normals[i].x * HALF_WIDTH,
-    y: p.y + normals[i].y * HALF_WIDTH
-  }));
-  const outerBarrier = wps.map((p, i) => ({
-    x: p.x - normals[i].x * HALF_WIDTH,
-    y: p.y - normals[i].y * HALF_WIDTH
-  }));
-
-  // Corner classification
-  const isCorner = curvatures.map(c => c > CORNER_THRESH);
-
-  // Gravel trap polygons (outside of corners)
-  const gravelZones = [];
-  let zStart = -1;
-  for (let i = 0; i <= n; i++) {
-    const corner = i < n && isCorner[i];
-    if (corner && zStart === -1) { zStart = i; }
-    else if (!corner && zStart !== -1) {
-      if (i - zStart >= GRAVEL_MIN_ARC) gravelZones.push({ from: zStart, to: i - 1 });
-      zStart = -1;
-    }
-  }
-  const gravelTrapsNew = gravelZones.map(zone => {
-    const outerEdge = [], gravelEdge = [];
-    for (let i = zone.from; i <= zone.to; i++) {
-      outerEdge.push(outerBarrier[i]);
-      gravelEdge.push({
-        x: wps[i].x - normals[i].x * (HALF_WIDTH + GRAVEL_WIDTH),
-        y: wps[i].y - normals[i].y * (HALF_WIDTH + GRAVEL_WIDTH)
-      });
-    }
-    return [...outerEdge, ...[...gravelEdge].reverse()];
-  });
-
-  // Surface segments
-  const surfaceSegs = [];
-  let segStart = 0, segType = isCorner[0] ? 'corner' : 'straight';
-  for (let i = 1; i <= n; i++) {
-    const t = i < n ? (isCorner[i] ? 'corner' : 'straight') : null;
-    if (t !== segType || i === n) {
-      surfaceSegs.push({ from: segStart, to: i - 1, type: segType });
-      segStart = i; segType = t;
-    }
-  }
-
-  // Write to global state arrays (creates them if the renderer hasn't yet)
-  if (typeof barriers !== 'undefined' && Array.isArray(barriers)) {
-    barriers.length = 0;
-    barriers.push({ points: innerBarrier, type: 'inner' });
-    barriers.push({ points: outerBarrier, type: 'outer' });
-  } else {
-    window.barriers = [
-      { points: innerBarrier, type: 'inner' },
-      { points: outerBarrier, type: 'outer' }
-    ];
-  }
-
-  if (typeof gravelTraps !== 'undefined' && Array.isArray(gravelTraps)) {
-    gravelTraps.length = 0;
-    gravelTraps.push(...gravelTrapsNew);
-  } else {
-    window.gravelTraps = gravelTrapsNew;
-  }
-
-  if (typeof surfaceSegments !== 'undefined' && Array.isArray(surfaceSegments)) {
-    surfaceSegments.length = 0;
-    surfaceSegments.push(...surfaceSegs);
-  } else {
-    window.surfaceSegments = surfaceSegs;
-  }
-
-  console.log(
-    `[autoPlace] barriers: inner(${innerBarrier.length}pt) outer(${outerBarrier.length}pt) | ` +
-    `gravel zones: ${gravelZones.length} | surface segs: ${surfaceSegs.length}`
-  );
-}
-
-// Unit normal (left-perpendicular to travel) for each waypoint
-function computeAutoNormals(wps, isClosed) {
-  const n = wps.length;
-  return wps.map((p, i) => {
-    const prev = wps[(i - 1 + n) % n];
-    const next = wps[(i + 1) % n];
-    const usePrev = isClosed || i > 0;
-    const useNext = isClosed || i < n - 1;
-    const p0 = usePrev ? prev : p;
-    const p1 = useNext ? next : p;
-    const tx = p1.x - p0.x, ty = p1.y - p0.y;
-    const len = Math.sqrt(tx*tx + ty*ty) || 1;
-    return { x: -ty / len, y: tx / len };
-  });
-}
-
-// Angle (radians) between incoming & outgoing tangents — high = sharp corner
-function computeAutoCurvatures(wps, isClosed) {
-  const n = wps.length;
-  return wps.map((p, i) => {
+  // ── Curvature per waypoint ──────────────────────────────
+  // Angle (radians) between incoming and outgoing tangents.
+  // High = sharp corner, low = straight.
+  const curvatures = wps.map((p, i) => {
     if (!isClosed && (i === 0 || i === n - 1)) return 0;
     const prev = wps[(i - 1 + n) % n];
     const next = wps[(i + 1) % n];
@@ -877,4 +770,66 @@ function computeAutoCurvatures(wps, isClosed) {
     const dot = (ax*bx + ay*by) / (la * lb);
     return Math.acos(Math.max(-1, Math.min(1, dot)));
   });
+
+  // ── Tunable thresholds ──────────────────────────────────
+  const CORNER_THRESH  = 0.22;   // rad — above = corner
+  const MIN_ZONE_LEN   = 3;      // min consecutive wps to form a zone
+  // ────────────────────────────────────────────────────────
+
+  const isCorner = curvatures.map(c => c > CORNER_THRESH);
+
+  // Group consecutive same-type waypoints into zones
+  function buildZones(flag) {
+    const zones = [];
+    let start = -1;
+    for (let i = 0; i <= n; i++) {
+      const on = i < n && flag[i];
+      if (on  && start === -1) { start = i; }
+      if (!on && start !== -1) {
+        if (i - start >= MIN_ZONE_LEN) zones.push({ from: start, to: i - 1 });
+        start = -1;
+      }
+    }
+    return zones;
+  }
+
+  const cornerZones   = buildZones(isCorner);
+  const straightZones = buildZones(isCorner.map(c => !c));
+
+  // Clear any previous auto-placed barriers so re-running doesn't stack duplicates.
+  // We tag auto-placed entries so manual ones are untouched.
+  if (typeof barrierSegments !== 'undefined') {
+    // Remove entries previously auto-placed (tagged with auto:true)
+    for (let i = barrierSegments.length - 1; i >= 0; i--) {
+      if (barrierSegments[i].auto) barrierSegments.splice(i, 1);
+    }
+  } else {
+    window.barrierSegments = [];
+  }
+
+  // Helper to push a zone as a barrier segment
+  function pushZone(zone, surfaceType) {
+    barrierSegments.push({
+      from:    zone.from,
+      to:      zone.to,
+      surface: surfaceType,
+      auto:    true          // flag so we can clear on re-run
+    });
+  }
+
+  // Straights → flat_kerb (the red/white edge stripe)
+  straightZones.forEach(z => pushZone(z, 'flat_kerb'));
+
+  // Corners → two bands: gravel on the outside runoff, sausage as raised inner kerb
+  cornerZones.forEach(z => {
+    pushZone(z, 'gravel');   // outer runoff — tan
+    pushZone(z, 'sausage');  // raised kerb  — yellow, stacks inside gravel
+  });
+
+  // Update the sidebar barrier list if it exists
+  if (typeof updateBarrierList === 'function') updateBarrierList();
+
+  const nCorner   = cornerZones.length;
+  const nStraight = straightZones.length;
+  console.log(`[autoPlace] ${nCorner} corner zones (gravel+sausage) · ${nStraight} straight zones (flat_kerb)`);
 }
