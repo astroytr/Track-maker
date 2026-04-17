@@ -262,8 +262,9 @@ function buildExportCode() {
 
   // ── Generate barrier segment code ────────────────
   let barrierCode = '';
-  if (barrierSegments.length > 0) {
-    barrierSegments.forEach((seg,bi) => {
+  const exportSegments = expMergeBarrierSegments(barrierSegments, waypoints.length);
+  if (exportSegments.length > 0) {
+    exportSegments.forEach((seg,bi) => {
       const fromIdx=Math.round(seg.from/waypoints.length*spPts.length);
       const toIdx=Math.min(Math.round(seg.to/waypoints.length*spPts.length),spPts.length-1);
       const segPts=spPts.slice(fromIdx,toIdx+1);
@@ -324,6 +325,28 @@ ${barrierCode}
   }
 })();
 `;
+}
+
+function expMergeBarrierSegments(segments, wpCount) {
+  if (!segments || !segments.length) return [];
+  const gapTolerance = Math.max(2, Math.floor((wpCount || 1) * 0.02));
+  const sorted = segments.slice().sort((a,b) =>
+    String(a.surface).localeCompare(String(b.surface)) ||
+    String(a.side || 'both').localeCompare(String(b.side || 'both')) ||
+    (a.lane || 0) - (b.lane || 0) ||
+    a.from - b.from
+  );
+  const merged = [];
+  for (const seg of sorted) {
+    const prev = merged[merged.length - 1];
+    const compatible = prev && prev.surface === seg.surface && (prev.side || 'both') === (seg.side || 'both') && (prev.lane || 0) === (seg.lane || 0) && !!prev.auto === !!seg.auto;
+    if (compatible && seg.from <= prev.to + gapTolerance) {
+      prev.to = Math.max(prev.to, seg.to);
+    } else {
+      merged.push({ ...seg });
+    }
+  }
+  return merged;
 }
 
 function openExport() {

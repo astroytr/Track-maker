@@ -38,7 +38,7 @@ function aiLoadImageFile(file) {
   reader.onload = ev => {
     const img = new Image();
     img.onload = () => {
-      const MAX = 700;
+      const MAX = 480;
       const scale = Math.min(1, MAX / Math.max(img.width, img.height));
       aiImgW = Math.round(img.width  * scale);
       aiImgH = Math.round(img.height * scale);
@@ -74,6 +74,67 @@ function aiLoadImageFile(file) {
     img.src = ev.target.result;
   };
   reader.readAsDataURL(file);
+}
+
+function aiLoadReferenceImage(url, label) {
+  if (aiPreviewCanvas) {
+    aiPreviewCanvas.removeEventListener('click',      aiCanvasClick);
+    aiPreviewCanvas.removeEventListener('mousemove',  aiCanvasMouseMove);
+    aiPreviewCanvas.removeEventListener('touchstart', aiCanvasTouchStart);
+    aiPreviewCanvas.removeEventListener('touchmove',  aiCanvasTouchMove);
+    aiPreviewCanvas.removeEventListener('touchend',   aiCanvasTouchEnd);
+  }
+
+  openAIConvert();
+  setAIStatus(`Loading ${label || 'reference'} image…`, '');
+
+  const img = new Image();
+  img.onload = async () => {
+    const MAX = 480;
+    const scale = Math.min(1, MAX / Math.max(img.width, img.height));
+    aiImgW = Math.round(img.width  * scale);
+    aiImgH = Math.round(img.height * scale);
+
+    const c = document.createElement('canvas');
+    c.width = aiImgW; c.height = aiImgH;
+    c.getContext('2d').drawImage(img, 0, 0, aiImgW, aiImgH);
+    aiImageData = c.getContext('2d').getImageData(0, 0, aiImgW, aiImgH);
+
+    aiPreviewCanvas = document.getElementById('ai-preview-canvas');
+    aiPreviewCtx    = aiPreviewCanvas.getContext('2d');
+
+    document.getElementById('ai-preview-wrap').style.display = 'block';
+    const modalBody = document.querySelector('.ai-body');
+    const availW = modalBody ? modalBody.clientWidth - 32 : 300;
+    const dispW = Math.min(availW, aiImgW, 480);
+    const dispH = Math.round(aiImgH * dispW / aiImgW);
+    aiPreviewCanvas.width  = dispW; aiPreviewCanvas.height = dispH;
+    aiPreviewCanvas.style.width  = dispW + 'px';
+    aiPreviewCanvas.style.height = dispH + 'px';
+    aiPreviewCtx.drawImage(img, 0, 0, dispW, dispH);
+
+    aiPreviewCanvas.addEventListener('click',      aiCanvasClick,      { passive: false });
+    aiPreviewCanvas.addEventListener('mousemove',  aiCanvasMouseMove,  { passive: false });
+    aiPreviewCanvas.addEventListener('touchstart', aiCanvasTouchStart, { passive: false });
+    aiPreviewCanvas.addEventListener('touchmove',  aiCanvasTouchMove,  { passive: false });
+    aiPreviewCanvas.addEventListener('touchend',   aiCanvasTouchEnd,   { passive: false });
+
+    aiTrackRGB = { r: 27, g: 27, b: 36 };
+    aiBgRGB = { r: 250, g: 250, b: 250 };
+    document.getElementById('track-swatch').style.background = rgbToHex(aiTrackRGB);
+    document.getElementById('track-hex').textContent = rgbToHex(aiTrackRGB).toUpperCase();
+    document.getElementById('bg-swatch').style.background = rgbToHex(aiBgRGB);
+    document.getElementById('bg-hex').textContent = rgbToHex(aiBgRGB).toUpperCase();
+    document.getElementById('ai-run-btn').disabled = false;
+    document.getElementById('ai-drop').style.display = 'none';
+    if (document.getElementById('track-name')) document.getElementById('track-name').value = label || 'Interlagos';
+
+    aiUpdatePreviewOverlay();
+    await runAIConvert();
+    closeAIConvert();
+  };
+  img.onerror = () => setAIStatus(`Could not load ${label || 'reference'} image`, 'err');
+  img.src = url;
 }
 
 function startEyedropper(mode) {
@@ -642,7 +703,7 @@ function autoPlaceTrackFeatures(wps) {
     return zones;
   }
 
-  const cornerZones = buildZones(isCorner);
+  const cornerZones = mergeNearbyZones(buildZones(isCorner), Math.max(2, Math.floor(n * 0.018)));
 
   if (typeof barrierSegments !== 'undefined') {
     for (let i=barrierSegments.length-1; i>=0; i--) {
@@ -709,9 +770,11 @@ function autoPlaceTrackFeatures(wps) {
   });
 
   const straightFlags = isCorner.map(v => !v);
-  const straightZones = buildZones(straightFlags).filter(z => z.to - z.from + 1 >= Math.max(6, Math.floor(n * 0.04)));
+  const straightZones = mergeNearbyZones(buildZones(straightFlags), Math.max(3, Math.floor(n * 0.025)))
+    .filter(z => z.to - z.from + 1 >= Math.max(10, Math.floor(n * 0.07)));
   straightZones.forEach(z => {
     const len = z.to - z.from + 1;
+    if (len > Math.max(18, Math.floor(n * 0.14))) return;
     const trimmed = {
       from: Math.min(z.to, z.from + Math.floor(len * 0.15)),
       to:   Math.max(z.from, z.to - Math.floor(len * 0.15))
@@ -728,17 +791,34 @@ function autoPlaceTrackFeatures(wps) {
 
 function normalizeAutoFeatureSegments() {
   if (typeof barrierSegments === 'undefined' || !barrierSegments.length) return;
+  const n = waypoints.length || 1;
+  const gapTolerance = Math.max(2, Math.floor(n * 0.02));
   barrierSegments = barrierSegments
     .filter(s => s && s.to > s.from && s.surface)
     .sort((a,b) => (a.from-b.from) || (a.to-b.to) || String(a.surface).localeCompare(String(b.surface)));
   const merged = [];
   for (const seg of barrierSegments) {
     const prev = merged[merged.length - 1];
-    if (prev && prev.auto && seg.auto && prev.surface === seg.surface && prev.side === seg.side && (prev.lane || 0) === (seg.lane || 0) && seg.from <= prev.to + 1) {
+    if (prev && prev.auto && seg.auto && prev.surface === seg.surface && prev.side === seg.side && (prev.lane || 0) === (seg.lane || 0) && seg.from <= prev.to + gapTolerance) {
       prev.to = Math.max(prev.to, seg.to);
     } else {
       merged.push(seg);
     }
   }
   barrierSegments = merged;
+}
+
+function mergeNearbyZones(zones, gapTolerance) {
+  if (!zones.length) return zones;
+  const merged = [];
+  zones.sort((a,b) => a.from - b.from);
+  for (const zone of zones) {
+    const prev = merged[merged.length - 1];
+    if (prev && zone.from <= prev.to + gapTolerance) {
+      prev.to = Math.max(prev.to, zone.to);
+    } else {
+      merged.push({ ...zone });
+    }
+  }
+  return merged;
 }

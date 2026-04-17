@@ -300,7 +300,7 @@ function drawTrackRoad() {
 // (replaces the old colour-strip approach)
 // ═══════════════════════════════════════════════════
 function drawBarrierSegments() {
-  const splinePts = buildSplinePoints(12);
+  const splinePts = buildSplinePoints(20);
   const N = splinePts.length;
   if (!barrierSegments || barrierSegments.length === 0) {
     // Draw hover preview if barrier tool active
@@ -308,41 +308,42 @@ function drawBarrierSegments() {
     return;
   }
 
-  barrierSegments.forEach((seg, si) => {
+  const expanded = expandBarrierDrawItems(barrierSegments)
+    .sort((a,b) => {
+      const la = getSurfaceLane(a.surface, a.lane || 0);
+      const lb = getSurfaceLane(b.surface, b.lane || 0);
+      return lb.outer - la.outer;
+    });
+  const labelKeys = new Set();
+  let labelCount = 0;
+
+  expanded.forEach((seg) => {
     const cfg = SURFACES[seg.surface];
     if (!cfg) return;
 
-    // Collect spline points in this segment range
-    const pts = splinePts.filter(p => p.seg >= seg.from && p.seg <= seg.to);
+    const pts = getSplineSegmentPoints(splinePts, seg.from, seg.to);
     if (pts.length < 2) return;
 
-    const sides = (seg.side==='both'||!seg.side) ? [-1,1] : [(seg.side==='left'||seg.side===-1)?-1:1];
     const lane = getSurfaceLane(seg.surface, seg.lane || 0);
 
-    sides.forEach(s => {
-      const screenPoly = pts.map((p,i) => {
-        const prev = pts[(i-1+pts.length)%pts.length];
-        const next = pts[(i+1)%pts.length];
-        const dx = next.pt.x - prev.pt.x, dy = next.pt.y - prev.pt.y;
-        const len = Math.sqrt(dx*dx+dy*dy)||1;
-        const nx = dy/len * s, ny = -dx/len * s;
-        return worldToScreen(p.pt.x + nx*lane.center, p.pt.y + ny*lane.center);
-      });
+    const screenPoly = buildOffsetScreenPolyline(pts, seg.sideNum, lane.center);
+    ctx.beginPath();
+    screenPoly.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+    ctx.strokeStyle = cfg.color;
+    ctx.lineWidth   = Math.max(2, lane.width * cam.zoom);
+    ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
+    ctx.stroke();
 
-      ctx.beginPath();
-      screenPoly.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-      ctx.strokeStyle = cfg.color;
-      ctx.lineWidth   = Math.max(2, lane.width * cam.zoom);
-      ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
-      ctx.stroke();
-    });
-
-    // ── Floating label at midpoint of segment ─────
+    const labelKey = `${seg.surface}:${seg.sideNum}:${seg.lane || 0}`;
+    const shouldLabel = !seg.auto || (labelCount < 7 && !labelKeys.has(labelKey) && (seg.to - seg.from) >= Math.max(3, waypoints.length * 0.018));
+    if (!shouldLabel) return;
+    labelKeys.add(labelKey);
+    labelCount++;
     const midPt = pts[Math.floor(pts.length / 2)];
     const ms = worldToScreen(midPt.pt.x, midPt.pt.y);
     const labelY = ms.y - Math.max(22, lane.labelOffset * cam.zoom);
     const labelTxt = cfg.label.toUpperCase();
-    const sideLabel = seg.side==='both'||!seg.side ? '' : (seg.side==='left'||seg.side===-1 ? ' L' : ' R');
+    const sideLabel = seg.sideNum < 0 ? ' L' : ' R';
 
     ctx.save();
     const fontSize = Math.max(9, Math.min(14, cam.zoom * 11));
@@ -374,6 +375,59 @@ function drawBarrierSegments() {
   });
 
   if (tool === 'barrier' && barrierSelStart >= 0) drawBarrierHover(splinePts, N);
+}
+
+function expandBarrierDrawItems(segments) {
+  const items = [];
+  segments.forEach(seg => {
+    const sides = (seg.side==='both'||!seg.side) ? [-1,1] : [(seg.side==='left'||seg.side===-1)?-1:1];
+    sides.forEach(sideNum => items.push({ ...seg, sideNum }));
+  });
+  return mergeExpandedBarrierItems(items);
+}
+
+function mergeExpandedBarrierItems(items) {
+  if (!items.length || !waypoints.length) return items;
+  const gapTolerance = Math.max(2, Math.floor(waypoints.length * 0.018));
+  const sorted = items.slice().sort((a,b) =>
+    String(a.surface).localeCompare(String(b.surface)) ||
+    a.sideNum - b.sideNum ||
+    (a.lane || 0) - (b.lane || 0) ||
+    a.from - b.from ||
+    a.to - b.to
+  );
+  const merged = [];
+  for (const item of sorted) {
+    const prev = merged[merged.length - 1];
+    const compatible = prev &&
+      prev.surface === item.surface &&
+      prev.sideNum === item.sideNum &&
+      (prev.lane || 0) === (item.lane || 0) &&
+      !!prev.auto === !!item.auto;
+    if (compatible && item.from <= prev.to + gapTolerance) {
+      prev.to = Math.max(prev.to, item.to);
+    } else {
+      merged.push({ ...item });
+    }
+  }
+  return merged;
+}
+
+function getSplineSegmentPoints(splinePts, from, to) {
+  const pts = splinePts.filter(p => p.seg >= from && p.seg <= to);
+  if (pts.length < 3) return pts;
+  return pts;
+}
+
+function buildOffsetScreenPolyline(pts, sideNum, offset) {
+  return pts.map((p,i) => {
+    const prev = pts[Math.max(0, i-1)];
+    const next = pts[Math.min(pts.length-1, i+1)];
+    const dx = next.pt.x - prev.pt.x, dy = next.pt.y - prev.pt.y;
+    const len = Math.sqrt(dx*dx+dy*dy)||1;
+    const nx = dy/len * sideNum, ny = -dx/len * sideNum;
+    return worldToScreen(p.pt.x + nx*offset, p.pt.y + ny*offset);
+  });
 }
 
 function drawBarrierHover(splinePts, N) {
