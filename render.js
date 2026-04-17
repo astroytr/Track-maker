@@ -62,12 +62,42 @@ const SURFACES = {
   flat_kerb: { color: 'rgba(232,57,42,0.85)',   label: 'Flat Kerb',    dot: '#e8392a', icon: '🟥' },
   sausage:   { color: 'rgba(245,197,24,0.90)',   label: 'Sausage Kerb', dot: '#f5c518', icon: '🟨' },
   rumble:    { color: 'rgba(200,50,50,0.75)',    label: 'Rumble Strip', dot: '#dd3333', icon: '🟧' },
-  gravel:    { color: 'rgba(200,184,154,0.75)',  label: 'Gravel/Sand',  dot: '#c8b89a', icon: '🟫' },
+  gravel:    { color: 'rgba(200,184,154,0.75)',  label: 'Gravel',       dot: '#c8b89a', icon: '🟫' },
+  sand:      { color: 'rgba(227,207,152,0.78)',  label: 'Sand',         dot: '#e3cf98', icon: '🟨' },
   grass:     { color: 'rgba(40,110,40,0.70)',    label: 'Grass',        dot: '#3a7a3a', icon: '🟩' },
   armco:     { color: 'rgba(180,180,180,0.90)',  label: 'Armco Wall',   dot: '#bbbbbb', icon: '⬜' },
   tecpro:    { color: 'rgba(40,80,180,0.85)',    label: 'Tecpro',       dot: '#3a5fa8', icon: '🟦' },
   tyrewall:  { color: 'rgba(55,55,55,0.90)',     label: 'Tyre Wall',    dot: '#555555', icon: '⬛' },
 };
+
+const TRACK_HALF_WIDTH = 14;
+const SURFACE_LANES = {
+  flat_kerb: { inner: 14.2, outer: 18.2, labelOffset: 26 },
+  rumble:    { inner: 14.8, outer: 19.8, labelOffset: 29 },
+  sausage:   { inner: 18.8, outer: 22.2, labelOffset: 32 },
+  gravel:    { inner: 23.0, outer: 35.0, labelOffset: 42 },
+  sand:      { inner: 23.0, outer: 35.0, labelOffset: 42 },
+  grass:     { inner: 36.0, outer: 50.0, labelOffset: 56 },
+  armco:     { inner: 54.0, outer: 57.0, labelOffset: 64 },
+  tecpro:    { inner: 53.0, outer: 58.0, labelOffset: 65 },
+  tyrewall:  { inner: 52.0, outer: 58.0, labelOffset: 65 },
+};
+
+function normalizeSideValue(side) {
+  return side === 'left' || side === -1 ? -1 : 1;
+}
+
+function getSurfaceLane(surfaceName, lane = 0) {
+  const cfg = SURFACE_LANES[surfaceName] || SURFACE_LANES.flat_kerb;
+  const extra = Math.max(0, lane || 0) * 4.5;
+  return {
+    inner: cfg.inner + extra,
+    outer: cfg.outer + extra,
+    center: (cfg.inner + cfg.outer) * 0.5 + extra,
+    width: Math.max(2, cfg.outer - cfg.inner),
+    labelOffset: (cfg.labelOffset || cfg.outer + 8) + extra
+  };
+}
 
 // ═══════════════════════════════════════════════════
 // RAMER-DOUGLAS-PEUCKER SIMPLIFICATION
@@ -145,7 +175,12 @@ function render() {
   ctx.clearRect(0, 0, W, H);
 
   // ── Paint layers ──
-  for (const p of paintLayers) {
+  const orderedPaint = paintLayers.slice().sort((a,b) => {
+    const ar = a.rank !== undefined ? a.rank : (SURFACE_LANES[a.surface] ? SURFACE_LANES[a.surface].inner : 99);
+    const br = b.rank !== undefined ? b.rank : (SURFACE_LANES[b.surface] ? SURFACE_LANES[b.surface].inner : 99);
+    return br - ar;
+  });
+  for (const p of orderedPaint) {
     const s = worldToScreen(p.x, p.y);
     ctx.beginPath();
     ctx.arc(s.x, s.y, p.r * cam.zoom, 0, Math.PI * 2);
@@ -281,29 +316,23 @@ function drawBarrierSegments() {
     const pts = splinePts.filter(p => p.seg >= seg.from && p.seg <= seg.to);
     if (pts.length < 2) return;
 
-    // Draw thin coloured outline beside the track (both sides or chosen side)
-    const TH_W = Math.max(5, 14 * cam.zoom);
-    const BAND = Math.max(2, 3.5 * cam.zoom);
-    const GAP  = Math.max(1, 1.5 * cam.zoom);
-
     const sides = (seg.side==='both'||!seg.side) ? [-1,1] : [(seg.side==='left'||seg.side===-1)?-1:1];
+    const lane = getSurfaceLane(seg.surface, seg.lane || 0);
 
     sides.forEach(s => {
-      // Compute offset polyline (world coords → screen)
       const screenPoly = pts.map((p,i) => {
         const prev = pts[(i-1+pts.length)%pts.length];
         const next = pts[(i+1)%pts.length];
         const dx = next.pt.x - prev.pt.x, dy = next.pt.y - prev.pt.y;
         const len = Math.sqrt(dx*dx+dy*dy)||1;
         const nx = dy/len * s, ny = -dx/len * s;
-        const offW = TH_W + GAP + BAND*0.5;
-        return worldToScreen(p.pt.x + nx*offW/cam.zoom, p.pt.y + ny*offW/cam.zoom);
+        return worldToScreen(p.pt.x + nx*lane.center, p.pt.y + ny*lane.center);
       });
 
       ctx.beginPath();
       screenPoly.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
       ctx.strokeStyle = cfg.color;
-      ctx.lineWidth   = BAND * 2;
+      ctx.lineWidth   = Math.max(2, lane.width * cam.zoom);
       ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
       ctx.stroke();
     });
@@ -311,7 +340,7 @@ function drawBarrierSegments() {
     // ── Floating label at midpoint of segment ─────
     const midPt = pts[Math.floor(pts.length / 2)];
     const ms = worldToScreen(midPt.pt.x, midPt.pt.y);
-    const labelY = ms.y - Math.max(22, TH_W + 10);
+    const labelY = ms.y - Math.max(22, lane.labelOffset * cam.zoom);
     const labelTxt = cfg.label.toUpperCase();
     const sideLabel = seg.side==='both'||!seg.side ? '' : (seg.side==='left'||seg.side===-1 ? ' L' : ' R');
 
@@ -354,23 +383,20 @@ function drawBarrierHover(splinePts, N) {
   const to   = Math.max(barrierSelStart, hoverSeg);
   const pts  = splinePts.filter(p => p.seg>=from && p.seg<=to);
   if (pts.length < 2) return;
-  const TH_W = Math.max(5, 14*cam.zoom);
-  const BAND = Math.max(2, 3.5*cam.zoom);
-  const GAP  = Math.max(1, 1.5*cam.zoom);
   const sides = barrierSide==='both' ? [-1,1] : [barrierSide==='left' ? -1 : 1];
   const cfg = SURFACES[surface];
+  const lane = getSurfaceLane(surface, 0);
   sides.forEach(s => {
     const screenPoly = pts.map((p,i) => {
       const prev=pts[(i-1+pts.length)%pts.length], next=pts[(i+1)%pts.length];
       const dx=next.pt.x-prev.pt.x, dy=next.pt.y-prev.pt.y, len=Math.sqrt(dx*dx+dy*dy)||1;
       const nx=dy/len*s, ny=-dx/len*s;
-      const offW=TH_W+GAP+BAND*0.5;
-      return worldToScreen(p.pt.x+nx*offW/cam.zoom, p.pt.y+ny*offW/cam.zoom);
+      return worldToScreen(p.pt.x+nx*lane.center, p.pt.y+ny*lane.center);
     });
     ctx.beginPath();
     screenPoly.forEach((p,i) => i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
     ctx.strokeStyle = (cfg?cfg.color:'rgba(200,200,200,0.5)').replace(/[\d.]+\)$/,'0.5)');
-    ctx.lineWidth = BAND*2;
+    ctx.lineWidth = Math.max(2, lane.width*cam.zoom);
     ctx.lineCap='round'; ctx.lineJoin='round';
     ctx.stroke();
   });

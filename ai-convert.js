@@ -267,6 +267,7 @@ async function runAIConvert() {
     const sc = Math.min(mainCanvas.width*.82/(maxX-minX||1), mainCanvas.height*.82/(maxY-minY||1)) / cam.zoom;
     const mx=(minX+maxX)/2, my=(minY+maxY)/2;
     let newWPs = pts.map(p => ({ x:(p.x-mx)*sc, y:(p.y-my)*sc }));
+    newWPs = cleanupConvertedWaypoints(newWPs);
 
     setAIProgress(90); await tick();
 
@@ -283,7 +284,7 @@ async function runAIConvert() {
 
     setAIProgress(100);
     waypoints = newWPs;
-    startingPointIdx = 0;
+    startingPointIdx = chooseStartFinishIndex(newWPs);
     updateWPList();
     autoPlaceTrackFeatures(newWPs);
     render();
@@ -545,6 +546,48 @@ function smoothPass(pts, _r, tension=0.65) {
   });
 }
 
+function cleanupConvertedWaypoints(pts) {
+  if (!pts || pts.length < 4) return pts || [];
+  const minGap = 2.5;
+  const deduped = [];
+  for (const p of pts) {
+    const last = deduped[deduped.length - 1];
+    if (!last || Math.hypot(p.x - last.x, p.y - last.y) >= minGap) deduped.push(p);
+  }
+  if (deduped.length > 3 && Math.hypot(deduped[0].x - deduped[deduped.length - 1].x, deduped[0].y - deduped[deduped.length - 1].y) < minGap) deduped.pop();
+
+  const n = deduped.length;
+  if (n < 4) return deduped;
+  const cleaned = [];
+  for (let i=0; i<n; i++) {
+    const prev = deduped[(i-1+n)%n], cur = deduped[i], next = deduped[(i+1)%n];
+    const a = Math.hypot(cur.x-prev.x, cur.y-prev.y);
+    const b = Math.hypot(next.x-cur.x, next.y-cur.y);
+    const c = Math.hypot(next.x-prev.x, next.y-prev.y);
+    if (a < minGap * 1.4 && b < minGap * 1.4 && c < minGap * 2.1) continue;
+    cleaned.push(cur);
+  }
+  return cleaned.length >= 3 ? cleaned : deduped;
+}
+
+function chooseStartFinishIndex(wps) {
+  if (!wps || wps.length < 3) return 0;
+  const n = wps.length;
+  let best = 0, bestScore = -Infinity;
+  for (let i=0; i<n; i++) {
+    const prev=wps[(i-1+n)%n], cur=wps[i], next=wps[(i+1)%n];
+    const ax=cur.x-prev.x, ay=cur.y-prev.y, bx=next.x-cur.x, by=next.y-cur.y;
+    const la=Math.hypot(ax,ay), lb=Math.hypot(bx,by);
+    if (la < 1e-6 || lb < 1e-6) continue;
+    const straightness = (ax*bx+ay*by)/(la*lb);
+    const lengthScore = Math.min(80, la + lb);
+    const bottomBias = cur.y * 0.015;
+    const score = straightness * 120 + lengthScore + bottomBias;
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  return best;
+}
+
 // ═══════════════════════════════════════════════════
 // AUTO FEATURE PLACEMENT v4.1
 // ═══════════════════════════════════════════════════
@@ -651,6 +694,11 @@ function autoPlaceTrackFeatures(wps) {
         from: Math.max(z.from, apex - Math.floor(len*0.35)),
         to:   Math.min(z.to,   apex + Math.floor(len*0.35))
       }, 'grass', stats.outsideSide, 1);
+    } else if (isFast) {
+      pushZone({
+        from: Math.max(z.from, apex - Math.floor(len*0.25)),
+        to:   Math.min(z.to,   apex + Math.floor(len*0.25))
+      }, 'sand', stats.outsideSide, 1);
     }
   });
 
@@ -668,5 +716,23 @@ function autoPlaceTrackFeatures(wps) {
     }
   });
 
+  normalizeAutoFeatureSegments();
   if (typeof updateBarrierList === 'function') updateBarrierList();
+}
+
+function normalizeAutoFeatureSegments() {
+  if (typeof barrierSegments === 'undefined' || !barrierSegments.length) return;
+  barrierSegments = barrierSegments
+    .filter(s => s && s.to > s.from && s.surface)
+    .sort((a,b) => (a.from-b.from) || (a.to-b.to) || String(a.surface).localeCompare(String(b.surface)));
+  const merged = [];
+  for (const seg of barrierSegments) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.auto && seg.auto && prev.surface === seg.surface && prev.side === seg.side && (prev.lane || 0) === (seg.lane || 0) && seg.from <= prev.to + 1) {
+      prev.to = Math.max(prev.to, seg.to);
+    } else {
+      merged.push(seg);
+    }
+  }
+  barrierSegments = merged;
 }

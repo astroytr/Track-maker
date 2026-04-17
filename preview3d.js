@@ -15,11 +15,39 @@ const SURF_COLOR_3D = {
   sausage:   0xf5c518,
   rumble:    0xdd3333,
   gravel:    0xc8b89a,
+  sand:      0xe3cf98,
   grass:     0x3a7a3a,
   armco:     0xcccccc,
   tecpro:    0x3a5fa8,
   tyrewall:  0x222222,
 };
+
+const P3D_SURFACE_LANES = {
+  flat_kerb: { inner: 14.2, outer: 18.2, y: 0.075 },
+  rumble:    { inner: 14.8, outer: 19.8, y: 0.085 },
+  sausage:   { inner: 18.8, outer: 22.2, y: 0.10 },
+  gravel:    { inner: 23.0, outer: 35.0, y: 0.025 },
+  sand:      { inner: 23.0, outer: 35.0, y: 0.026 },
+  grass:     { inner: 36.0, outer: 50.0, y: 0.02 },
+  armco:     { inner: 54.0, outer: 57.0, y: 0.02 },
+  tecpro:    { inner: 53.0, outer: 58.0, y: 0.02 },
+  tyrewall:  { inner: 52.0, outer: 58.0, y: 0.02 },
+};
+
+function p3dLane(surface, lane = 0) {
+  const cfg = P3D_SURFACE_LANES[surface] || P3D_SURFACE_LANES.flat_kerb;
+  const extra = Math.max(0, lane || 0) * 4.5;
+  return {
+    inner: cfg.inner + extra,
+    outer: cfg.outer + extra,
+    center: (cfg.inner + cfg.outer) * 0.5 + extra,
+    y: cfg.y
+  };
+}
+
+function p3dSignedBand(lane, side) {
+  return side < 0 ? [-lane.outer, -lane.inner] : [lane.inner, lane.outer];
+}
 
 function toggle3DPreview() {
   if (preview3dActive) { close3DPreview(); } else { open3DPreview(); }
@@ -136,11 +164,12 @@ function p3dBarrierRibbon(pts, sideOff, yBase, height) {
 }
 
 // ─── Place barrier 3D objects ──────────────────────
-function p3dPlaceBarrier(scene, surface, spPts, TH, side) {
+function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
   const sides = (side==='both'||!side) ? [-1,1] : [(side==='left'||side===-1) ? -1 : 1];
 
   sides.forEach(s => {
-    const off = (TH+2) * s;
+    const lane = p3dLane(surface, laneIndex || 0);
+    const off = lane.center * s;
     const color = SURF_COLOR_3D[surface] || 0xaaaaaa;
     const mat   = new THREE.MeshLambertMaterial({ color });
 
@@ -169,22 +198,21 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side) {
         scene.add(m2);
       }
     } else if (surface==='sausage') {
-      const kOff=(TH-1.5)*s;
-      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-1.5,kOff+1.5,0.02), new THREE.MeshLambertMaterial({color:0xffffff})));
+      const kOff=lane.center*s;
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-1.5,kOff+1.5,lane.y-0.01), new THREE.MeshLambertMaterial({color:0xffffff})));
       scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts,kOff,0.02,0.18), mat));
     } else if (surface==='flat_kerb') {
-      const kOff=(TH-1)*s;
-      // Alternating red/white strips baked via simple ribbon
-      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-2,kOff+2,0.03), mat));
+      const band = p3dSignedBand(lane, s);
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,band[0],band[1],lane.y), mat));
     } else if (surface==='rumble') {
-      const kOff=(TH-1)*s;
-      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-2.5,kOff+2.5,0.04), mat));
-    } else if (surface==='gravel') {
-      const gOff=(TH+4)*s;
-      scene.add(new THREE.Mesh(p3dRibbon(spPts,gOff,gOff+6,0.01), mat));
+      const band = p3dSignedBand(lane, s);
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,band[0],band[1],lane.y), mat));
+    } else if (surface==='gravel' || surface==='sand') {
+      const band = p3dSignedBand(lane, s);
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,band[0],band[1],lane.y), mat));
     } else if (surface==='grass') {
-      const gOff=(TH+3)*s;
-      scene.add(new THREE.Mesh(p3dRibbon(spPts,gOff,gOff+8,0.01), mat));
+      const band = p3dSignedBand(lane, s);
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,band[0],band[1],lane.y), mat));
     }
   });
 }
@@ -263,7 +291,8 @@ function build3DScene() {
       new THREE.CylinderGeometry(sp.r, sp.r, 0.06, 14),
       new THREE.MeshLambertMaterial({ color })
     );
-    disc.position.set(sp.x, 0.03, sp.z);
+    const lane = p3dLane(sp.surface, 0);
+    disc.position.set(sp.x, lane.y + 0.01, sp.z);
     preview3dScene.add(disc);
   });
 
@@ -273,7 +302,7 @@ function build3DScene() {
     const toIdx   = Math.min(Math.round(seg.to   / n * spPts.length), spPts.length - 1);
     const segPts  = spPts.slice(fromIdx, toIdx + 1);
     if (segPts.length < 2) return;
-    p3dPlaceBarrier(preview3dScene, seg.surface, segPts, TH, seg.side);
+    p3dPlaceBarrier(preview3dScene, seg.surface, segPts, TH, seg.side, seg.lane || 0);
   });
 
   // ── Camera + controls ──

@@ -13,9 +13,27 @@ function getSegmentNear(wx, wy) {
 
 function setStartingPoint() {
   if (waypoints.length===0){showToast('No waypoints yet!');return;}
-  startingPointIdx = selectedWP>=0 ? selectedWP : 0;
+  startingPointIdx = selectedWP>=0 ? selectedWP : findBestStartFinishWaypoint();
   updateWPList(); render();
   showToast(`Start set to WP ${startingPointIdx}`);
+}
+
+function findBestStartFinishWaypoint() {
+  if (waypoints.length < 3) return 0;
+  let best = 0, bestScore = -Infinity;
+  const n = waypoints.length;
+  for (let i=0; i<n; i++) {
+    const prev=waypoints[(i-1+n)%n], cur=waypoints[i], next=waypoints[(i+1)%n];
+    const ax=cur.x-prev.x, ay=cur.y-prev.y, bx=next.x-cur.x, by=next.y-cur.y;
+    const la=Math.hypot(ax,ay), lb=Math.hypot(bx,by);
+    if (la < 1e-6 || lb < 1e-6) continue;
+    const straightness = (ax*bx+ay*by)/(la*lb);
+    const lengthScore = Math.min(90, la + lb);
+    const lowerScreenBias = cur.y * 0.01;
+    const score = straightness * 140 + lengthScore + lowerScreenBias;
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  return best;
 }
 
 function setTool(t) {
@@ -61,7 +79,7 @@ function setSurface(s) {
   document.querySelectorAll('.so-btn').forEach(b=>b.classList.remove('active'));
   const so=document.getElementById('so-'+s);
   if (so) so.classList.add('active');
-  const dotMap={flat_kerb:'🟥',sausage:'🟨',rumble:'🟧',gravel:'🟫',grass:'🟩',armco:'⬜',tecpro:'🟦',tyrewall:'⬛'};
+  const dotMap={flat_kerb:'🟥',sausage:'🟨',rumble:'🟧',gravel:'🟫',sand:'🟨',grass:'🟩',armco:'⬜',tecpro:'🟦',tyrewall:'⬛'};
   const mbDot=document.getElementById('mb-surf-dot');
   if (mbDot) mbDot.textContent=dotMap[s]||'🔲';
 }
@@ -91,7 +109,8 @@ function updateBrushRing(sx, sy) {
 // PAINT / ERASE
 // ═══════════════════════════════════════════════════
 function paintAt(wx, wy) {
-  paintLayers.push({ surface, x:wx, y:wy, r:brushSize });
+  const rank = SURFACE_LANES[surface] ? SURFACE_LANES[surface].inner : 99;
+  paintLayers.push({ surface, x:wx, y:wy, r:brushSize, rank });
   const el=document.getElementById('stat-paint');
   if (el) el.textContent=paintLayers.length;
 }

@@ -9,12 +9,40 @@ const EXPORT_SURF = {
   flat_kerb: { color3d: '0xe8392a', label: 'Flat Kerb',    type: 'kerb',    h: 0.04 },
   sausage:   { color3d: '0xf5c518', label: 'Sausage Kerb', type: 'sausage', h: 0.20 },
   rumble:    { color3d: '0xdd3333', label: 'Rumble Strip',  type: 'kerb',    h: 0.06 },
-  gravel:    { color3d: '0xc8b89a', label: 'Gravel/Sand',   type: 'runoff',  h: 0.01 },
+  gravel:    { color3d: '0xc8b89a', label: 'Gravel',        type: 'runoff',  h: 0.01 },
+  sand:      { color3d: '0xe3cf98', label: 'Sand',          type: 'runoff',  h: 0.01 },
   grass:     { color3d: '0x3a7a3a', label: 'Grass',         type: 'runoff',  h: 0.01 },
   armco:     { color3d: '0xcccccc', label: 'Armco Wall',    type: 'wall',    h: 0.90 },
   tecpro:    { color3d: '0x3a5fa8', label: 'Tecpro',        type: 'tecpro',  h: 1.00 },
   tyrewall:  { color3d: '0x222222', label: 'Tyre Wall',     type: 'tyres',   h: 0.92 },
 };
+
+const EXPORT_LANES = {
+  flat_kerb: { inner: 14.2, outer: 18.2, y: 0.075 },
+  rumble:    { inner: 14.8, outer: 19.8, y: 0.085 },
+  sausage:   { inner: 18.8, outer: 22.2, y: 0.10 },
+  gravel:    { inner: 23.0, outer: 35.0, y: 0.025 },
+  sand:      { inner: 23.0, outer: 35.0, y: 0.026 },
+  grass:     { inner: 36.0, outer: 50.0, y: 0.02 },
+  armco:     { inner: 54.0, outer: 57.0, y: 0.02 },
+  tecpro:    { inner: 53.0, outer: 58.0, y: 0.02 },
+  tyrewall:  { inner: 52.0, outer: 58.0, y: 0.02 },
+};
+
+function expLane(surface, lane = 0) {
+  const cfg = EXPORT_LANES[surface] || EXPORT_LANES.flat_kerb;
+  const extra = Math.max(0, lane || 0) * 4.5;
+  return {
+    inner: cfg.inner + extra,
+    outer: cfg.outer + extra,
+    center: (cfg.inner + cfg.outer) * 0.5 + extra,
+    y: cfg.y
+  };
+}
+
+function expSignedBand(lane, side) {
+  return side < 0 ? [-lane.outer, -lane.inner] : [lane.inner, lane.outer];
+}
 
 // ── Catmull-Rom (same as render.js) ─────────────────
 function expCatmull(p0,p1,p2,p3,t) {
@@ -146,8 +174,9 @@ function genBarrierCode(seg, pts) {
   let code = '';
   const TH = 14;
   sides.forEach(s => {
-    const off = (TH + 2) * s;
-    const kOff = (TH - 1) * s;
+    const lane = expLane(surf, seg.lane || 0);
+    const off = lane.center * s;
+    const kOff = lane.center * s;
     const col = cfg.color3d;
     if (surf==='armco') {
       code += wallMeshCode(pts, off, 0.02, 0.90, col) + '\n';
@@ -163,16 +192,19 @@ function genBarrierCode(seg, pts) {
       code += ribbonMeshCode('_sk',pts,kOff-1.8,kOff+1.8,0.03,'0xffffff') + '\n';
       code += wallMeshCode(pts, kOff, 0.02, 0.18, col) + '\n';
     } else if (surf==='flat_kerb') {
-      code += ribbonMeshCode('_fk',pts,kOff-2.2,kOff+2.2,0.04,col) + '\n';
-      code += ribbonMeshCode('_fkw',pts,kOff-2.2,kOff,0.04,'0xffffff') + '\n';
+      const band = expSignedBand(lane, s);
+      const halfBand = s < 0 ? [-lane.center, -lane.inner] : [lane.inner, lane.center];
+      code += ribbonMeshCode('_fk',pts,band[0],band[1],lane.y,col) + '\n';
+      code += ribbonMeshCode('_fkw',pts,halfBand[0],halfBand[1],lane.y,'0xffffff') + '\n';
     } else if (surf==='rumble') {
-      code += ribbonMeshCode('_rm',pts,kOff-2.5,kOff+2.5,0.05,col) + '\n';
-    } else if (surf==='gravel') {
-      const gOff = (TH+4)*s;
-      code += ribbonMeshCode('_gv',pts,gOff,gOff+8,0.01,col) + '\n';
+      const band = expSignedBand(lane, s);
+      code += ribbonMeshCode('_rm',pts,band[0],band[1],lane.y,col) + '\n';
+    } else if (surf==='gravel' || surf==='sand') {
+      const band = expSignedBand(lane, s);
+      code += ribbonMeshCode('_gv',pts,band[0],band[1],lane.y,col) + '\n';
     } else if (surf==='grass') {
-      const gOff = (TH+3)*s;
-      code += ribbonMeshCode('_gs',pts,gOff,gOff+10,0.01,col) + '\n';
+      const band = expSignedBand(lane, s);
+      code += ribbonMeshCode('_gs',pts,band[0],band[1],lane.y,col) + '\n';
     }
   });
   return code;
@@ -222,7 +254,8 @@ function buildExportCode() {
       const col=cfg.color3d;
       const items=ps.map(p=>`[${p.x.toFixed(1)},${p.z.toFixed(1)},${p.r.toFixed(1)}]`).join(',');
       paintCode += `  // ${cfg.label} patches\n`;
-      paintCode += `  {const _mat=new THREE.MeshLambertMaterial({color:${col}});[${items}].forEach(function(p){const _m=new THREE.Mesh(new THREE.CylinderGeometry(p[2],p[2],0.07,12),_mat);_m.position.set(p[0],0.035,p[1]);addObj(_m);});}\n`;
+      const lane = expLane(surf, 0);
+      paintCode += `  {const _mat=new THREE.MeshLambertMaterial({color:${col}});[${items}].forEach(function(p){const _m=new THREE.Mesh(new THREE.CylinderGeometry(p[2],p[2],0.07,12),_mat);_m.position.set(p[0],${(lane.y + 0.01).toFixed(3)},p[1]);addObj(_m);});}\n`;
     });
   }
 
