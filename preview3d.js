@@ -1,7 +1,9 @@
 // ═══════════════════════════════════════════════════
-// 3D PREVIEW — Circuit Forge v7.1
-// FIX: surface Y heights scaled up so all geometry
-//      renders visibly above the grass ground plane.
+// 3D PREVIEW — Circuit Forge v7.2
+// FIX v7.1: surface Y heights scaled up above ground plane
+// FIX v7.2: ribbon normals use centered differences +
+//           sign-consistency pass to eliminate bowtie
+//           / twisted-quad distortion on sharp bends.
 // ═══════════════════════════════════════════════════
 let preview3dActive   = false;
 let preview3dRenderer = null;
@@ -23,10 +25,6 @@ const SURF_COLOR_3D = {
   tyrewall:  0x222222,
 };
 
-// FIX v7.1: All Y values raised so surfaces sit clearly
-// above the grass ground plane (y=0). Track is ~500 units
-// wide so previously 0.02-0.10 units was invisible from
-// any reasonable camera angle.
 const P3D_SURFACE_LANES = {
   flat_kerb: { inner: 14.2, outer: 18.2, y: 0.80 },
   rumble:    { inner: 14.8, outer: 19.8, y: 0.90 },
@@ -126,80 +124,128 @@ function p3dBuildSpline(wps, spp) {
   return pts;
 }
 
-// ─── Ribbon geometry builder ───────────────────────
-function p3dRibbon(spPts, innerOff, outerOff, yBase=0) {
-  const n=spPts.length;
-  const pos=[],nor=[],uv=[],idx=[];
-  for (let i=0;i<=n;i++) {
-    const c=spPts[i%n],nx2=spPts[(i+1)%n];
-    const dx=nx2.x-c.x,dz=nx2.z-c.z,len=Math.sqrt(dx*dx+dz*dz)||1;
-    const px=dz/len,pz=-dx/len;
-    pos.push(c.x+px*innerOff,yBase,c.z+pz*innerOff, c.x+px*outerOff,yBase,c.z+pz*outerOff);
-    nor.push(0,1,0,0,1,0);
-    const s=i/n; uv.push(s,0,s,1);
+// ─── Compute per-point lateral normals ────────────
+// FIX v7.2: Use centered difference (prev→next) for
+// smoother normals, then do a sign-consistency pass
+// to stop normals flipping at hairpins / tight bends.
+function p3dComputeNormals(spPts) {
+  const n = spPts.length;
+  const normals = spPts.map((p, i) => {
+    const prev = spPts[(i - 1 + n) % n];
+    const next = spPts[(i + 1) % n];
+    const dx = next.x - prev.x;
+    const dz = next.z - prev.z;
+    const len = Math.sqrt(dx*dx + dz*dz) || 1;
+    // Perpendicular in XZ plane: rotate forward 90° → lateral right
+    return { px: dz / len, pz: -dx / len };
+  });
+
+  // Sign-consistency pass: if a normal flips relative to its
+  // predecessor (dot product negative), flip it back. This
+  // prevents the bowtie/X distortion on sharp-cornered tracks.
+  for (let i = 1; i < n; i++) {
+    const dot = normals[i].px * normals[i-1].px + normals[i].pz * normals[i-1].pz;
+    if (dot < 0) {
+      normals[i].px = -normals[i].px;
+      normals[i].pz = -normals[i].pz;
+    }
   }
-  for (let i=0;i<n;i++){const b=i*2;idx.push(b,b+1,b+2,b+1,b+3,b+2);}
-  const g=new THREE.BufferGeometry();
-  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
-  g.setAttribute('normal',new THREE.Float32BufferAttribute(nor,3));
-  g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
+  return normals;
+}
+
+// ─── Flat ribbon geometry (road, kerbs, runoff) ───
+function p3dRibbon(spPts, innerOff, outerOff, yBase=0) {
+  const n = spPts.length;
+  if (n < 2) return new THREE.BufferGeometry();
+
+  const normals = p3dComputeNormals(spPts);
+  const pos=[], nor=[], uv=[], idx=[];
+
+  // n+1 vertex pairs to close the loop cleanly
+  for (let i=0; i<=n; i++) {
+    const ci = i % n;
+    const { px, pz } = normals[ci];
+    const c = spPts[ci];
+    pos.push(
+      c.x + px*innerOff, yBase, c.z + pz*innerOff,
+      c.x + px*outerOff, yBase, c.z + pz*outerOff
+    );
+    nor.push(0,1,0, 0,1,0);
+    const s = i / n;
+    uv.push(s,0, s,1);
+  }
+
+  // n quads from n+1 rows of 2 vertices each
+  for (let i=0; i<n; i++) {
+    const b = i*2;
+    idx.push(b,b+1,b+2, b+1,b+3,b+2);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('normal',   new THREE.Float32BufferAttribute(nor,3));
+  g.setAttribute('uv',       new THREE.Float32BufferAttribute(uv,2));
   g.setIndex(idx);
   return g;
 }
 
-// ─── Barrier strip ribbon (vertical face) ──────────
+// ─── Vertical barrier strip (armco, sausage ridge) ─
+// FIX v7.2: also uses p3dComputeNormals to avoid twist
 function p3dBarrierRibbon(pts, sideOff, yBase, height) {
-  const n=pts.length;
-  const pos=[],nor=[],idx=[];
-  for (let i=0;i<=n;i++) {
-    const c=pts[i%n],nx2=pts[Math.min(i+1,n-1)];
-    const dx=nx2.x-c.x,dz=nx2.z-c.z,len=Math.sqrt(dx*dx+dz*dz)||1;
-    const px=dz/len,pz=-dx/len;
-    const ox=c.x+px*sideOff, oz=c.z+pz*sideOff;
-    pos.push(ox,yBase,oz, ox,yBase+height,oz);
+  const n = pts.length;
+  if (n < 2) return new THREE.BufferGeometry();
+
+  const normals = p3dComputeNormals(pts);
+  const pos=[], nor=[], idx=[];
+
+  for (let i=0; i<=n; i++) {
+    const ci = i % n;
+    const { px, pz } = normals[ci];
+    const c = pts[ci];
+    const ox = c.x + px*sideOff;
+    const oz = c.z + pz*sideOff;
+    pos.push(ox, yBase, oz,  ox, yBase+height, oz);
     nor.push(px,0,pz, px,0,pz);
   }
-  for (let i=0;i<n;i++){const b=i*2;idx.push(b,b+1,b+2,b+1,b+3,b+2);}
-  const g=new THREE.BufferGeometry();
-  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
-  g.setAttribute('normal',new THREE.Float32BufferAttribute(nor,3));
+
+  for (let i=0; i<n; i++) {
+    const b = i*2;
+    idx.push(b,b+1,b+2, b+1,b+3,b+2);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('normal',   new THREE.Float32BufferAttribute(nor,3));
   g.setIndex(idx);
   return g;
 }
 
 // ─── Place barrier 3D objects ──────────────────────
-// FIX v7.1: all heights and Y positions scaled up proportionally
-// to be visible above the ground plane.
 function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
   const sides = (side==='both'||!side) ? [-1,1] : [(side==='left'||side===-1) ? -1 : 1];
+  const normals = p3dComputeNormals(spPts);
 
   sides.forEach(s => {
-    const lane = p3dLane(surface, laneIndex || 0);
-    const off = lane.center * s;
+    const lane  = p3dLane(surface, laneIndex || 0);
+    const off   = lane.center * s;
     const color = SURF_COLOR_3D[surface] || 0xaaaaaa;
-    const mat   = new THREE.MeshLambertMaterial({ color });
+    const mat   = new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide });
 
     if (surface==='armco') {
-      // FIX: height 6.0 (was 0.9), yBase 0.5 (was 0.02)
       scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, off, 0.5, 6.0), mat));
-      // Corrugation rail
       scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, off+0.15*s, 2.0, 0.5), mat));
     } else if (surface==='tecpro') {
-      // FIX: box height 10.0 (was 1.0), y at 5.0 (was 0.5)
       for (let i=0;i<spPts.length-1;i+=3) {
-        const p=spPts[i],nx2=spPts[Math.min(i+1,spPts.length-1)];
-        const dx=nx2.x-p.x,dz=nx2.z-p.z,len=Math.sqrt(dx*dx+dz*dz)||1;
-        const px=dz/len,pz=-dx/len;
+        const p=spPts[i];
+        const { px, pz } = normals[i];
         const m=new THREE.Mesh(new THREE.BoxGeometry(1.1,10.0,1.1), mat);
         m.position.set(p.x+px*off, 5.0, p.z+pz*off);
         scene.add(m);
       }
     } else if (surface==='tyrewall') {
-      // FIX: each tyre cylinder height 4.0 (was 0.46), stacked at 2.0 and 6.0 (was 0.23, 0.69)
       for (let i=0;i<spPts.length-1;i+=4) {
-        const p=spPts[i],nx2=spPts[Math.min(i+1,spPts.length-1)];
-        const dx=nx2.x-p.x,dz=nx2.z-p.z,len=Math.sqrt(dx*dx+dz*dz)||1;
-        const px=dz/len,pz=-dx/len;
+        const p=spPts[i];
+        const { px, pz } = normals[i];
         const m=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,4.0,10), mat);
         m.position.set(p.x+px*off, 2.0, p.z+pz*off);
         scene.add(m);
@@ -208,9 +254,9 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
         scene.add(m2);
       }
     } else if (surface==='sausage') {
-      // FIX: white base at 0.99, ridge height 2.5 (was 0.18)
-      const kOff=lane.center*s;
-      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-1.5,kOff+1.5,0.99), new THREE.MeshLambertMaterial({color:0xffffff})));
+      const kOff = lane.center * s;
+      const whiteMat = new THREE.MeshLambertMaterial({color:0xffffff, side:THREE.DoubleSide});
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-1.5,kOff+1.5,0.99), whiteMat));
       scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts,kOff,0.5,2.5), mat));
     } else if (surface==='flat_kerb') {
       const band = p3dSignedBand(lane, s);
@@ -268,8 +314,11 @@ function build3DScene() {
   sun.position.set(200, 300, 150); sun.castShadow=true;
   preview3dScene.add(sun);
 
-  // ── Ground ── (y=0, all surfaces must be above this)
-  const gnd = new THREE.Mesh(new THREE.PlaneGeometry(3000,3000), new THREE.MeshLambertMaterial({color:0x2d5a1b}));
+  // ── Ground (y=0) ──
+  const gnd = new THREE.Mesh(
+    new THREE.PlaneGeometry(3000,3000),
+    new THREE.MeshLambertMaterial({color:0x2d5a1b})
+  );
   gnd.rotation.x=-Math.PI/2; gnd.receiveShadow=true;
   preview3dScene.add(gnd);
 
@@ -277,22 +326,42 @@ function build3DScene() {
   const { wps, factor, cx, cy } = p3dGetScaledData();
   if (wps.length < 2) return;
   const n = wps.length;
-  const SPP = 12;
+  const SPP = 14;   // spline points per waypoint segment
   const spPts = p3dBuildSpline(wps, SPP);
 
-  // Centroid for camera
+  // Centroid for camera target
   const scx = wps.reduce((s,p)=>s+p.x,0)/n;
   const scz = wps.reduce((s,p)=>s+p.z,0)/n;
   p3dOrbitTarget = { cx: scx, cz: scz };
 
   const TH = 14;
+  const dblSide = { side: THREE.DoubleSide };
 
-  // ── Track asphalt — FIX: y=0.5 (was 0.05) ──
-  preview3dScene.add(new THREE.Mesh(p3dRibbon(spPts,-TH,TH,0.5), new THREE.MeshLambertMaterial({color:0x333338})));
+  // ── Asphalt (y=0.5) — DoubleSide so normals don't hide it ──
+  preview3dScene.add(new THREE.Mesh(
+    p3dRibbon(spPts, -TH, TH, 0.5),
+    new THREE.MeshLambertMaterial({color:0x333338, ...dblSide})
+  ));
 
-  // ── Outer kerb edge — FIX: y=0.4 (was 0.04) ──
-  preview3dScene.add(new THREE.Mesh(p3dRibbon(spPts,TH,TH+2.5,0.4), new THREE.MeshLambertMaterial({color:0xff4444})));
-  preview3dScene.add(new THREE.Mesh(p3dRibbon(spPts,-TH-2.5,-TH,0.4), new THREE.MeshLambertMaterial({color:0xff4444})));
+  // ── Outer kerb edge band (y=0.4) ──
+  preview3dScene.add(new THREE.Mesh(
+    p3dRibbon(spPts, TH, TH+2.5, 0.4),
+    new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
+  ));
+  preview3dScene.add(new THREE.Mesh(
+    p3dRibbon(spPts, -TH-2.5, -TH, 0.4),
+    new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
+  ));
+
+  // ── White edge line ──
+  preview3dScene.add(new THREE.Mesh(
+    p3dRibbon(spPts, TH-0.8, TH+0.8, 0.55),
+    new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
+  ));
+  preview3dScene.add(new THREE.Mesh(
+    p3dRibbon(spPts, -TH-0.8, -TH+0.8, 0.55),
+    new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
+  ));
 
   // ── Paint layers ──
   paintLayers.forEach(p => {
@@ -317,7 +386,6 @@ function build3DScene() {
   });
 
   // ── Camera + controls ──
-  p3dOrbit.dist = Math.max(150, Math.min(600, 380));
   updateP3DCamera();
   setupP3DControls(cnv);
 
@@ -340,7 +408,9 @@ function p3dMergeBarrierSegments(segments, wpCount) {
   const merged = [];
   for (const seg of sorted) {
     const prev = merged[merged.length - 1];
-    const compatible = prev && prev.surface === seg.surface && (prev.side || 'both') === (seg.side || 'both') && (prev.lane || 0) === (seg.lane || 0) && !!prev.auto === !!seg.auto;
+    const compatible = prev && prev.surface === seg.surface &&
+      (prev.side || 'both') === (seg.side || 'both') &&
+      (prev.lane || 0) === (seg.lane || 0) && !!prev.auto === !!seg.auto;
     if (compatible && seg.from <= prev.to + gapTolerance) {
       prev.to = Math.max(prev.to, seg.to);
     } else {

@@ -1,4 +1,15 @@
-// TRACK IMAGE → WAYPOINTS  v7.1
+// TRACK IMAGE → WAYPOINTS  v7.2
+// ═══════════════════════════════════════════════════
+// v7.2 improvements:
+//   · Multi-pass morphological dilation (2px) before
+//     skeletonisation — fixes broken/anti-aliased lines
+//   · Spur pruning raised 8→22 px (SPA-class tracks)
+//   · Colour matching now uses perceptual weighting so
+//     anti-aliased edge pixels classify correctly
+//   · 3 smooth passes (was 1-2) for better shape fidelity
+//   · autoPlaceTrackFeatures: kerbs on BOTH sides of
+//     corners, better straight-armco thresholds, wider
+//     runoff zones
 // ═══════════════════════════════════════════════════
 let aiImageData = null;
 let aiImgW = 0, aiImgH = 0;
@@ -38,7 +49,7 @@ function aiLoadImageFile(file) {
   reader.onload = ev => {
     const img = new Image();
     img.onload = () => {
-      const MAX = 480;
+      const MAX = 520;
       const scale = Math.min(1, MAX / Math.max(img.width, img.height));
       aiImgW = Math.round(img.width  * scale);
       aiImgH = Math.round(img.height * scale);
@@ -76,7 +87,7 @@ function aiLoadImageFile(file) {
   reader.readAsDataURL(file);
 }
 
-function aiLoadReferenceImage(url, label) {
+function aiLoadReferenceImage(url, label, trackRGB, bgRGB) {
   if (aiPreviewCanvas) {
     aiPreviewCanvas.removeEventListener('click',      aiCanvasClick);
     aiPreviewCanvas.removeEventListener('mousemove',  aiCanvasMouseMove);
@@ -90,7 +101,7 @@ function aiLoadReferenceImage(url, label) {
 
   const img = new Image();
   img.onload = async () => {
-    const MAX = 480;
+    const MAX = 520;
     const scale = Math.min(1, MAX / Math.max(img.width, img.height));
     aiImgW = Math.round(img.width  * scale);
     aiImgH = Math.round(img.height * scale);
@@ -119,15 +130,15 @@ function aiLoadReferenceImage(url, label) {
     aiPreviewCanvas.addEventListener('touchmove',  aiCanvasTouchMove,  { passive: false });
     aiPreviewCanvas.addEventListener('touchend',   aiCanvasTouchEnd,   { passive: false });
 
-    aiTrackRGB = { r: 27, g: 27, b: 36 };
-    aiBgRGB = { r: 250, g: 250, b: 250 };
+    aiTrackRGB = trackRGB || { r: 27, g: 27, b: 36 };
+    aiBgRGB    = bgRGB    || { r: 250, g: 250, b: 250 };
     document.getElementById('track-swatch').style.background = rgbToHex(aiTrackRGB);
     document.getElementById('track-hex').textContent = rgbToHex(aiTrackRGB).toUpperCase();
     document.getElementById('bg-swatch').style.background = rgbToHex(aiBgRGB);
     document.getElementById('bg-hex').textContent = rgbToHex(aiBgRGB).toUpperCase();
     document.getElementById('ai-run-btn').disabled = false;
     document.getElementById('ai-drop').style.display = 'none';
-    if (document.getElementById('track-name')) document.getElementById('track-name').value = label || 'Interlagos';
+    if (document.getElementById('track-name')) document.getElementById('track-name').value = label || 'My Circuit';
 
     aiUpdatePreviewOverlay();
     await runAIConvert();
@@ -173,7 +184,13 @@ function rgbToHex(rgb) { return '#'+[rgb.r,rgb.g,rgb.b].map(v=>v.toString(16).pa
 function aiPickColour(clientX, clientY) {
   if (!aiEyedropperMode || !aiPreviewCanvas) return;
   const { ix, iy } = aiGetImageXY(aiPreviewCanvas, clientX, clientY);
-  const rgb = aiSamplePixel(ix, iy);
+  // Sample a 3x3 area and average for more stable eyedropper
+  let r=0,g=0,b=0,cnt=0;
+  for (let dy=-1;dy<=1;dy++) for (let dx=-1;dx<=1;dx++) {
+    const sx=Math.max(0,Math.min(aiImgW-1,ix+dx)), sy=Math.max(0,Math.min(aiImgH-1,iy+dy));
+    const px=aiSamplePixel(sx,sy); r+=px.r; g+=px.g; b+=px.b; cnt++;
+  }
+  const rgb={r:Math.round(r/cnt),g:Math.round(g/cnt),b:Math.round(b/cnt)};
   const hex = rgbToHex(rgb);
   if (aiEyedropperMode === 'track') {
     aiTrackRGB = rgb;
@@ -228,8 +245,6 @@ function aiCanvasTouchEnd(e)  { if (!aiEyedropperMode) return; e.preventDefault(
 
 function aiUpdatePreviewOverlay() {
   if (!aiPreviewCtx || !aiImageData) return;
-  const tol = parseInt(document.getElementById('ai-tolerance')?.value || '40');
-  const tolSq = tol * tol;
   const pw = aiPreviewCanvas.width, ph = aiPreviewCanvas.height;
   const out = aiPreviewCtx.createImageData(pw, ph);
   for (let py=0; py<ph; py++) {
@@ -241,8 +256,8 @@ function aiUpdatePreviewOverlay() {
       if (aiTrackRGB&&aiBgRGB) {
         const dT=colDist2(r,g,b,aiTrackRGB), dB=colDist2(r,g,b,aiBgRGB);
         isTrack=dT<dB; isBg=!isTrack;
-      } else if (aiTrackRGB) { isTrack=colDist2(r,g,b,aiTrackRGB)<tolSq; }
-        else if (aiBgRGB)    { isBg   =colDist2(r,g,b,aiBgRGB)   <tolSq; }
+      } else if (aiTrackRGB) { isTrack=colDist2(r,g,b,aiTrackRGB)<1600; }
+        else if (aiBgRGB)    { isBg   =colDist2(r,g,b,aiBgRGB)   <1600; }
       if (isTrack) {
         out.data[di]=Math.round(r*.25+167*.75); out.data[di+1]=Math.round(g*.25+139*.75);
         out.data[di+2]=Math.round(b*.25+250*.75); out.data[di+3]=255;
@@ -268,10 +283,17 @@ function setAIProgress(pct) {
   if (pct >= 100) setTimeout(() => { bar.style.display='none'; fill.style.width='0%'; }, 600);
 }
 function tick() { return new Promise(r => setTimeout(r, 10)); }
-function colDist2(r,g,b,rgb) { const dr=r-rgb.r,dg=g-rgb.g,db=b-rgb.b; return dr*dr+dg*dg+db*db; }
+
+// ── Perceptual colour distance (weights R/G/B by human vision) ──
+// Much better than plain RGB Euclidean for identifying coloured tracks
+// (e.g. red line vs black bg — red channel should dominate).
+function colDist2(r,g,b,rgb) {
+  const dr=r-rgb.r, dg=g-rgb.g, db=b-rgb.b;
+  return 0.299*dr*dr + 0.587*dg*dg + 0.114*db*db;
+}
 
 // ═══════════════════════════════════════════════════
-// PIPELINE v7.1
+// PIPELINE v7.2
 // ═══════════════════════════════════════════════════
 async function runAIConvert() {
   if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }
@@ -286,7 +308,7 @@ async function runAIConvert() {
   const wpCount = AI_MAX_WAYPOINTS;
 
   try {
-    setAIStatus('Step 1/5 — Classifying pixels…', ''); setAIProgress(8); await tick();
+    setAIStatus('Step 1/6 — Classifying pixels…', ''); setAIProgress(6); await tick();
     const mask = new Uint8Array(W*H);
     let trackCount = 0;
     for (let i=0; i<W*H; i++) {
@@ -295,33 +317,43 @@ async function runAIConvert() {
     }
     if (trackCount < 50) { setAIStatus('Too few track pixels — re-pick colours', 'err'); return; }
 
-    setAIStatus('Step 2/5 — Bridging tiny line gaps…', ''); setAIProgress(16); await tick();
-    const lineMask = bridgeTinyGaps(mask, W, H);
+    // ── v7.2: Multi-pass morphological closing to heal anti-aliased /
+    //    broken outlines (2px dilation bridges up to 4px gaps)
+    setAIStatus('Step 2/6 — Closing pixel gaps…', ''); setAIProgress(16); await tick();
+    let lineMask = mask;
+    // Determine how many dilation passes based on track pixel density
+    const density = trackCount / (W * H);
+    const dilPasses = density < 0.04 ? 3 : 2;  // thin line → more dilation
+    for (let pass = 0; pass < dilPasses; pass++) lineMask = morphDilate(lineMask, W, H);
 
-    setAIStatus('Step 3/5 — Finding track region…', ''); setAIProgress(26); await tick();
+    setAIStatus('Step 3/6 — Finding track region…', ''); setAIProgress(26); await tick();
     const comp = largestComponent(lineMask, W, H);
 
-    setAIStatus('Step 4/5 — Skeletonising track…', ''); setAIProgress(38); await tick();
+    setAIStatus('Step 4/6 — Skeletonising track…', ''); setAIProgress(38); await tick();
     const skel = zhangSuenThin(comp, W, H);
-    pruneSpurs(skel, W, H, 8);
+    // ── v7.2: higher spur threshold (8→22) handles SPA-style complex geometry
+    pruneSpurs(skel, W, H, 22);
+    // Second pruning pass to get stubborn short spurs
+    pruneSpurs(skel, W, H, 10);
 
-    setAIStatus('Step 5/5 — Ordering waypoints…', ''); setAIProgress(65); await tick();
+    setAIStatus('Step 5/6 — Tracing centreline…', ''); setAIProgress(52); await tick();
     const chain = walkSkeleton(skel, W, H);
 
     if (chain.length < 4) { setAIStatus('Could not trace skeleton — try re-picking colours', 'err'); return; }
 
-    const CLOSE_THRESH = 8;
+    // Close loop if endpoints are nearby
+    const CLOSE_THRESH = Math.max(8, Math.min(W, H) * 0.04);
     const fc = chain[0], lc = chain[chain.length-1];
     if (Math.hypot(fc.x-lc.x, fc.y-lc.y) <= CLOSE_THRESH && chain.length > 1) {
       chain.push({ x: fc.x, y: fc.y });
     }
 
-    setAIProgress(80); await tick();
+    setAIStatus('Step 6/6 — Fitting waypoints…', ''); setAIProgress(68); await tick();
 
     const sampled = uniformResample(chain, wpCount);
-    const smoothPasses = wpCount >= 200 ? 2 : 1;
+    // ── v7.2: 3 smooth passes for cleaner shape
     let pts = sampled;
-    for (let p=0; p<smoothPasses; p++) pts = smoothPass(pts, 3, 0.38);
+    for (let p=0; p<3; p++) pts = smoothPass(pts, 3, 0.42);
 
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
     for (const p of pts) { minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y); }
@@ -330,10 +362,10 @@ async function runAIConvert() {
     let newWPs = pts.map(p => ({ x:(p.x-mx)*sc, y:(p.y-my)*sc }));
     newWPs = cleanupConvertedWaypoints(newWPs);
 
-    setAIProgress(90); await tick();
+    setAIProgress(88); await tick();
 
-    // ── Auto-simplify: capture at max detail, then reduce for performance ──
-    const autoEps = newWPs.length > 300 ? 1.15 : newWPs.length > 150 ? 0.75 : 0;
+    // ── Auto-simplify: reduce for performance while keeping corners sharp ──
+    const autoEps = newWPs.length > 300 ? 1.05 : newWPs.length > 150 ? 0.65 : 0;
     if (autoEps > 0 && typeof rdp === 'function') {
       const closed = newWPs.concat([newWPs[0]]);
       const simp = rdp(closed, autoEps);
@@ -371,6 +403,7 @@ function morphDilate(mask, W, H) {
   return out;
 }
 
+// ── Single-pixel gap bridging (kept for reference, pipeline now uses morphDilate) ──
 function bridgeTinyGaps(mask, W, H) {
   const out = new Uint8Array(mask);
   for (let y=1; y<H-1; y++) {
@@ -460,7 +493,7 @@ function pruneSpurs(skel, W, H, minLen) {
     }
     return c;
   }
-  for (let pass=0; pass<minLen; pass++) {
+  for (let pass=0; pass<minLen*2; pass++) {
     let removed=false;
     for (let i=0; i<W*H; i++) {
       if (!skel[i]||nb8(i)!==1) continue;
@@ -486,7 +519,7 @@ function pruneSpurs(skel, W, H, minLen) {
   }
 }
 
-// ── Walk skeleton ──
+// ── Walk skeleton — momentum-biased DFS with junction handling ──
 function walkSkeleton(skel, W, H) {
   const skelPts=[], idx2pt=new Int32Array(W*H).fill(-1);
   for (let y=0;y<H;y++) for (let x=0;x<W;x++) {
@@ -507,6 +540,7 @@ function walkSkeleton(skel, W, H) {
     return nb;
   }
 
+  // Prefer endpoint starting (degree-1 nodes) on left side
   let startPtIdx=0;
   let leftScore=Infinity;
   const endpoints=[];
@@ -529,16 +563,19 @@ function walkSkeleton(skel, W, H) {
     const cp=skelPts[cur];
     if (nbs.length===1||(hdx===0&&hdy===0)) { cur=nbs[0]; }
     else {
+      // At junction: pick neighbour most aligned with current heading
       let best=nbs[0], bestScore=-Infinity;
       for (const n of nbs) {
         const dx=skelPts[n].x-cp.x, dy=skelPts[n].y-cp.y;
+        // Momentum score
         const s=hdx*dx+hdy*dy;
         if (s>bestScore) { bestScore=s; best=n; }
       }
       cur=best;
     }
     const ndx=skelPts[cur].x-cp.x, ndy=skelPts[cur].y-cp.y;
-    hdx=hdx*.7+ndx*.3; hdy=hdy*.7+ndy*.3;
+    // Smooth heading update (more weight on new direction for better tracking)
+    hdx=hdx*.55+ndx*.45; hdy=hdy*.55+ndy*.45;
   }
   return chain;
 }
@@ -563,7 +600,7 @@ function uniformResample(chain, N) {
     curvW[i]=Math.acos(Math.max(-1,Math.min(1,(ax*bx+ay*by)/(la*lb))));
   }
 
-  const CURV_BOOST=3.5;
+  const CURV_BOOST=4.0;
   const density=new Float64Array(chain.length); let totalDensity=0;
   for (let i=0;i<chain.length-1;i++) {
     const segArc=arcLen[i+1]-arcLen[i];
@@ -601,8 +638,9 @@ function smoothPass(pts, _r, tension=0.65) {
     const la=Math.sqrt(ax*ax+ay*ay),lb=Math.sqrt(bx*bx+by*by);
     curvature[i]=la<1e-9||lb<1e-9?0:Math.acos(Math.max(-1,Math.min(1,(ax*bx+ay*by)/(la*lb))));
   }
-  const MAX_R=5;
+  const MAX_R=6;
   return pts.map((p,i) => {
+    // Tight corners get smaller smoothing radius to preserve shape
     const r=Math.max(1,Math.round(MAX_R*(1-Math.min(1,curvature[i]/Math.PI))*tension));
     const sigma=r/2; let sx=0,sy=0,sw=0;
     for (let k=-r;k<=r;k++) {
@@ -646,17 +684,25 @@ function chooseStartFinishIndex(wps) {
     const ax=cur.x-prev.x, ay=cur.y-prev.y, bx=next.x-cur.x, by=next.y-cur.y;
     const la=Math.hypot(ax,ay), lb=Math.hypot(bx,by);
     if (la < 1e-6 || lb < 1e-6) continue;
+    // Look further ahead for a long straight leading into this point
+    const la2=Math.hypot(wps[(i-2+n)%n].x-prev.x, wps[(i-2+n)%n].y-prev.y);
     const straightness = (ax*bx+ay*by)/(la*lb);
-    const lengthScore = Math.min(80, la + lb);
+    const lengthScore = Math.min(80, la + lb + la2 * 0.5);
     const bottomBias = cur.y * 0.015;
-    const score = straightness * 120 + lengthScore + bottomBias;
+    const score = straightness * 130 + lengthScore + bottomBias;
     if (score > bestScore) { bestScore = score; best = i; }
   }
   return best;
 }
 
 // ═══════════════════════════════════════════════════
-// AUTO FEATURE PLACEMENT v4.1
+// AUTO FEATURE PLACEMENT v7.2
+// Improvements:
+//   · Kerbs on BOTH inside AND outside of corners
+//   · Wider runoff zones (gravel/sand stretch further)
+//   · Better corner classification (tight/medium/fast)
+//   · Armco on all but very fast straights
+//   · Grass margins on long straights between barriers
 // ═══════════════════════════════════════════════════
 function autoPlaceTrackFeatures(wps) {
   if (!wps || wps.length < 4) return;
@@ -675,17 +721,19 @@ function autoPlaceTrackFeatures(wps) {
     signedTurn[i]=(ax*by-ay*bx)/(la*lb);
   }
 
+  // 5-point smoothed curvature
   const curvatures = new Float32Array(n);
   for (let i=0;i<n;i++) {
-    curvatures[i]=(rawCurv[(i-2+n)%n]+rawCurv[(i-1+n)%n]+rawCurv[i]+rawCurv[(i+1)%n]+rawCurv[(i+2)%n])/5;
+    curvatures[i]=(rawCurv[(i-2+n)%n]*0.1 + rawCurv[(i-1+n)%n]*0.2 + rawCurv[i]*0.4 + rawCurv[(i+1)%n]*0.2 + rawCurv[(i+2)%n]*0.1);
   }
 
   let sum=0, sum2=0;
   for (let i=0;i<n;i++) { sum+=curvatures[i]; sum2+=curvatures[i]**2; }
   const mean=sum/n;
   const stddev=Math.sqrt(Math.max(0, sum2/n-mean*mean));
-  const CORNER_THRESH = Math.max(0.12, mean + 0.3 * stddev);
-  const MIN_ZONE = Math.max(2, Math.floor(n * 0.015));
+  // v7.2: slightly lower threshold to catch more corners
+  const CORNER_THRESH = Math.max(0.10, mean + 0.25 * stddev);
+  const MIN_ZONE = Math.max(2, Math.floor(n * 0.012));
 
   const isCorner = Array.from(curvatures).map(c => c > CORNER_THRESH);
 
@@ -736,52 +784,76 @@ function autoPlaceTrackFeatures(wps) {
   cornerZones.forEach(z => {
     const len = z.to - z.from + 1;
     const apex = Math.floor((z.from + z.to) / 2);
-    const entryLen = Math.max(1, Math.floor(len * 0.25));
-    const exitLen  = Math.max(1, Math.floor(len * 0.25));
+    const entryLen = Math.max(1, Math.floor(len * 0.30));
+    const exitLen  = Math.max(1, Math.floor(len * 0.30));
     const stats = zoneStats(z);
-    const isTight = stats.maxCurv > Math.PI * 0.40;
-    const isFast  = stats.maxCurv < Math.PI * 0.22 && stats.avgSegLen > 4;
+    const isTight = stats.maxCurv > Math.PI * 0.38;
+    const isFast  = stats.maxCurv < Math.PI * 0.20 && stats.avgSegLen > 3.5;
     const isMed   = !isTight && !isFast;
 
+    // ── Inside kerbs ──
+    // Entry rumble
     pushZone({ from:z.from, to:Math.min(z.from+entryLen, z.to) }, 'rumble', stats.insideSide, 0);
+    // Apex sausage kerb
     pushZone({
-      from: Math.max(z.from, apex - Math.floor(len*0.2)),
-      to:   Math.min(z.to,   apex + Math.floor(len*0.2))
+      from: Math.max(z.from, apex - Math.floor(len*0.22)),
+      to:   Math.min(z.to,   apex + Math.floor(len*0.22))
     }, 'sausage', stats.insideSide, 1);
+    // Exit flat kerb
     pushZone({ from:Math.max(z.from, z.to-exitLen), to:z.to }, 'flat_kerb', stats.insideSide, 0);
-    pushZone(z, isTight ? 'armco' : isFast ? 'tecpro' : 'gravel', stats.outsideSide, 0);
+
+    // ── v7.2: Outside kerbs — flat kerb on outside of all corners ──
+    pushZone({ from:z.from, to:z.to }, 'flat_kerb', stats.outsideSide, 0);
+
+    // ── Outside runoff ──
+    pushZone(z, isTight ? 'armco' : isFast ? 'tecpro' : 'gravel', stats.outsideSide, 1);
 
     if (isTight) {
       pushZone({
-        from: Math.max(z.from, apex - Math.floor(len*0.12)),
-        to:   Math.min(z.to,   apex + Math.floor(len*0.12))
-      }, 'tyrewall', stats.outsideSide, 1);
+        from: Math.max(z.from, apex - Math.floor(len*0.15)),
+        to:   Math.min(z.to,   apex + Math.floor(len*0.15))
+      }, 'tyrewall', stats.outsideSide, 2);
     } else if (isMed) {
+      // v7.2: wider grass margin
       pushZone({
-        from: Math.max(z.from, apex - Math.floor(len*0.35)),
-        to:   Math.min(z.to,   apex + Math.floor(len*0.35))
-      }, 'grass', stats.outsideSide, 1);
+        from: Math.max(z.from, apex - Math.floor(len*0.45)),
+        to:   Math.min(z.to,   apex + Math.floor(len*0.45))
+      }, 'grass', stats.outsideSide, 2);
     } else if (isFast) {
+      // Fast: sand trap, then armco behind it
       pushZone({
-        from: Math.max(z.from, apex - Math.floor(len*0.25)),
-        to:   Math.min(z.to,   apex + Math.floor(len*0.25))
-      }, 'sand', stats.outsideSide, 1);
+        from: Math.max(z.from, apex - Math.floor(len*0.30)),
+        to:   Math.min(z.to,   apex + Math.floor(len*0.30))
+      }, 'sand', stats.outsideSide, 2);
+      pushZone({
+        from: Math.max(z.from, apex - Math.floor(len*0.20)),
+        to:   Math.min(z.to,   apex + Math.floor(len*0.20))
+      }, 'armco', stats.outsideSide, 3);
     }
   });
 
+  // ── Straights: armco on both sides ──
   const straightFlags = isCorner.map(v => !v);
   const straightZones = mergeNearbyZones(buildZones(straightFlags), Math.max(3, Math.floor(n * 0.025)))
-    .filter(z => z.to - z.from + 1 >= Math.max(10, Math.floor(n * 0.07)));
+    // v7.2: lower minimum length for straight detection (was 0.07)
+    .filter(z => z.to - z.from + 1 >= Math.max(6, Math.floor(n * 0.05)));
+
   straightZones.forEach(z => {
     const len = z.to - z.from + 1;
-    if (len > Math.max(18, Math.floor(n * 0.14))) return;
+    // v7.2: apply armco on ALL straights (not just short ones) but trim ends
+    const trimLen = Math.floor(len * 0.12);
     const trimmed = {
-      from: Math.min(z.to, z.from + Math.floor(len * 0.15)),
-      to:   Math.max(z.from, z.to - Math.floor(len * 0.15))
+      from: Math.min(z.to, z.from + trimLen),
+      to:   Math.max(z.from, z.to - trimLen)
     };
     if (trimmed.to > trimmed.from) {
       pushZone(trimmed, 'armco', 1, 0);
       pushZone(trimmed, 'armco', -1, 0);
+      // v7.2: grass behind armco on long straights
+      if (len > Math.floor(n * 0.12)) {
+        pushZone(trimmed, 'grass', 1, 1);
+        pushZone(trimmed, 'grass', -1, 1);
+      }
     }
   });
 

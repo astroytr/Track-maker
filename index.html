@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <!--
-  CIRCUIT FORGE — Track Studio  v7.1
-  Fixes in v7.1:
+  CIRCUIT FORGE — Track Studio  v7.2
+  Fixes in v7.2:
     · Track shape — correct perpendicular normals at segment endpoints (no more spiky triangles)
     · Segment labels — collision detection, labels no longer pile up
     · 3D preview — correct surface heights so all geometry renders above grass
@@ -12,7 +12,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>CIRCUIT FORGE v7.1 — Track Maker</title>
+<title>CIRCUIT FORGE v7.2 — Track Maker</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 <script>
@@ -83,7 +83,7 @@ window.addEventListener('load', () => {
     <div class="home-header">
       <div>
         <div class="home-logo">CIRCUIT FORGE</div>
-        <div class="home-sub">Track Studio · v7.1</div>
+        <div class="home-sub">Track Studio · v7.2</div>
       </div>
       <button class="home-close-btn" onclick="closeHomeScreen()">✕ Close</button>
     </div>
@@ -120,9 +120,9 @@ window.addEventListener('load', () => {
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v7.1</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v7.2</span>
       </div>
-      <div class="sb-sub">Track Studio · v7.1</div>
+      <div class="sb-sub">Track Studio · v7.2</div>
     </div>
 
     <div id="upload-zone"
@@ -240,7 +240,7 @@ window.addEventListener('load', () => {
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v7.1</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v7.2</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
@@ -401,7 +401,7 @@ window.addEventListener('load', () => {
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v7.1</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v7.2</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
