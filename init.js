@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════
-// INIT — Circuit Forge v7.0
+// INIT — Circuit Forge v7.1
 // ═══════════════════════════════════════════════════
 setTool('waypoint');
 setSurface('flat_kerb');

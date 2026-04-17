@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════
-// HOME SCREEN — Track Manager · Circuit Forge v7.0
+// HOME SCREEN — Track Manager · Circuit Forge v7.1
 // ═══════════════════════════════════════════════════
 const STORAGE_PREFIX = 'cf_track_';
 

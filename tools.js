@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════
-// TOOL & SURFACE MANAGEMENT — Circuit Forge v7.0
+// TOOL & SURFACE MANAGEMENT — Circuit Forge v7.1
 // ═══════════════════════════════════════════════════
 function getSegmentNear(wx, wy) {
   if (waypoints.length < 2) return -1;

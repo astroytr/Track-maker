@@ -1,14 +1,10 @@
 <!DOCTYPE html>
 <!--
-  CIRCUIT FORGE — Track Studio  v7.0
-  Changes in v7.0:
-    · Full standalone JS export with buildScene (3D geometry for all surfaces)
-    · 3D preview toggle (Three.js orbit view)
-    · Home screen — view/load/rename/delete saved tracks + upload existing .js
-    · Waypoint simplifier (Ramer-Douglas-Peucker)
-    · Barrier side selector (left / both / right) with live preview
-    · Segment labels replace colour strips for cleaner identification
-    · Save button persists track to browser storage
+  CIRCUIT FORGE — Track Studio  v7.1
+  Fixes in v7.1:
+    · Track shape — correct perpendicular normals at segment endpoints (no more spiky triangles)
+    · Segment labels — collision detection, labels no longer pile up
+    · 3D preview — correct surface heights so all geometry renders above grass
 -->
 <html lang="en">
 <head>
@@ -16,7 +12,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>CIRCUIT FORGE v7.0 — Track Maker</title>
+<title>CIRCUIT FORGE v7.1 — Track Maker</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 <script>
@@ -81,62 +77,52 @@ window.addEventListener('load', () => {
   <div id="debug-list"></div>
 </div>
 
-<!-- ══════════════════════════════════════════════════════
-     HOME SCREEN
-══════════════════════════════════════════════════════ -->
+<!-- HOME SCREEN -->
 <div id="home-screen">
   <div class="home-box">
     <div class="home-header">
       <div>
         <div class="home-logo">CIRCUIT FORGE</div>
-        <div class="home-sub">Track Studio · v7.0</div>
+        <div class="home-sub">Track Studio · v7.1</div>
       </div>
       <button class="home-close-btn" onclick="closeHomeScreen()">✕ Close</button>
     </div>
-
     <div class="home-actions-row">
       <button class="home-action-btn primary" onclick="closeHomeScreen()">+ New Track</button>
       <button class="home-action-btn" onclick="uploadExistingTrack()">⬆ Import .js File</button>
       <button class="home-action-btn" onclick="saveCurrentTrack()">💾 Save Current Track</button>
     </div>
-
     <div class="home-note">
       Track names are prefixed with <code>track_</code> in the game (e.g. <code>track_silverstone</code>).
       Rename any track here to change its in-game identifier.
     </div>
-
     <div id="home-track-grid" class="home-track-grid">
       <div class="home-empty">No saved tracks yet — create a track and click Save.</div>
     </div>
   </div>
 </div>
 
-<!-- ══════════════════════════════════════════════════════
-     3D PREVIEW OVERLAY
-══════════════════════════════════════════════════════ -->
+<!-- 3D PREVIEW OVERLAY -->
 <div id="preview3d-overlay">
-  <!-- Three.js canvas is injected here by preview3d.js -->
   <div class="preview3d-hud">
     <span>Drag = orbit</span>
     <span>Scroll = zoom</span>
     <span>Q = exit</span>
   </div>
-  <button class="preview3d-exit-btn" onclick="close3DPreview()">✕ Exit 3D</button>
+  <button class="preview3d-exit-btn" onclick="close3DPreview()">← Back to 2D</button>
 </div>
 
-<!-- ══════════════════════════════════════════════════════
-     MAIN APP
-══════════════════════════════════════════════════════ -->
+<!-- MAIN APP -->
 <div id="app">
 
-  <!-- ── LEFT SIDEBAR ── -->
+  <!-- LEFT SIDEBAR -->
   <div id="sidebar">
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v7.0</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v7.1</span>
       </div>
-      <div class="sb-sub">Track Studio · v7.0</div>
+      <div class="sb-sub">Track Studio · v7.1</div>
     </div>
 
     <div id="upload-zone"
@@ -175,12 +161,11 @@ window.addEventListener('load', () => {
       </div>
     </div>
 
-    <!-- Barrier side selector — visible only in barrier mode -->
     <div class="sb-section" id="barrier-side-section" style="display:none;">
       <div class="sb-label">Barrier Side</div>
       <div class="bside-row">
         <button class="bside-btn" id="bside-left"  onclick="setBarrierSide('left')">◀ Left</button>
-        <button class="bside-btn active" id="bside-both"  onclick="setBarrierSide('both')">Both</button>
+        <button class="bside-btn active" id="bside-both" onclick="setBarrierSide('both')">Both</button>
         <button class="bside-btn" id="bside-right" onclick="setBarrierSide('right')">Right ▶</button>
       </div>
     </div>
@@ -249,19 +234,19 @@ window.addEventListener('load', () => {
     <div style="height:10px;"></div>
   </div>
 
-  <!-- ── CANVAS AREA ── -->
+  <!-- CANVAS AREA -->
   <div id="canvas-wrap">
     <canvas id="bg-canvas"></canvas>
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v7.0</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v7.1</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
   </div>
 
-  <!-- ── RIGHT PANEL ── -->
+  <!-- RIGHT PANEL -->
   <div id="right-panel">
     <div class="rp-header">
       <div class="rp-title">Track Info</div>
@@ -291,16 +276,16 @@ window.addEventListener('load', () => {
     </div>
     <div class="rp-section">
       <div class="rp-label">Legend</div>
-      <div class="legend-item"><div class="legend-dot" style="background:#e8ff47;"></div><span class="legend-label">Waypoint</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#e8392a;border:1px solid #fff;"></div><span class="legend-label">Flat Kerb</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#f5c518;"></div><span class="legend-label">Sausage Kerb</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#d44;border:1px solid #888;"></div><span class="legend-label">Rumble Strip</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#c8b89a;"></div><span class="legend-label">Gravel</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#e3cf98;"></div><span class="legend-label">Sand</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#3a7a3a;"></div><span class="legend-label">Grass</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#aaa;border:1px solid #f44;"></div><span class="legend-label">Armco Wall</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#3a5fa8;"></div><span class="legend-label">Tecpro</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#222;border:1px solid #555;"></div><span class="legend-label">Tyre Wall</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#e8ff47;"></div><span>Waypoint</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#e8392a;border:1px solid #fff;"></div><span>Flat Kerb</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#f5c518;"></div><span>Sausage Kerb</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#d44;border:1px solid #888;"></div><span>Rumble Strip</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#c8b89a;"></div><span>Gravel</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#e3cf98;"></div><span>Sand</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#3a7a3a;"></div><span>Grass</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#aaa;border:1px solid #f44;"></div><span>Armco Wall</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#3a5fa8;"></div><span>Tecpro</span></div>
+      <div class="legend-item"><div class="legend-dot" style="background:#222;border:1px solid #555;"></div><span>Tyre Wall</span></div>
     </div>
     <div class="rp-section">
       <button class="action-btn" onclick="saveCurrentTrack()" style="width:100%;margin:0;text-align:center;border-color:#00ff88;color:#00ff88;">💾 Save Track</button>
@@ -318,7 +303,7 @@ window.addEventListener('load', () => {
   </div>
 </div>
 
-<!-- ══ MOBILE BOTTOM BAR ══ -->
+<!-- MOBILE BOTTOM BAR -->
 <div id="mobile-bar">
   <div class="mb-btn active" id="mb-waypoint" onclick="setTool('waypoint');closeSurfOverlay()"><span class="mb-icon">📍</span>Waypoint</div>
   <div class="mb-btn" id="mb-paint"   onclick="setTool('paint');closeSurfOverlay()"><span class="mb-icon">🖌️</span>Paint</div>
@@ -335,7 +320,7 @@ window.addEventListener('load', () => {
   <div class="mb-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;flex-shrink:0;"><span class="mb-icon">✦</span>Convert</div>
 </div>
 
-<!-- ══ MOBILE SURFACE OVERLAY ══ -->
+<!-- MOBILE SURFACE OVERLAY -->
 <div id="surf-overlay">
   <div class="so-btn active" id="so-flat_kerb" onclick="setSurface('flat_kerb');closeSurfOverlay()"><div class="so-dot" style="background:#e8392a;"></div>Flat Kerb</div>
   <div class="so-btn" id="so-sausage"  onclick="setSurface('sausage');closeSurfOverlay()"><div class="so-dot" style="background:#f5c518;"></div>Sausage</div>
@@ -353,7 +338,7 @@ window.addEventListener('load', () => {
   <div class="ma-btn" onclick="mobileDeleteLast()" title="Delete last waypoint">🗑️</div>
 </div>
 
-<!-- ══ EXPORT MODAL ══ -->
+<!-- EXPORT MODAL -->
 <div id="export-modal">
   <div class="modal-box">
     <div class="modal-header">
@@ -375,7 +360,7 @@ window.addEventListener('load', () => {
   </div>
 </div>
 
-<!-- ══ SIMPLIFY MODAL ══ -->
+<!-- SIMPLIFY MODAL -->
 <div id="simplify-modal">
   <div class="modal-box" style="width:min(480px,calc(100vw - 28px));">
     <div class="modal-header">
@@ -410,13 +395,13 @@ window.addEventListener('load', () => {
   </div>
 </div>
 
-<!-- ══ AI CONVERT MODAL ══ -->
+<!-- AI CONVERT MODAL -->
 <div id="ai-modal">
   <div class="ai-box">
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v7.0</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v7.1</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>

@@ -1,4 +1,4 @@
-// TRACK IMAGE → WAYPOINTS  v7.0
+// TRACK IMAGE → WAYPOINTS  v7.1
 // ═══════════════════════════════════════════════════
 let aiImageData = null;
 let aiImgW = 0, aiImgH = 0;
@@ -271,7 +271,7 @@ function tick() { return new Promise(r => setTimeout(r, 10)); }
 function colDist2(r,g,b,rgb) { const dr=r-rgb.r,dg=g-rgb.g,db=b-rgb.b; return dr*dr+dg*dg+db*db; }
 
 // ═══════════════════════════════════════════════════
-// PIPELINE v7.0
+// PIPELINE v7.1
 // ═══════════════════════════════════════════════════
 async function runAIConvert() {
   if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }

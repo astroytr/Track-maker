@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════
-// STATE — Circuit Forge v7.0
+// STATE — Circuit Forge v7.1
 // ═══════════════════════════════════════════════════
 const bgCanvas   = document.getElementById('bg-canvas');
 const mainCanvas = document.getElementById('main-canvas');
@@ -129,10 +129,8 @@ function rdp(pts, eps) {
 function simplifyWaypoints(eps) {
   if (waypoints.length < 5) { showToast('Not enough waypoints to simplify'); return; }
   const before = waypoints.length;
-  // Close the loop temporarily for circular RDP
   const closed = waypoints.concat([waypoints[0]]);
   const simplified = rdp(closed, eps);
-  // Remove duplicate end point
   if (simplified.length > 1 &&
       simplified[simplified.length-1].x === simplified[0].x &&
       simplified[simplified.length-1].y === simplified[0].y) {
@@ -296,14 +294,16 @@ function drawTrackRoad() {
 }
 
 // ═══════════════════════════════════════════════════
-// BARRIER SEGMENTS — Labels at segment midpoints
-// (replaces the old colour-strip approach)
+// BARRIER SEGMENTS
+// FIX v7.1: label collision detection — labels are
+// spaced out so they never stack on top of each other.
+// FIX v7.1: correct perpendicular normal at endpoints
+// so offset polylines don't produce spiky artifacts.
 // ═══════════════════════════════════════════════════
 function drawBarrierSegments() {
   const splinePts = buildSplinePoints(20);
   const N = splinePts.length;
   if (!barrierSegments || barrierSegments.length === 0) {
-    // Draw hover preview if barrier tool active
     if (tool === 'barrier' && barrierSelStart >= 0) drawBarrierHover(splinePts, N);
     return;
   }
@@ -314,8 +314,11 @@ function drawBarrierSegments() {
       const lb = getSurfaceLane(b.surface, b.lane || 0);
       return lb.outer - la.outer;
     });
+
   const labelKeys = new Set();
   let labelCount = 0;
+  // FIX: track bounding boxes of placed labels to detect overlap
+  const placedLabelRects = [];
 
   expanded.forEach((seg) => {
     const cfg = SURFACES[seg.surface];
@@ -339,9 +342,9 @@ function drawBarrierSegments() {
     if (!shouldLabel) return;
     labelKeys.add(labelKey);
     labelCount++;
+
     const midPt = pts[Math.floor(pts.length / 2)];
     const ms = worldToScreen(midPt.pt.x, midPt.pt.y);
-    const labelY = ms.y - Math.max(22, lane.labelOffset * cam.zoom);
     const labelTxt = cfg.label.toUpperCase();
     const sideLabel = seg.sideNum < 0 ? ' L' : ' R';
 
@@ -351,13 +354,46 @@ function drawBarrierSegments() {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     const tw = ctx.measureText(labelTxt + sideLabel).width;
+    const pad = 5;
+    const labelW = tw + pad * 2 + 12;
+    const labelH = fontSize * 1.4;
+
+    // FIX: base Y — label above the midpoint offset by lane offset
+    let candidateY = ms.y - Math.max(22, lane.labelOffset * cam.zoom);
+
+    // FIX: nudge candidate Y in 18px steps until no overlap (max 8 attempts)
+    const MAX_TRIES = 8;
+    const STEP = 18;
+    let placed = false;
+    for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
+      const rx = ms.x - labelW / 2;
+      const ry = candidateY - labelH / 2;
+      let overlaps = false;
+      for (const r of placedLabelRects) {
+        if (rx < r.x + r.w && rx + labelW > r.x && ry < r.y + r.h && ry + labelH > r.y) {
+          overlaps = true; break;
+        }
+      }
+      if (!overlaps) {
+        placedLabelRects.push({ x: rx, y: ry, w: labelW, h: labelH });
+        placed = true;
+        break;
+      }
+      // Alternate nudging: up, up+step, down, etc.
+      candidateY += (attempt % 2 === 0 ? -STEP : STEP * (attempt + 1));
+    }
+    if (!placed) { ctx.restore(); return; } // skip if can't fit
+
+    const labelY = candidateY;
 
     // Pill background
-    const pad = 5;
     ctx.fillStyle = 'rgba(9,9,14,0.82)';
     ctx.beginPath();
-    ctx.roundRect ? ctx.roundRect(ms.x - tw/2 - pad, labelY - fontSize*0.7, tw + pad*2, fontSize*1.4, 4)
-                  : ctx.rect(ms.x - tw/2 - pad, labelY - fontSize*0.7, tw + pad*2, fontSize*1.4);
+    if (ctx.roundRect) {
+      ctx.roundRect(ms.x - tw/2 - pad, labelY - fontSize*0.7, tw + pad*2, fontSize*1.4, 4);
+    } else {
+      ctx.rect(ms.x - tw/2 - pad, labelY - fontSize*0.7, tw + pad*2, fontSize*1.4);
+    }
     ctx.fill();
 
     // Colour dot
@@ -419,14 +455,26 @@ function getSplineSegmentPoints(splinePts, from, to) {
   return pts;
 }
 
+// FIX v7.1: compute correct perpendicular at endpoints by using the
+// segment direction (not the degenerate self→self vector that produces nx=0,ny=0).
 function buildOffsetScreenPolyline(pts, sideNum, offset) {
-  return pts.map((p,i) => {
-    const prev = pts[Math.max(0, i-1)];
-    const next = pts[Math.min(pts.length-1, i+1)];
-    const dx = next.pt.x - prev.pt.x, dy = next.pt.y - prev.pt.y;
-    const len = Math.sqrt(dx*dx+dy*dy)||1;
-    const nx = dy/len * sideNum, ny = -dx/len * sideNum;
-    return worldToScreen(p.pt.x + nx*offset, p.pt.y + ny*offset);
+  const len = pts.length;
+  return pts.map((p, i) => {
+    // Use the tangent formed by the two neighbours (or clamp at ends).
+    // For the first point use pts[0]→pts[1]; for the last use pts[n-2]→pts[n-1].
+    // This avoids the zero-vector normal that created triangular spikes.
+    const prevPt = pts[Math.max(0, i - 1)];
+    const nextPt = pts[Math.min(len - 1, i + 1)];
+    // When i==0 or i==len-1 the two are the same — use adjacent instead.
+    const ax = i === 0        ? (pts[1] ? pts[1].pt.x - pts[0].pt.x : 0)
+                               : nextPt.pt.x - prevPt.pt.x;
+    const ay = i === 0        ? (pts[1] ? pts[1].pt.y - pts[0].pt.y : 0)
+                               : nextPt.pt.y - prevPt.pt.y;
+    const segLen = Math.sqrt(ax*ax + ay*ay) || 1;
+    // Perpendicular (rotated 90°): (-dy, dx) / len, scaled by sideNum
+    const nx = (-ay / segLen) * sideNum;
+    const ny = ( ax / segLen) * sideNum;
+    return worldToScreen(p.pt.x + nx * offset, p.pt.y + ny * offset);
   });
 }
 
@@ -441,12 +489,7 @@ function drawBarrierHover(splinePts, N) {
   const cfg = SURFACES[surface];
   const lane = getSurfaceLane(surface, 0);
   sides.forEach(s => {
-    const screenPoly = pts.map((p,i) => {
-      const prev=pts[(i-1+pts.length)%pts.length], next=pts[(i+1)%pts.length];
-      const dx=next.pt.x-prev.pt.x, dy=next.pt.y-prev.pt.y, len=Math.sqrt(dx*dx+dy*dy)||1;
-      const nx=dy/len*s, ny=-dx/len*s;
-      return worldToScreen(p.pt.x+nx*lane.center, p.pt.y+ny*lane.center);
-    });
+    const screenPoly = buildOffsetScreenPolyline(pts, s, lane.center);
     ctx.beginPath();
     screenPoly.forEach((p,i) => i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
     ctx.strokeStyle = (cfg?cfg.color:'rgba(200,200,200,0.5)').replace(/[\d.]+\)$/,'0.5)');
