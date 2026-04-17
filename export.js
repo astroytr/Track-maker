@@ -217,6 +217,7 @@ function buildExportCode() {
   const barriers = document.getElementById('barriers-toggle').checked;
   const nPerSeg  = parseInt(document.getElementById('nperseg').value) || 12;
   const key      = 'track_' + name.toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_');
+  const roadWidth = 28;
 
   if (waypoints.length < 3) return '';
 
@@ -294,9 +295,11 @@ ${wpLines}
 
     nPerSeg:  ${nPerSeg},
     barriers: ${barriers},
+    roadWidth: ${roadWidth},
+    trackWidth: ${roadWidth},
 
     buildScene: function (_ref) {
-      var addObj = _ref.addObj, THREE = _ref.THREE, TW = _ref.TW, scene = _ref.scene;
+      var addObj = _ref.addObj, THREE = _ref.THREE, TW = _ref.TW || trackData.roadWidth || ${roadWidth}, scene = _ref.scene;
 
       // ── Ground ──────────────────────────────────
       var _gnd = new THREE.Mesh(

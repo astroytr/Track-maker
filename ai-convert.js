@@ -234,15 +234,15 @@ async function runAIConvert() {
     }
     if (trackCount < 50) { setAIStatus('Too few track pixels — re-pick colours', 'err'); return; }
 
-    setAIStatus('Step 2/5 — Filling gaps…', ''); setAIProgress(16); await tick();
-    const dilated = morphDilate(mask, W, H);
+    setAIStatus('Step 2/5 — Bridging tiny line gaps…', ''); setAIProgress(16); await tick();
+    const lineMask = bridgeTinyGaps(mask, W, H);
 
     setAIStatus('Step 3/5 — Finding track region…', ''); setAIProgress(26); await tick();
-    const comp = largestComponent(dilated, W, H);
+    const comp = largestComponent(lineMask, W, H);
 
     setAIStatus('Step 4/5 — Skeletonising track…', ''); setAIProgress(38); await tick();
     const skel = zhangSuenThin(comp, W, H);
-    pruneSpurs(skel, W, H, 15);
+    pruneSpurs(skel, W, H, 8);
 
     setAIStatus('Step 5/5 — Ordering waypoints…', ''); setAIProgress(65); await tick();
     const chain = walkSkeleton(skel, W, H);
@@ -258,9 +258,9 @@ async function runAIConvert() {
     setAIProgress(80); await tick();
 
     const sampled = uniformResample(chain, wpCount);
-    const smoothPasses = wpCount >= 200 ? 5 : wpCount >= 100 ? 4 : 3;
+    const smoothPasses = wpCount >= 200 ? 2 : 1;
     let pts = sampled;
-    for (let p=0; p<smoothPasses; p++) pts = smoothPass(pts, 3, 0.65);
+    for (let p=0; p<smoothPasses; p++) pts = smoothPass(pts, 3, 0.38);
 
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
     for (const p of pts) { minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y); }
@@ -272,7 +272,7 @@ async function runAIConvert() {
     setAIProgress(90); await tick();
 
     // ── Auto-simplify: capture at max detail, then reduce for performance ──
-    const autoEps = newWPs.length > 300 ? 3.5 : newWPs.length > 150 ? 2.0 : 0;
+    const autoEps = newWPs.length > 300 ? 1.15 : newWPs.length > 150 ? 0.75 : 0;
     if (autoEps > 0 && typeof rdp === 'function') {
       const closed = newWPs.concat([newWPs[0]]);
       const simp = rdp(closed, autoEps);
@@ -305,6 +305,22 @@ function morphDilate(mask, W, H) {
       outer: for (let dy=-1; dy<=1; dy++) for (let dx=-1; dx<=1; dx++) {
         if (mask[(y+dy)*W+(x+dx)]) { out[y*W+x]=1; break outer; }
       }
+    }
+  }
+  return out;
+}
+
+function bridgeTinyGaps(mask, W, H) {
+  const out = new Uint8Array(mask);
+  for (let y=1; y<H-1; y++) {
+    for (let x=1; x<W-1; x++) {
+      const i = y*W+x;
+      if (mask[i]) continue;
+      const horizontal = mask[y*W+x-1] && mask[y*W+x+1];
+      const vertical = mask[(y-1)*W+x] && mask[(y+1)*W+x];
+      const diagA = mask[(y-1)*W+x-1] && mask[(y+1)*W+x+1];
+      const diagB = mask[(y-1)*W+x+1] && mask[(y+1)*W+x-1];
+      if (horizontal || vertical || diagA || diagB) out[i] = 1;
     }
   }
   return out;
@@ -431,7 +447,17 @@ function walkSkeleton(skel, W, H) {
   }
 
   let startPtIdx=0;
-  for (let k=0;k<skelPts.length;k++) { if (neighbours(skelPts[k]).length===1) { startPtIdx=k; break; } }
+  let leftScore=Infinity;
+  const endpoints=[];
+  for (let k=0;k<skelPts.length;k++) {
+    const deg = neighbours(skelPts[k]).length;
+    if (deg===1) endpoints.push(k);
+    const score = skelPts[k].x + skelPts[k].y * 0.015;
+    if (score < leftScore) { leftScore = score; startPtIdx = k; }
+  }
+  if (endpoints.length) {
+    startPtIdx = endpoints.reduce((best,k) => skelPts[k].x < skelPts[best].x ? k : best, endpoints[0]);
+  }
 
   const visited=new Uint8Array(skelPts.length), chain=[];
   let hdx=0, hdy=0, cur=startPtIdx;
@@ -452,26 +478,6 @@ function walkSkeleton(skel, W, H) {
     }
     const ndx=skelPts[cur].x-cp.x, ndy=skelPts[cur].y-cp.y;
     hdx=hdx*.7+ndx*.3; hdy=hdy*.7+ndy*.3;
-  }
-
-  if (chain.length < skelPts.length*.8) {
-    let bestExtra=[];
-    for (let k=0;k<skelPts.length;k++) {
-      if (visited[k]) continue;
-      const frag=[]; let fc2=k; const fvis=new Uint8Array(skelPts.length); let fhdx=0,fhdy=0;
-      while (true) {
-        if (visited[fc2]||fvis[fc2]) break;
-        fvis[fc2]=1; frag.push({x:skelPts[fc2].x,y:skelPts[fc2].y});
-        const fnbs=neighbours(skelPts[fc2]).filter(n=>!visited[n]&&!fvis[n]);
-        if (!fnbs.length) break;
-        let fb=fnbs[0],fbS=-Infinity;
-        for (const n of fnbs) { const dx=skelPts[n].x-skelPts[fc2].x,dy=skelPts[n].y-skelPts[fc2].y; const s=fhdx*dx+fhdy*dy; if(s>fbS){fbS=s;fb=n;} }
-        const ndx2=skelPts[fb].x-skelPts[fc2].x,ndy2=skelPts[fb].y-skelPts[fc2].y;
-        fhdx=fhdx*.7+ndx2*.3; fhdy=fhdy*.7+ndy2*.3; fc2=fb;
-      }
-      if (frag.length>bestExtra.length) bestExtra=frag;
-    }
-    if (bestExtra.length>chain.length*.1) chain.push(...bestExtra);
   }
   return chain;
 }

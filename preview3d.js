@@ -226,6 +226,17 @@ function build3DScene() {
   cnv.style.cssText = 'width:100%;height:100%;display:block;';
   ol.appendChild(cnv);
 
+  const hud = document.createElement('div');
+  hud.className = 'preview3d-hud';
+  hud.innerHTML = '<span>Drag = orbit</span><span>Scroll = zoom</span><span>Q = exit</span>';
+  ol.appendChild(hud);
+
+  const backBtn = document.createElement('button');
+  backBtn.className = 'preview3d-exit-btn';
+  backBtn.textContent = '← Back to 2D';
+  backBtn.onclick = close3DPreview;
+  ol.appendChild(backBtn);
+
   // ── Renderer ──
   preview3dRenderer = new THREE.WebGLRenderer({ canvas: cnv, antialias: true });
   preview3dRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
