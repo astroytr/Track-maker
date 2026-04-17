@@ -1,4 +1,4 @@
-// TRACK IMAGE → WAYPOINTS  v6.5
+// TRACK IMAGE → WAYPOINTS  v7.0
 // ═══════════════════════════════════════════════════
 let aiImageData = null;
 let aiImgW = 0, aiImgH = 0;
@@ -76,7 +76,6 @@ function aiLoadImageFile(file) {
   reader.readAsDataURL(file);
 }
 
-// ── Eyedropper ──
 function startEyedropper(mode) {
   if (!aiPreviewCanvas) { setAIStatus('Upload an image first', 'err'); return; }
   aiEyedropperMode = mode;
@@ -128,7 +127,6 @@ function aiPickColour(clientX, clientY) {
   aiUpdatePreviewOverlay();
 }
 
-// Loupe always reads raw aiImageData pixels — never from the overlay canvas.
 function aiShowLoupe(clientX, clientY) {
   if (!aiEyedropperMode || !aiPreviewCanvas || !aiImageData) return;
   const loupe = document.getElementById('ai-loupe');
@@ -167,7 +165,6 @@ function aiCanvasTouchStart(e){ if (!aiEyedropperMode) return; e.preventDefault(
 function aiCanvasTouchMove(e) { if (!aiEyedropperMode) return; e.preventDefault(); aiShowLoupe(e.touches[0].clientX, e.touches[0].clientY); }
 function aiCanvasTouchEnd(e)  { if (!aiEyedropperMode) return; e.preventDefault(); aiPickColour(e.changedTouches[0].clientX, e.changedTouches[0].clientY); }
 
-// Preview overlay: single putImageData pass (no per-pixel fillRect)
 function aiUpdatePreviewOverlay() {
   if (!aiPreviewCtx || !aiImageData) return;
   const tol = parseInt(document.getElementById('ai-tolerance')?.value || '40');
@@ -213,7 +210,7 @@ function tick() { return new Promise(r => setTimeout(r, 10)); }
 function colDist2(r,g,b,rgb) { const dr=r-rgb.r,dg=g-rgb.g,db=b-rgb.b; return dr*dr+dg*dg+db*db; }
 
 // ═══════════════════════════════════════════════════
-// PIPELINE v6.5
+// PIPELINE v7.0
 // ═══════════════════════════════════════════════════
 async function runAIConvert() {
   if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }
@@ -225,11 +222,9 @@ async function runAIConvert() {
 
   const W = aiImgW, H = aiImgH;
   const data = aiImageData.data;
-
   const wpCount = AI_MAX_WAYPOINTS;
 
   try {
-    // Step 1: Colour-distance binary mask
     setAIStatus('Step 1/5 — Classifying pixels…', ''); setAIProgress(8); await tick();
     const mask = new Uint8Array(W*H);
     let trackCount = 0;
@@ -239,26 +234,21 @@ async function runAIConvert() {
     }
     if (trackCount < 50) { setAIStatus('Too few track pixels — re-pick colours', 'err'); return; }
 
-    // Step 2: Morphological dilation (fills 1-pixel gaps in thin strokes)
     setAIStatus('Step 2/5 — Filling gaps…', ''); setAIProgress(16); await tick();
     const dilated = morphDilate(mask, W, H);
 
-    // Step 3: Keep largest connected component (4-connectivity avoids merging near-parallel segments)
     setAIStatus('Step 3/5 — Finding track region…', ''); setAIProgress(26); await tick();
     const comp = largestComponent(dilated, W, H);
 
-    // Step 4: Zhang-Suen thinning + spur pruning
     setAIStatus('Step 4/5 — Skeletonising track…', ''); setAIProgress(38); await tick();
     const skel = zhangSuenThin(comp, W, H);
     pruneSpurs(skel, W, H, 15);
 
-    // Step 5: Walk skeleton in circuit order
     setAIStatus('Step 5/5 — Ordering waypoints…', ''); setAIProgress(65); await tick();
     const chain = walkSkeleton(skel, W, H);
 
     if (chain.length < 4) { setAIStatus('Could not trace skeleton — try re-picking colours', 'err'); return; }
 
-    // Loop closure
     const CLOSE_THRESH = 8;
     const fc = chain[0], lc = chain[chain.length-1];
     if (Math.hypot(fc.x-lc.x, fc.y-lc.y) <= CLOSE_THRESH && chain.length > 1) {
@@ -267,25 +257,37 @@ async function runAIConvert() {
 
     setAIProgress(80); await tick();
 
-    // Curvature-adaptive resample + smooth
     const sampled = uniformResample(chain, wpCount);
     const smoothPasses = wpCount >= 200 ? 5 : wpCount >= 100 ? 4 : 3;
     let pts = sampled;
     for (let p=0; p<smoothPasses; p++) pts = smoothPass(pts, 3, 0.65);
 
-    // Scale to world coords (fit in 82% of viewport)
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
     for (const p of pts) { minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y); }
     const sc = Math.min(mainCanvas.width*.82/(maxX-minX||1), mainCanvas.height*.82/(maxY-minY||1)) / cam.zoom;
     const mx=(minX+maxX)/2, my=(minY+maxY)/2;
-    const newWPs = pts.map(p => ({ x:(p.x-mx)*sc, y:(p.y-my)*sc }));
+    let newWPs = pts.map(p => ({ x:(p.x-mx)*sc, y:(p.y-my)*sc }));
+
+    setAIProgress(90); await tick();
+
+    // ── Auto-simplify: capture at max detail, then reduce for performance ──
+    const autoEps = newWPs.length > 300 ? 3.5 : newWPs.length > 150 ? 2.0 : 0;
+    if (autoEps > 0 && typeof rdp === 'function') {
+      const closed = newWPs.concat([newWPs[0]]);
+      const simp = rdp(closed, autoEps);
+      if (simp.length > 1 &&
+          simp[simp.length-1].x === simp[0].x &&
+          simp[simp.length-1].y === simp[0].y) simp.pop();
+      if (simp.length >= 3) newWPs = simp;
+    }
 
     setAIProgress(100);
     waypoints = newWPs;
+    startingPointIdx = 0;
     updateWPList();
     autoPlaceTrackFeatures(newWPs);
     render();
-    setAIStatus(`✓ ${newWPs.length} waypoints — barriers & surfaces auto-placed`, 'ok');
+    setAIStatus(`✓ ${newWPs.length} waypoints · barriers & surfaces auto-placed`, 'ok');
     showToast(`${newWPs.length} waypoints placed!`);
 
   } finally {
@@ -343,8 +345,7 @@ function zhangSuenThin(mask, W, H) {
   let changed=true;
   const toDelete=[];
   while (changed) {
-    changed=false;
-    toDelete.length=0;
+    changed=false; toDelete.length=0;
     for (let y=1; y<H-1; y++) for (let x=1; x<W-1; x++) {
       const i=y*W+x; if (!img[i]) continue;
       const [A,B,p2,p4,p6,p8]=zsParams(img,x,y,W);
@@ -370,7 +371,7 @@ function zsParams(img,x,y,W) {
   return [A,B,p2,p4,p6,p8];
 }
 
-// ── Spur pruning: remove dead-end branches < minLen px ──
+// ── Spur pruning ──
 function pruneSpurs(skel, W, H, minLen) {
   function nb8(idx) {
     const x=idx%W, y=(idx/W)|0; let c=0;
@@ -392,9 +393,9 @@ function pruneSpurs(skel, W, H, minLen) {
         const cx=cur%W, cy=(cur/W)|0; let next=-1;
         for (let dy=-1;dy<=1;dy++) for (let dx=-1;dx<=1;dx++) {
           if (!dy&&!dx) continue;
-          const nx=cx+dx, ny=cy+dy;
-          if (nx<0||nx>=W||ny<0||ny>=H) continue;
-          const ni=ny*W+nx;
+          const nx2=cx+dx, ny2=cy+dy;
+          if (nx2<0||nx2>=W||ny2<0||ny2>=H) continue;
+          const ni=ny2*W+nx2;
           if (skel[ni]&&!vis.has(ni)) { next=ni; break; }
         }
         if (next===-1) break;
@@ -407,7 +408,7 @@ function pruneSpurs(skel, W, H, minLen) {
   }
 }
 
-// ── Walk skeleton with heading-continuity EMA ──
+// ── Walk skeleton ──
 function walkSkeleton(skel, W, H) {
   const skelPts=[], idx2pt=new Int32Array(W*H).fill(-1);
   for (let y=0;y<H;y++) for (let x=0;x<W;x++) {
@@ -452,7 +453,6 @@ function walkSkeleton(skel, W, H) {
     hdx=hdx*.7+ndx*.3; hdy=hdy*.7+ndy*.3;
   }
 
-  // Recover unvisited fragments if < 80% covered (branched skeleton)
   if (chain.length < skelPts.length*.8) {
     let bestExtra=[];
     for (let k=0;k<skelPts.length;k++) {
@@ -523,7 +523,7 @@ function uniformResample(chain, N) {
   return out;
 }
 
-// ── Curvature-aware Gaussian smooth ──
+// ── Curvature-aware smooth ──
 function smoothPass(pts, _r, tension=0.65) {
   const n=pts.length; if (n<3) return pts;
   const curvature=new Float32Array(n);
@@ -546,17 +546,12 @@ function smoothPass(pts, _r, tension=0.65) {
 }
 
 // ═══════════════════════════════════════════════════
-// AUTO FEATURE PLACEMENT  v4.1 — SMARTER THRESHOLD
-//
-// FIX: Lowered threshold from mean+0.8σ to mean+0.3σ
-// so more gentle corners get kerbs and barriers placed.
-// Also added straight-side armco with better side detection.
+// AUTO FEATURE PLACEMENT v4.1
 // ═══════════════════════════════════════════════════
 function autoPlaceTrackFeatures(wps) {
   if (!wps || wps.length < 4) return;
   const n = wps.length;
 
-  // Compute raw curvature, signed turn direction, and segment speed proxy.
   const rawCurv = new Float32Array(n);
   const signedTurn = new Float32Array(n);
   const segLen = new Float32Array(n);
@@ -570,19 +565,17 @@ function autoPlaceTrackFeatures(wps) {
     signedTurn[i]=(ax*by-ay*bx)/(la*lb);
   }
 
-  // 5-point moving average to reduce skeleton jitter
   const curvatures = new Float32Array(n);
   for (let i=0;i<n;i++) {
     curvatures[i]=(rawCurv[(i-2+n)%n]+rawCurv[(i-1+n)%n]+rawCurv[i]+rawCurv[(i+1)%n]+rawCurv[(i+2)%n])/5;
   }
 
-  // Adaptive threshold: mean + 0.3σ (was 0.8σ — lowered to catch more corners)
   let sum=0, sum2=0;
   for (let i=0;i<n;i++) { sum+=curvatures[i]; sum2+=curvatures[i]**2; }
   const mean=sum/n;
   const stddev=Math.sqrt(Math.max(0, sum2/n-mean*mean));
-  const CORNER_THRESH = Math.max(0.12, mean + 0.3 * stddev);   // was max(0.25, mean + 0.8*stddev)
-  const MIN_ZONE = Math.max(2, Math.floor(n * 0.015));           // was max(3, floor(n*0.025)) — smaller zones allowed
+  const CORNER_THRESH = Math.max(0.12, mean + 0.3 * stddev);
+  const MIN_ZONE = Math.max(2, Math.floor(n * 0.015));
 
   const isCorner = Array.from(curvatures).map(c => c > CORNER_THRESH);
 
@@ -602,27 +595,20 @@ function autoPlaceTrackFeatures(wps) {
 
   const cornerZones = buildZones(isCorner);
 
-  // Clear previously auto-placed barriers
   if (typeof barrierSegments !== 'undefined') {
     for (let i=barrierSegments.length-1; i>=0; i--) {
       if (barrierSegments[i].auto) barrierSegments.splice(i,1);
     }
-  } else {
-    window.barrierSegments = [];
-  }
+  } else { window.barrierSegments = []; }
 
-  function wrapIndex(i) {
-    return ((i % n) + n) % n;
-  }
+  function wrapIndex(i) { return ((i % n) + n) % n; }
 
   function zoneStats(zone) {
     let turn=0, curv=0, len=0, samples=0;
     for (let i=zone.from; i<=zone.to; i++) {
       const idx = wrapIndex(i);
-      turn += signedTurn[idx];
-      curv = Math.max(curv, curvatures[idx]);
-      len += segLen[idx];
-      samples++;
+      turn += signedTurn[idx]; curv = Math.max(curv, curvatures[idx]);
+      len += segLen[idx]; samples++;
     }
     const avgTurn = samples ? turn / samples : 0;
     return {
@@ -634,10 +620,9 @@ function autoPlaceTrackFeatures(wps) {
   }
 
   function pushZone(zone, surf, side, lane) {
-    barrierSegments.push({ from:zone.from, to:zone.to, surface:surf, side, lane:lane || 0, auto:true });
+    barrierSegments.push({ from:zone.from, to:zone.to, surface:surf, side, lane:lane||0, auto:true });
   }
 
-  // Place kerbs only at corners — not on straights
   cornerZones.forEach(z => {
     const len = z.to - z.from + 1;
     const apex = Math.floor((z.from + z.to) / 2);
@@ -648,29 +633,20 @@ function autoPlaceTrackFeatures(wps) {
     const isFast  = stats.maxCurv < Math.PI * 0.22 && stats.avgSegLen > 4;
     const isMed   = !isTight && !isFast;
 
-    // Corner entry: rumble strip inside
     pushZone({ from:z.from, to:Math.min(z.from+entryLen, z.to) }, 'rumble', stats.insideSide, 0);
-
-    // Corner apex: sausage kerb inside
     pushZone({
       from: Math.max(z.from, apex - Math.floor(len*0.2)),
       to:   Math.min(z.to,   apex + Math.floor(len*0.2))
     }, 'sausage', stats.insideSide, 1);
-
-    // Corner exit: flat kerb inside
     pushZone({ from:Math.max(z.from, z.to-exitLen), to:z.to }, 'flat_kerb', stats.insideSide, 0);
-
-    // Outside runoff barrier
     pushZone(z, isTight ? 'armco' : isFast ? 'tecpro' : 'gravel', stats.outsideSide, 0);
 
-    // Tight hairpin: tyre wall at apex outside + grass behind gravel for medium corners
     if (isTight) {
       pushZone({
         from: Math.max(z.from, apex - Math.floor(len*0.12)),
         to:   Math.min(z.to,   apex + Math.floor(len*0.12))
       }, 'tyrewall', stats.outsideSide, 1);
     } else if (isMed) {
-      // Medium corners also get grass behind the gravel
       pushZone({
         from: Math.max(z.from, apex - Math.floor(len*0.35)),
         to:   Math.min(z.to,   apex + Math.floor(len*0.35))
@@ -678,22 +654,19 @@ function autoPlaceTrackFeatures(wps) {
     }
   });
 
-  // Straights: armco guide rails on both sides, trimmed to avoid corner overlap
   const straightFlags = isCorner.map(v => !v);
   const straightZones = buildZones(straightFlags).filter(z => z.to - z.from + 1 >= Math.max(6, Math.floor(n * 0.04)));
   straightZones.forEach(z => {
     const len = z.to - z.from + 1;
     const trimmed = {
       from: Math.min(z.to, z.from + Math.floor(len * 0.15)),
-      to: Math.max(z.from, z.to - Math.floor(len * 0.15))
+      to:   Math.max(z.from, z.to - Math.floor(len * 0.15))
     };
     if (trimmed.to > trimmed.from) {
-      // Both sides for straights — one side is outside, one is inside but well-separated
       pushZone(trimmed, 'armco', 1, 0);
       pushZone(trimmed, 'armco', -1, 0);
     }
   });
 
   if (typeof updateBarrierList === 'function') updateBarrierList();
-  console.log(`[autoPlace v4.1] thresh=${CORNER_THRESH.toFixed(3)} · ${cornerZones.length} corner zones · ${straightZones.length} straights`);
 }

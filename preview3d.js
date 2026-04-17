@@ -1,0 +1,362 @@
+// ═══════════════════════════════════════════════════
+// 3D PREVIEW — Circuit Forge v7.0
+// Requires THREE.js loaded via CDN in index.html
+// ═══════════════════════════════════════════════════
+let preview3dActive   = false;
+let preview3dRenderer = null;
+let preview3dScene    = null;
+let preview3dCamera   = null;
+let preview3dAnimId   = null;
+let p3dOrbit          = { ax: 0, ay: 0.5, dist: 380 };
+let p3dOrbitTarget    = { cx: 0, cz: 0 };
+
+const SURF_COLOR_3D = {
+  flat_kerb: 0xe8392a,
+  sausage:   0xf5c518,
+  rumble:    0xdd3333,
+  gravel:    0xc8b89a,
+  grass:     0x3a7a3a,
+  armco:     0xcccccc,
+  tecpro:    0x3a5fa8,
+  tyrewall:  0x222222,
+};
+
+function toggle3DPreview() {
+  if (preview3dActive) { close3DPreview(); } else { open3DPreview(); }
+}
+
+function open3DPreview() {
+  if (waypoints.length < 3) { showToast('Need at least 3 waypoints for 3D view'); return; }
+  if (typeof THREE === 'undefined') { showToast('3D engine still loading — try again in a moment'); return; }
+  preview3dActive = true;
+  document.getElementById('preview3d-overlay').style.display = 'flex';
+  document.getElementById('btn-3d-toggle').classList.add('active-3d');
+  document.getElementById('btn-3d-toggle').textContent = '← 2D View';
+  document.getElementById('tool-hud').textContent = '3D Preview  ·  drag = orbit  ·  scroll = zoom  ·  Q = exit';
+  build3DScene();
+}
+
+function close3DPreview() {
+  preview3dActive = false;
+  if (preview3dAnimId) { cancelAnimationFrame(preview3dAnimId); preview3dAnimId = null; }
+  if (preview3dRenderer) { preview3dRenderer.dispose(); preview3dRenderer = null; }
+  preview3dScene  = null;
+  preview3dCamera = null;
+  const ol = document.getElementById('preview3d-overlay');
+  if (ol) { ol.style.display = 'none'; ol.innerHTML = ''; }
+  const btn = document.getElementById('btn-3d-toggle');
+  if (btn) { btn.classList.remove('active-3d'); btn.textContent = '3D Preview'; }
+  // Restore HUD
+  const hudMap = {
+    waypoint:'Waypoint — click to place',paint:'Paint — drag to paint surface',
+    erase:'Erase — drag to erase',pan:'Pan — drag to move · scroll/pinch zoom',
+    barrier:'Barrier — tap start waypoint'
+  };
+  const hud = document.getElementById('tool-hud');
+  if (hud) hud.textContent = hudMap[tool] || tool;
+}
+
+// ─── Scale helpers (same logic as export.js) ───────
+function p3dGetScaledData() {
+  if (waypoints.length === 0) return { wps: [], factor: 1, cx: 0, cy: 0 };
+  let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+  waypoints.forEach(w => {
+    minX=Math.min(minX,w.x); maxX=Math.max(maxX,w.x);
+    minY=Math.min(minY,w.y); maxY=Math.max(maxY,w.y);
+  });
+  const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
+  const span=Math.max(maxX-minX,maxY-minY);
+  const factor=span>0?500/span:1;
+  let wps=waypoints.map(w=>({x:(w.x-cx)*factor,z:(w.y-cy)*factor}));
+  if (startingPointIdx>0) wps=[...wps.slice(startingPointIdx),...wps.slice(0,startingPointIdx)];
+  return { wps, factor, cx, cy };
+}
+
+function p3dScalePaint(p, cx, cy, factor) {
+  return { x:(p.x-cx)*factor, z:(p.y-cy)*factor, r:p.r*factor*0.45, surface:p.surface };
+}
+
+// ─── Catmull-Rom spline (same as render.js) ────────
+function p3dCatmull(p0,p1,p2,p3,t) {
+  const t2=t*t,t3=t2*t;
+  return {
+    x:0.5*((2*p1.x)+(-p0.x+p2.x)*t+(2*p0.x-5*p1.x+4*p2.x-p3.x)*t2+(-p0.x+3*p1.x-3*p2.x+p3.x)*t3),
+    z:0.5*((2*p1.z)+(-p0.z+p2.z)*t+(2*p0.z-5*p1.z+4*p2.z-p3.z)*t2+(-p0.z+3*p1.z-3*p2.z+p3.z)*t3)
+  };
+}
+
+function p3dBuildSpline(wps, spp) {
+  const n=wps.length, pts=[];
+  for (let i=0;i<n;i++) {
+    const p0=wps[(i-1+n)%n],p1=wps[i],p2=wps[(i+1)%n],p3=wps[(i+2)%n];
+    for (let j=0;j<spp;j++) pts.push(p3dCatmull(p0,p1,p2,p3,j/spp));
+  }
+  return pts;
+}
+
+// ─── Ribbon geometry builder ───────────────────────
+function p3dRibbon(spPts, innerOff, outerOff, yBase=0) {
+  const n=spPts.length;
+  const pos=[],nor=[],uv=[],idx=[];
+  for (let i=0;i<=n;i++) {
+    const c=spPts[i%n],nx2=spPts[(i+1)%n];
+    const dx=nx2.x-c.x,dz=nx2.z-c.z,len=Math.sqrt(dx*dx+dz*dz)||1;
+    const px=dz/len,pz=-dx/len;
+    pos.push(c.x+px*innerOff,yBase,c.z+pz*innerOff, c.x+px*outerOff,yBase,c.z+pz*outerOff);
+    nor.push(0,1,0,0,1,0);
+    const s=i/n; uv.push(s,0,s,1);
+  }
+  for (let i=0;i<n;i++){const b=i*2;idx.push(b,b+1,b+2,b+1,b+3,b+2);}
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('normal',new THREE.Float32BufferAttribute(nor,3));
+  g.setAttribute('uv',new THREE.Float32BufferAttribute(uv,2));
+  g.setIndex(idx);
+  return g;
+}
+
+// ─── Barrier strip ribbon (vertical face) ──────────
+function p3dBarrierRibbon(pts, sideOff, yBase, height) {
+  const n=pts.length;
+  const pos=[],nor=[],idx=[];
+  for (let i=0;i<=n;i++) {
+    const c=pts[i%n],nx2=pts[Math.min(i+1,n-1)];
+    const dx=nx2.x-c.x,dz=nx2.z-c.z,len=Math.sqrt(dx*dx+dz*dz)||1;
+    const px=dz/len,pz=-dx/len;
+    const ox=c.x+px*sideOff, oz=c.z+pz*sideOff;
+    pos.push(ox,yBase,oz, ox,yBase+height,oz);
+    nor.push(px,0,pz, px,0,pz);
+  }
+  for (let i=0;i<n;i++){const b=i*2;idx.push(b,b+1,b+2,b+1,b+3,b+2);}
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('normal',new THREE.Float32BufferAttribute(nor,3));
+  g.setIndex(idx);
+  return g;
+}
+
+// ─── Place barrier 3D objects ──────────────────────
+function p3dPlaceBarrier(scene, surface, spPts, TH, side) {
+  const sides = (side==='both'||!side) ? [-1,1] : [(side==='left'||side===-1) ? -1 : 1];
+
+  sides.forEach(s => {
+    const off = (TH+2) * s;
+    const color = SURF_COLOR_3D[surface] || 0xaaaaaa;
+    const mat   = new THREE.MeshLambertMaterial({ color });
+
+    if (surface==='armco') {
+      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts,off,0.02,0.9), mat));
+      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts,off+0.05*s,0.3,0.06), mat));
+    } else if (surface==='tecpro') {
+      for (let i=0;i<spPts.length-1;i+=3) {
+        const p=spPts[i],nx2=spPts[Math.min(i+1,spPts.length-1)];
+        const dx=nx2.x-p.x,dz=nx2.z-p.z,len=Math.sqrt(dx*dx+dz*dz)||1;
+        const px=dz/len,pz=-dx/len;
+        const m=new THREE.Mesh(new THREE.BoxGeometry(1.1,1.0,1.1), mat);
+        m.position.set(p.x+px*off,0.5,p.z+pz*off);
+        scene.add(m);
+      }
+    } else if (surface==='tyrewall') {
+      for (let i=0;i<spPts.length-1;i+=4) {
+        const p=spPts[i],nx2=spPts[Math.min(i+1,spPts.length-1)];
+        const dx=nx2.x-p.x,dz=nx2.z-p.z,len=Math.sqrt(dx*dx+dz*dz)||1;
+        const px=dz/len,pz=-dx/len;
+        const m=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,0.46,10), mat);
+        m.position.set(p.x+px*off,0.23,p.z+pz*off);
+        scene.add(m);
+        const m2=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,0.46,10), mat);
+        m2.position.set(p.x+px*off,0.69,p.z+pz*off);
+        scene.add(m2);
+      }
+    } else if (surface==='sausage') {
+      const kOff=(TH-1.5)*s;
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-1.5,kOff+1.5,0.02), new THREE.MeshLambertMaterial({color:0xffffff})));
+      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts,kOff,0.02,0.18), mat));
+    } else if (surface==='flat_kerb') {
+      const kOff=(TH-1)*s;
+      // Alternating red/white strips baked via simple ribbon
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-2,kOff+2,0.03), mat));
+    } else if (surface==='rumble') {
+      const kOff=(TH-1)*s;
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-2.5,kOff+2.5,0.04), mat));
+    } else if (surface==='gravel') {
+      const gOff=(TH+4)*s;
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,gOff,gOff+6,0.01), mat));
+    } else if (surface==='grass') {
+      const gOff=(TH+3)*s;
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,gOff,gOff+8,0.01), mat));
+    }
+  });
+}
+
+// ─── Main scene builder ────────────────────────────
+function build3DScene() {
+  const ol = document.getElementById('preview3d-overlay');
+  ol.innerHTML = '';
+
+  const cnv = document.createElement('canvas');
+  cnv.style.cssText = 'width:100%;height:100%;display:block;';
+  ol.appendChild(cnv);
+
+  // ── Renderer ──
+  preview3dRenderer = new THREE.WebGLRenderer({ canvas: cnv, antialias: true });
+  preview3dRenderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  preview3dRenderer.setSize(ol.clientWidth, ol.clientHeight);
+  preview3dRenderer.shadowMap.enabled = true;
+
+  // ── Scene ──
+  preview3dScene = new THREE.Scene();
+  preview3dScene.background = new THREE.Color(0x87ceeb);
+  preview3dScene.fog = new THREE.Fog(0x87ceeb, 300, 900);
+
+  // ── Camera ──
+  preview3dCamera = new THREE.PerspectiveCamera(55, ol.clientWidth/ol.clientHeight, 0.5, 2000);
+
+  // ── Lights ──
+  preview3dScene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const sun = new THREE.DirectionalLight(0xfffae0, 0.85);
+  sun.position.set(200, 300, 150); sun.castShadow=true;
+  preview3dScene.add(sun);
+
+  // ── Ground ──
+  const gnd = new THREE.Mesh(new THREE.PlaneGeometry(3000,3000), new THREE.MeshLambertMaterial({color:0x2d5a1b}));
+  gnd.rotation.x=-Math.PI/2; gnd.receiveShadow=true;
+  preview3dScene.add(gnd);
+
+  // ── Scaled data ──
+  const { wps, factor, cx, cy } = p3dGetScaledData();
+  if (wps.length < 2) return;
+  const n = wps.length;
+  const SPP = 12;
+  const spPts = p3dBuildSpline(wps, SPP);
+
+  // Centroid for camera
+  const scx = wps.reduce((s,p)=>s+p.x,0)/n;
+  const scz = wps.reduce((s,p)=>s+p.z,0)/n;
+  p3dOrbitTarget = { cx: scx, cz: scz };
+
+  // Compute track half width in scene units (already scaled)
+  const TH = 14;
+
+  // ── Track asphalt ──
+  preview3dScene.add(new THREE.Mesh(p3dRibbon(spPts,-TH,TH,0.05), new THREE.MeshLambertMaterial({color:0x333338})));
+
+  // ── Outer kerb edge ──
+  preview3dScene.add(new THREE.Mesh(p3dRibbon(spPts,TH,TH+2.5,0.04), new THREE.MeshLambertMaterial({color:0xff4444})));
+  preview3dScene.add(new THREE.Mesh(p3dRibbon(spPts,-TH-2.5,-TH,0.04), new THREE.MeshLambertMaterial({color:0xff4444})));
+
+  // ── Start/finish line ──
+  if (wps.length > 1) {
+    const sf = new THREE.Mesh(p3dRibbon(spPts,-TH,TH,0.07).setFromPoints ? undefined :
+      (() => { const g=new THREE.PlaneGeometry(TH*2,2); return g; })(),
+      new THREE.MeshLambertMaterial({color:0xffffff}));
+    if (!sf.geometry) {
+      // fallback small cross marker at first WP
+    }
+  }
+
+  // ── Paint layers ──
+  paintLayers.forEach(p => {
+    const sp = p3dScalePaint(p, cx, cy, factor);
+    const color = SURF_COLOR_3D[sp.surface] || 0x888888;
+    const disc = new THREE.Mesh(
+      new THREE.CylinderGeometry(sp.r, sp.r, 0.06, 14),
+      new THREE.MeshLambertMaterial({ color })
+    );
+    disc.position.set(sp.x, 0.03, sp.z);
+    preview3dScene.add(disc);
+  });
+
+  // ── Barrier segments ──
+  barrierSegments.forEach(seg => {
+    const fromIdx = Math.round(seg.from / n * spPts.length);
+    const toIdx   = Math.min(Math.round(seg.to   / n * spPts.length), spPts.length - 1);
+    const segPts  = spPts.slice(fromIdx, toIdx + 1);
+    if (segPts.length < 2) return;
+    p3dPlaceBarrier(preview3dScene, seg.surface, segPts, TH, seg.side);
+  });
+
+  // ── Camera + controls ──
+  p3dOrbit.dist = Math.max(150, Math.min(600, 380));
+  updateP3DCamera();
+  setupP3DControls(cnv);
+
+  function loop() {
+    preview3dAnimId = requestAnimationFrame(loop);
+    preview3dRenderer.render(preview3dScene, preview3dCamera);
+  }
+  loop();
+}
+
+function updateP3DCamera() {
+  if (!preview3dCamera) return;
+  const { cx, cz } = p3dOrbitTarget;
+  const r     = p3dOrbit.dist;
+  const theta = p3dOrbit.ax;
+  const phi   = Math.max(0.08, Math.min(Math.PI/2 - 0.04, p3dOrbit.ay));
+  preview3dCamera.position.set(
+    cx + r * Math.sin(phi) * Math.cos(theta),
+    r  * Math.cos(phi),
+    cz + r * Math.sin(phi) * Math.sin(theta)
+  );
+  preview3dCamera.lookAt(cx, 0, cz);
+}
+
+function setupP3DControls(cnv) {
+  let dragging=false, lx=0, ly=0;
+  cnv.addEventListener('mousedown', e=>{dragging=true; lx=e.clientX; ly=e.clientY;});
+  window.addEventListener('mouseup',  ()=>dragging=false);
+  cnv.addEventListener('mousemove', e=>{
+    if (!dragging) return;
+    p3dOrbit.ax -= (e.clientX-lx)*0.004;
+    p3dOrbit.ay += (e.clientY-ly)*0.004;
+    lx=e.clientX; ly=e.clientY;
+    updateP3DCamera();
+  });
+  cnv.addEventListener('wheel', e=>{
+    p3dOrbit.dist = Math.max(40, Math.min(1200, p3dOrbit.dist + e.deltaY*0.5));
+    updateP3DCamera();
+  }, {passive:true});
+
+  // Touch orbit
+  let ltx=0,lty=0, lastPinchDist=0;
+  cnv.addEventListener('touchstart', e=>{
+    if (e.touches.length===1){ltx=e.touches[0].clientX;lty=e.touches[0].clientY;}
+    if (e.touches.length===2){
+      const dx=e.touches[0].clientX-e.touches[1].clientX;
+      const dy=e.touches[0].clientY-e.touches[1].clientY;
+      lastPinchDist=Math.sqrt(dx*dx+dy*dy);
+    }
+  },{passive:true});
+  cnv.addEventListener('touchmove', e=>{
+    e.preventDefault();
+    if (e.touches.length===1){
+      p3dOrbit.ax -= (e.touches[0].clientX-ltx)*0.004;
+      p3dOrbit.ay += (e.touches[0].clientY-lty)*0.004;
+      ltx=e.touches[0].clientX; lty=e.touches[0].clientY;
+    }
+    if (e.touches.length===2){
+      const dx=e.touches[0].clientX-e.touches[1].clientX;
+      const dy=e.touches[0].clientY-e.touches[1].clientY;
+      const dist=Math.sqrt(dx*dx+dy*dy);
+      p3dOrbit.dist=Math.max(40,Math.min(1200,p3dOrbit.dist*(lastPinchDist/dist)));
+      lastPinchDist=dist;
+    }
+    updateP3DCamera();
+  },{passive:false});
+
+  // Resize
+  window.addEventListener('resize', ()=>{
+    const ol=document.getElementById('preview3d-overlay');
+    if(!ol||!preview3dRenderer||!preview3dCamera) return;
+    preview3dRenderer.setSize(ol.clientWidth, ol.clientHeight);
+    preview3dCamera.aspect = ol.clientWidth / ol.clientHeight;
+    preview3dCamera.updateProjectionMatrix();
+  });
+}
+
+// Q key exits 3D preview (shared with keydown in tools.js)
+window.addEventListener('keydown', e=>{
+  if (!preview3dActive) return;
+  if (e.key==='q'||e.key==='Q') { close3DPreview(); e.preventDefault(); }
+});

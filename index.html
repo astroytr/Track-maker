@@ -1,13 +1,14 @@
 <!DOCTYPE html>
 <!--
-  CIRCUIT FORGE — Track Studio  v6.5
-  FIXES in v6.5:
-    1. Auto-barrier smarter: threshold lowered to mean+0.3σ (was mean+0.8σ),
-       min zone size reduced, medium corners get grass runoff too.
-    2. Colour strips only on OUTSIDE of track; inside placements show "INSIDE" text.
-    3. Zoom stability: barrier offsets computed in world-space then projected once,
-       eliminating double-scaling that caused strip drift on zoom.
-    4. Legend moved to bottom-right (outside the track area).
+  CIRCUIT FORGE — Track Studio  v7.0
+  Changes in v7.0:
+    · Full standalone JS export with buildScene (3D geometry for all surfaces)
+    · 3D preview toggle (Three.js orbit view)
+    · Home screen — view/load/rename/delete saved tracks + upload existing .js
+    · Waypoint simplifier (Ramer-Douglas-Peucker)
+    · Barrier side selector (left / both / right) with live preview
+    · Segment labels replace colour strips for cleaner identification
+    · Save button persists track to browser storage
 -->
 <html lang="en">
 <head>
@@ -15,7 +16,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>CIRCUIT FORGE v6.5 — Track Maker</title>
+<title>CIRCUIT FORGE v7.0 — Track Maker</title>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@300;400;600;700;900&family=Barlow:wght@300;400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 <script>
@@ -27,13 +28,14 @@ window.CFDebug = {
   },
   render() {
     const panel = document.getElementById('debug-panel');
-    const list = document.getElementById('debug-list');
+    const list  = document.getElementById('debug-list');
     const badge = document.getElementById('debug-badge');
     if (!panel || !list || !badge) return;
     const hasError = this.entries.some(e => e.type === 'error');
     badge.textContent = hasError ? 'DEBUG: ERROR' : 'DEBUG: OK';
-    badge.className = hasError ? 'debug-error' : 'debug-ok';
-    list.innerHTML = this.entries.map(e => `<div class="debug-row ${e.type}"><span>${e.time}</span> ${e.message}</div>`).join('');
+    badge.className   = hasError ? 'debug-error' : 'debug-ok';
+    list.innerHTML = this.entries.map(e =>
+      `<div class="debug-row ${e.type}"><span>${e.time}</span> ${e.message}</div>`).join('');
     panel.style.display = hasError ? 'block' : panel.style.display;
   },
   toggle() {
@@ -41,64 +43,104 @@ window.CFDebug = {
     if (panel) panel.style.display = panel.style.display === 'block' ? 'none' : 'block';
   }
 };
-
 window.addEventListener('error', event => {
   if (event.target && event.target.tagName) {
     const tag = event.target.tagName.toLowerCase();
     const url = event.target.src || event.target.href || '';
     if (tag === 'script' || tag === 'link') {
-      window.CFDebug.add('error', `Failed to load ${tag}: ${url}`);
-      return;
+      window.CFDebug.add('error', `Failed to load ${tag}: ${url}`); return;
     }
   }
-  window.CFDebug.add('error', `${event.message || 'JavaScript error'} at ${event.filename || 'unknown file'}:${event.lineno || 0}`);
+  window.CFDebug.add('error', `${event.message||'JS error'} at ${event.filename||'?'}:${event.lineno||0}`);
 });
-
 window.addEventListener('unhandledrejection', event => {
-  window.CFDebug.add('error', `Promise error: ${event.reason && event.reason.message ? event.reason.message : event.reason}`);
+  window.CFDebug.add('error', `Promise error: ${event.reason&&event.reason.message?event.reason.message:event.reason}`);
 });
-
-function cfScriptLoaded(name) {
-  window.CFDebug.add('ok', `Loaded ${name}`);
-}
-
-function cfScriptFailed(name) {
-  window.CFDebug.add('error', `Missing or blocked: ${name}`);
-}
-
+function cfScriptLoaded(name) { window.CFDebug.add('ok', `Loaded ${name}`); }
+function cfScriptFailed(name) { window.CFDebug.add('error', `Missing or blocked: ${name}`); }
 window.addEventListener('load', () => {
   setTimeout(() => {
-    const required = ['setTool', 'setSurface', 'openExport', 'openAIConvert', 'render', 'updateBrush'];
+    const required = ['setTool','setSurface','openExport','openAIConvert','render','updateBrush',
+                      'toggle3DPreview','openHomeScreen','simplifyWaypoints'];
     const missing = required.filter(name => typeof window[name] !== 'function');
     if (missing.length) {
-      window.CFDebug.add('error', `Missing functions: ${missing.join(', ')}. Make sure the JavaScript files are uploaded next to index.html.`);
+      window.CFDebug.add('error', `Missing functions: ${missing.join(', ')}`);
     } else {
-      window.CFDebug.add('ok', 'All click functions are available');
+      window.CFDebug.add('ok', 'All functions available');
     }
-  }, 250);
+  }, 400);
 });
 </script>
 </head>
 <body>
+
 <button id="debug-badge" class="debug-ok" onclick="CFDebug.toggle()">DEBUG: OK</button>
 <div id="debug-panel">
   <div id="debug-title">Circuit Forge Debug</div>
-  <div id="debug-help">If buttons do not work, check this box for script errors.</div>
+  <div id="debug-help">Check here if buttons don't work.</div>
   <div id="debug-list"></div>
 </div>
+
+<!-- ══════════════════════════════════════════════════════
+     HOME SCREEN
+══════════════════════════════════════════════════════ -->
+<div id="home-screen">
+  <div class="home-box">
+    <div class="home-header">
+      <div>
+        <div class="home-logo">CIRCUIT FORGE</div>
+        <div class="home-sub">Track Studio · v7.0</div>
+      </div>
+      <button class="home-close-btn" onclick="closeHomeScreen()">✕ Close</button>
+    </div>
+
+    <div class="home-actions-row">
+      <button class="home-action-btn primary" onclick="closeHomeScreen()">+ New Track</button>
+      <button class="home-action-btn" onclick="uploadExistingTrack()">⬆ Import .js File</button>
+      <button class="home-action-btn" onclick="saveCurrentTrack()">💾 Save Current Track</button>
+    </div>
+
+    <div class="home-note">
+      Track names are prefixed with <code>track_</code> in the game (e.g. <code>track_silverstone</code>).
+      Rename any track here to change its in-game identifier.
+    </div>
+
+    <div id="home-track-grid" class="home-track-grid">
+      <div class="home-empty">No saved tracks yet — create a track and click Save.</div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     3D PREVIEW OVERLAY
+══════════════════════════════════════════════════════ -->
+<div id="preview3d-overlay">
+  <!-- Three.js canvas is injected here by preview3d.js -->
+  <div class="preview3d-hud">
+    <span>Drag = orbit</span>
+    <span>Scroll = zoom</span>
+    <span>Q = exit</span>
+  </div>
+  <button class="preview3d-exit-btn" onclick="close3DPreview()">✕ Exit 3D</button>
+</div>
+
+<!-- ══════════════════════════════════════════════════════
+     MAIN APP
+══════════════════════════════════════════════════════ -->
 <div id="app">
 
-  <!-- ══ LEFT SIDEBAR ══ -->
+  <!-- ── LEFT SIDEBAR ── -->
   <div id="sidebar">
     <div class="sb-header">
       <div style="display:flex;align-items:baseline;justify-content:space-between;">
         <div class="sb-logo">CIRCUIT FORGE</div>
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v6.5</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v7.0</span>
       </div>
-      <div class="sb-sub">Track Studio · v6.5</div>
+      <div class="sb-sub">Track Studio · v7.0</div>
     </div>
 
-    <div id="upload-zone" onclick="document.getElementById('file-input').click()"
+    <div id="upload-zone"
+         onclick="document.getElementById('file-input').click()"
          ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
          ondragleave="this.style.borderColor=''"
          ondrop="event.preventDefault();const f=event.dataTransfer.files[0];if(f&&typeof loadBgImage==='function')loadBgImage(f)">
@@ -130,6 +172,16 @@ window.addEventListener('load', () => {
         <div class="tool-btn" onclick="setStartingPoint()" title="Set selected waypoint as Start/Finish">
           <span class="tool-icon">🏁</span>Set Start
         </div>
+      </div>
+    </div>
+
+    <!-- Barrier side selector — visible only in barrier mode -->
+    <div class="sb-section" id="barrier-side-section" style="display:none;">
+      <div class="sb-label">Barrier Side</div>
+      <div class="bside-row">
+        <button class="bside-btn" id="bside-left"  onclick="setBarrierSide('left')">◀ Left</button>
+        <button class="bside-btn active" id="bside-both"  onclick="setBarrierSide('both')">Both</button>
+        <button class="bside-btn" id="bside-right" onclick="setBarrierSide('right')">Right ▶</button>
       </div>
     </div>
 
@@ -177,47 +229,53 @@ window.addEventListener('load', () => {
       <div class="sb-label">Controls</div>
       <div class="kb-row"><span class="kb-key">Scroll</span><span class="kb-desc">Zoom</span></div>
       <div class="kb-row"><span class="kb-key">Space+Drag</span><span class="kb-desc">Pan</span></div>
-      <div class="kb-row"><span class="kb-key">W / P / E</span><span class="kb-desc">Switch tool</span></div>
+      <div class="kb-row"><span class="kb-key">W/P/E/B</span><span class="kb-desc">Switch tool</span></div>
       <div class="kb-row"><span class="kb-key">Del</span><span class="kb-desc">Delete last WP</span></div>
       <div class="kb-row"><span class="kb-key">Ctrl+Z</span><span class="kb-desc">Undo paint</span></div>
+      <div class="kb-row"><span class="kb-key">Q</span><span class="kb-desc">Exit 3D preview</span></div>
     </div>
 
     <div class="sb-spacer"></div>
 
+    <button class="action-btn" onclick="openSimplify()">✂ Simplify Waypoints</button>
     <button class="action-btn" onclick="clearWaypoints()">Clear Waypoints</button>
     <button class="action-btn danger" onclick="clearAll()">Reset All</button>
     <button class="action-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;margin-top:2px;">✦ Convert Track Image</button>
+    <button id="btn-3d-toggle" class="action-btn" onclick="toggle3DPreview()" style="border-color:#00ccff;color:#00ccff;">3D Preview</button>
     <button class="action-btn primary" onclick="openExport()">Export Track →</button>
     <div style="height:10px;"></div>
   </div>
 
-  <!-- ══ CANVAS AREA ══ -->
+  <!-- ── CANVAS AREA ── -->
   <div id="canvas-wrap">
     <canvas id="bg-canvas"></canvas>
     <canvas id="main-canvas"></canvas>
     <div id="brush-ring"></div>
     <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v6.5</div>
+    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v7.0</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
     <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
   </div>
 
-  <!-- ══ RIGHT PANEL ══ -->
+  <!-- ── RIGHT PANEL ── -->
   <div id="right-panel">
-    <div class="rp-header"><div class="rp-title">Track Info</div></div>
+    <div class="rp-header">
+      <div class="rp-title">Track Info</div>
+      <button class="home-nav-btn" onclick="openHomeScreen()" title="Manage saved tracks">🏠 Tracks</button>
+    </div>
     <div class="rp-section">
       <div class="rp-label">Name</div>
       <input class="track-name-input" id="track-name" type="text" value="MY CIRCUIT" maxlength="24" placeholder="TRACK NAME">
-      <input class="track-sub-input" id="track-sub" type="text" value="Custom circuit" maxlength="40" placeholder="Short description">
+      <input class="track-sub-input" id="track-sub"  type="text" value="Custom circuit" maxlength="40" placeholder="Short description">
     </div>
     <div class="rp-section">
       <div class="toggle-row">
-        <span class="toggle-label">Barriers</span>
-        <label class="toggle"><input type="checkbox" id="barriers-toggle"><span class="toggle-slider"></span></label>
+        <span class="toggle-label">Auto barriers</span>
+        <label class="toggle"><input type="checkbox" id="barriers-toggle" checked><span class="toggle-slider"></span></label>
       </div>
-      <div class="seg-row">
-        <label>Smoothness</label>
+      <div class="seg-row" style="margin-top:8px;">
+        <label style="font-size:12px;color:var(--text3);">Smoothness</label>
         <input type="range" id="nperseg" min="4" max="24" value="12" oninput="document.getElementById('seg-val').textContent=this.value">
         <span class="seg-val" id="seg-val">12</span>
       </div>
@@ -240,6 +298,9 @@ window.addEventListener('load', () => {
       <div class="legend-item"><div class="legend-dot" style="background:#3a5fa8;"></div><span class="legend-label">Tecpro</span></div>
       <div class="legend-item"><div class="legend-dot" style="background:#222;border:1px solid #555;"></div><span class="legend-label">Tyre Wall</span></div>
     </div>
+    <div class="rp-section">
+      <button class="action-btn" onclick="saveCurrentTrack()" style="width:100%;margin:0;text-align:center;border-color:#00ff88;color:#00ff88;">💾 Save Track</button>
+    </div>
     <div class="rp-section" style="border-top:1px solid var(--border);margin-top:auto;">
       <div class="rp-label" style="margin-top:8px;">Waypoints</div>
     </div>
@@ -256,14 +317,16 @@ window.addEventListener('load', () => {
 <!-- ══ MOBILE BOTTOM BAR ══ -->
 <div id="mobile-bar">
   <div class="mb-btn active" id="mb-waypoint" onclick="setTool('waypoint');closeSurfOverlay()"><span class="mb-icon">📍</span>Waypoint</div>
-  <div class="mb-btn" id="mb-paint" onclick="setTool('paint');closeSurfOverlay()"><span class="mb-icon">🖌️</span>Paint</div>
-  <div class="mb-btn" id="mb-erase" onclick="setTool('erase');closeSurfOverlay()"><span class="mb-icon">⬜</span>Erase</div>
-  <div class="mb-btn" id="mb-pan" onclick="setTool('pan');closeSurfOverlay()"><span class="mb-icon">✋</span>Pan</div>
+  <div class="mb-btn" id="mb-paint"   onclick="setTool('paint');closeSurfOverlay()"><span class="mb-icon">🖌️</span>Paint</div>
+  <div class="mb-btn" id="mb-erase"   onclick="setTool('erase');closeSurfOverlay()"><span class="mb-icon">⬜</span>Erase</div>
+  <div class="mb-btn" id="mb-pan"     onclick="setTool('pan');closeSurfOverlay()"><span class="mb-icon">✋</span>Pan</div>
   <div class="mb-btn" id="mb-barrier" onclick="setTool('barrier');closeSurfOverlay()"><span class="mb-icon">🚧</span>Barrier</div>
   <div class="mb-btn" onclick="setStartingPoint();closeSurfOverlay()"><span class="mb-icon">🏁</span>Start</div>
   <div class="mb-sep"></div>
   <div class="mb-btn" id="mb-surf" onclick="toggleSurfOverlay()"><span class="mb-icon" id="mb-surf-dot">🟥</span>Surface</div>
   <div class="mb-sep"></div>
+  <div class="mb-btn" onclick="toggle3DPreview()"><span class="mb-icon">🔭</span>3D</div>
+  <div class="mb-btn" onclick="openHomeScreen()"><span class="mb-icon">🏠</span>Tracks</div>
   <div class="mb-btn" onclick="openExport()"><span class="mb-icon">💾</span>Export</div>
   <div class="mb-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;flex-shrink:0;"><span class="mb-icon">✦</span>Convert</div>
 </div>
@@ -271,12 +334,12 @@ window.addEventListener('load', () => {
 <!-- ══ MOBILE SURFACE OVERLAY ══ -->
 <div id="surf-overlay">
   <div class="so-btn active" id="so-flat_kerb" onclick="setSurface('flat_kerb');closeSurfOverlay()"><div class="so-dot" style="background:#e8392a;"></div>Flat Kerb</div>
-  <div class="so-btn" id="so-sausage" onclick="setSurface('sausage');closeSurfOverlay()"><div class="so-dot" style="background:#f5c518;"></div>Sausage</div>
-  <div class="so-btn" id="so-rumble" onclick="setSurface('rumble');closeSurfOverlay()"><div class="so-dot" style="background:#d44;"></div>Rumble</div>
-  <div class="so-btn" id="so-gravel" onclick="setSurface('gravel');closeSurfOverlay()"><div class="so-dot" style="background:#c8b89a;"></div>Gravel</div>
-  <div class="so-btn" id="so-grass" onclick="setSurface('grass');closeSurfOverlay()"><div class="so-dot" style="background:#3a7a3a;"></div>Grass</div>
-  <div class="so-btn" id="so-armco" onclick="setSurface('armco');closeSurfOverlay()"><div class="so-dot" style="background:#aaa;"></div>Armco</div>
-  <div class="so-btn" id="so-tecpro" onclick="setSurface('tecpro');closeSurfOverlay()"><div class="so-dot" style="background:#3a5fa8;"></div>Tecpro</div>
+  <div class="so-btn" id="so-sausage"  onclick="setSurface('sausage');closeSurfOverlay()"><div class="so-dot" style="background:#f5c518;"></div>Sausage</div>
+  <div class="so-btn" id="so-rumble"   onclick="setSurface('rumble');closeSurfOverlay()"><div class="so-dot" style="background:#d44;"></div>Rumble</div>
+  <div class="so-btn" id="so-gravel"   onclick="setSurface('gravel');closeSurfOverlay()"><div class="so-dot" style="background:#c8b89a;"></div>Gravel</div>
+  <div class="so-btn" id="so-grass"    onclick="setSurface('grass');closeSurfOverlay()"><div class="so-dot" style="background:#3a7a3a;"></div>Grass</div>
+  <div class="so-btn" id="so-armco"    onclick="setSurface('armco');closeSurfOverlay()"><div class="so-dot" style="background:#aaa;"></div>Armco</div>
+  <div class="so-btn" id="so-tecpro"   onclick="setSurface('tecpro');closeSurfOverlay()"><div class="so-dot" style="background:#3a5fa8;"></div>Tecpro</div>
   <div class="so-btn" id="so-tyrewall" onclick="setSurface('tyrewall');closeSurfOverlay()"><div class="so-dot" style="background:#333;border:1px solid #555;"></div>Tyre Wall</div>
 </div>
 
@@ -293,12 +356,51 @@ window.addEventListener('load', () => {
       <button class="modal-close" onclick="closeExport()">✕</button>
     </div>
     <div class="modal-body">
-      <p style="font-size:12px;color:var(--text3);margin-bottom:10px;">Paste this block into <strong style="color:var(--text2)">tracks.js</strong> inside the <code style="color:var(--accent)">TRACK_DEFS</code> object.</p>
+      <p style="font-size:12px;color:var(--text3);margin-bottom:10px;">
+        Download the <strong style="color:var(--text2);">.js file</strong> and upload it directly to your racing game GitHub repo.
+        The filename already has the <code style="color:var(--accent);">track_</code> prefix.
+        The file is self-contained — it includes 3D geometry for all surfaces.
+      </p>
       <textarea id="export-code" readonly></textarea>
     </div>
     <div class="modal-footer">
-      <button class="modal-btn download" onclick="downloadTrack()">Download .js</button>
-      <button class="modal-btn copy" onclick="copyExport()">Copy to Clipboard</button>
+      <button class="modal-btn download" onclick="downloadTrack()">⬇ Download .js</button>
+      <button class="modal-btn copy"     onclick="copyExport()">Copy to Clipboard</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ SIMPLIFY MODAL ══ -->
+<div id="simplify-modal">
+  <div class="modal-box" style="width:min(480px,calc(100vw - 28px));">
+    <div class="modal-header">
+      <div class="modal-title">Simplify Waypoints</div>
+      <button class="modal-close" onclick="closeSimplify()">✕</button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:13px;color:var(--text3);margin-bottom:14px;">
+        Reduces waypoint count using the Ramer-Douglas-Peucker algorithm, preserving the track shape.
+        Lower tolerance = more waypoints (more accurate). Higher = fewer waypoints (better performance).
+      </p>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;">
+        <label style="font-size:12px;color:var(--text3);min-width:80px;">Tolerance</label>
+        <input type="range" id="simplify-eps" min="0.5" max="20" step="0.5" value="3"
+          style="flex:1;accent-color:var(--accent2);"
+          oninput="updateSimplifyPreview()">
+        <span class="seg-val" id="simplify-eps-val" style="min-width:32px;">3.0</span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;background:rgba(255,255,255,0.04);border-radius:8px;padding:10px 14px;">
+        <span style="color:var(--text3);">Current waypoints</span>
+        <span style="color:var(--accent);font-family:'Barlow Condensed',sans-serif;font-weight:800;" id="stat-wp-simplify"></span>
+      </div>
+      <div style="display:flex;justify-content:space-between;font-size:13px;background:rgba(232,255,71,0.06);border-radius:8px;padding:10px 14px;margin-top:6px;">
+        <span style="color:var(--text3);">After simplification</span>
+        <span style="color:var(--accent2);font-family:'Barlow Condensed',sans-serif;font-weight:800;" id="simplify-preview">—</span>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn" onclick="closeSimplify()">Cancel</button>
+      <button class="modal-btn copy" onclick="applySimplify()">Apply</button>
     </div>
   </div>
 </div>
@@ -309,7 +411,7 @@ window.addEventListener('load', () => {
     <div class="ai-header">
       <div class="ai-title">✦ Convert Track Image</div>
       <div style="display:flex;align-items:center;gap:10px;">
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v6.5</span>
+        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1.5px;color:#555;background:#0d0d10;border:1px solid #222;border-radius:3px;padding:2px 7px;">v7.0</span>
         <button class="modal-close" onclick="closeAIConvert()">✕</button>
       </div>
     </div>
@@ -354,17 +456,17 @@ window.addEventListener('load', () => {
           <canvas id="ai-preview-canvas" style="touch-action:none;"></canvas>
           <canvas id="ai-loupe"></canvas>
         </div>
-
         <div class="ai-tol-row">
           <span class="ai-tol-label">Colour Tolerance</span>
           <input type="range" min="10" max="120" value="40" id="ai-tolerance" style="flex:1;accent-color:#a78bfa;"
             oninput="document.getElementById('ai-tol-val').textContent=this.value;aiUpdatePreviewOverlay()">
           <span class="ai-tol-val" id="ai-tol-val">40</span>
         </div>
-
         <div class="ai-slider-row">
           <span class="ai-slider-label">Waypoints</span>
-          <span class="ai-slider-val" id="ai-wp-val" style="min-width:auto;text-align:left;">Maximum detail · 500 points</span>
+          <span class="ai-slider-val" id="ai-wp-val" style="min-width:auto;text-align:left;">
+            Max detail (500 pts) · auto-simplified after extraction
+          </span>
         </div>
       </div>
 
@@ -380,10 +482,16 @@ window.addEventListener('load', () => {
 
 <div id="toast"></div>
 
-<script src="render.js" onload="cfScriptLoaded('render.js')" onerror="cfScriptFailed('render.js')"></script>
-<script src="tools.js" onload="cfScriptLoaded('tools.js')" onerror="cfScriptFailed('tools.js')"></script>
-<script src="export.js" onload="cfScriptLoaded('export.js')" onerror="cfScriptFailed('export.js')"></script>
+<!-- Three.js (needed for 3D preview) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"
+        onload="cfScriptLoaded('three.js')" onerror="cfScriptFailed('three.js')"></script>
+
+<script src="render.js"     onload="cfScriptLoaded('render.js')"     onerror="cfScriptFailed('render.js')"></script>
+<script src="tools.js"      onload="cfScriptLoaded('tools.js')"      onerror="cfScriptFailed('tools.js')"></script>
+<script src="export.js"     onload="cfScriptLoaded('export.js')"     onerror="cfScriptFailed('export.js')"></script>
 <script src="ai-convert.js" onload="cfScriptLoaded('ai-convert.js')" onerror="cfScriptFailed('ai-convert.js')"></script>
-<script src="init.js" onload="cfScriptLoaded('init.js')" onerror="cfScriptFailed('init.js')"></script>
+<script src="home.js"       onload="cfScriptLoaded('home.js')"       onerror="cfScriptFailed('home.js')"></script>
+<script src="preview3d.js"  onload="cfScriptLoaded('preview3d.js')"  onerror="cfScriptFailed('preview3d.js')"></script>
+<script src="init.js"       onload="cfScriptLoaded('init.js')"       onerror="cfScriptFailed('init.js')"></script>
 </body>
 </html>
