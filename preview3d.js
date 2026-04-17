@@ -102,10 +102,6 @@ function p3dGetScaledData() {
   return { wps, factor, cx, cy };
 }
 
-function p3dScalePaint(p, cx, cy, factor) {
-  return { x:(p.x-cx)*factor, z:(p.y-cy)*factor, r:p.r*factor*0.45, surface:p.surface };
-}
-
 // ─── Catmull-Rom spline ────────────────────────────
 function p3dCatmull(p0,p1,p2,p3,t) {
   const t2=t*t,t3=t2*t;
@@ -363,18 +359,9 @@ function build3DScene() {
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
 
-  // ── Paint layers ──
-  paintLayers.forEach(p => {
-    const sp = p3dScalePaint(p, cx, cy, factor);
-    const color = SURF_COLOR_3D[sp.surface] || 0x888888;
-    const lane = p3dLane(sp.surface, 0);
-    const disc = new THREE.Mesh(
-      new THREE.CylinderGeometry(sp.r, sp.r, 0.5, 14),
-      new THREE.MeshLambertMaterial({ color })
-    );
-    disc.position.set(sp.x, lane.y + 0.01, sp.z);
-    preview3dScene.add(disc);
-  });
+  // NOTE: paintLayers are 2D identification markers only — they are
+  // intentionally NOT rendered in 3D. Surface elements come from
+  // barrierSegments below, which are auto-placed by autoPlaceTrackFeatures().
 
   // ── Barrier segments ──
   p3dMergeBarrierSegments(barrierSegments, n).forEach(seg => {

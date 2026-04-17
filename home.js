@@ -58,6 +58,10 @@ function loadStoredTrack(storageKey) {
     }
     updateWPList();
     updateBarrierList();
+    // Re-generate barriers if the loaded track has none (e.g. freshly imported)
+    if (barrierSegments.length === 0 && waypoints.length >= 4 && typeof autoPlaceTrackFeatures === 'function') {
+      autoPlaceTrackFeatures(waypoints);
+    }
     render();
     closeHomeScreen();
     showToast('Track loaded!');
@@ -112,12 +116,13 @@ function uploadExistingTrack() {
         const nameMatch = src.match(/name\s*:\s*['"`]([^'"`]+)['"`]/);
         const subMatch  = src.match(/sub\s*:\s*['"`]([^'"`]+)['"`]/);
 
-        // Parse waypoints array — handles both [[x,y],...] and [{x,y},...]
-        const wpBlockMatch = src.match(/waypoints\s*:\s*\[([\s\S]*?)\]\s*,?\s*\n/);
+        // Parse waypoints array — handles [[x,y],...] and [{x,y},...] formats,
+        // including files where the closing bracket is on the same or next line.
+        const wpBlockMatch = src.match(/waypoints\s*:\s*\[([\s\S]*?)\]/);
         let wpArr = [];
         if (wpBlockMatch) {
           try {
-            wpArr = JSON.parse('[' + wpBlockMatch[1].replace(/\/\/[^\n]*/g,'') + ']');
+            wpArr = JSON.parse('[' + wpBlockMatch[1].replace(/\/\/[^\n]*/g,'').replace(/,\s*$/,'') + ']');
           } catch(e2) {}
         }
 
@@ -126,9 +131,26 @@ function uploadExistingTrack() {
         const sub      = subMatch  ? subMatch[1] : 'Imported track';
         const storageKey = STORAGE_PREFIX + name.toLowerCase().replace(/[^a-z0-9]/g,'_');
 
+        // wpArr is in exported/game-space (±250 range).
+        // Re-map to canvas space so the track shape is preserved
+        // (same logic runAIConvert uses: fit inside 82% of the canvas).
+        let rawWPs = wpArr.map(p => Array.isArray(p) ? { x: p[0], y: p[1] } : { x: p.x||0, y: p.y||0 });
+        if (rawWPs.length >= 2) {
+          let mnX=Infinity,mxX=-Infinity,mnY=Infinity,mxY=-Infinity;
+          rawWPs.forEach(w=>{mnX=Math.min(mnX,w.x);mxX=Math.max(mxX,w.x);mnY=Math.min(mnY,w.y);mxY=Math.max(mxY,w.y);});
+          const spanX=mxX-mnX||1, spanY=mxY-mnY||1;
+          const midX=(mnX+mxX)/2, midY=(mnY+mxY)/2;
+          // Fit into 82% of canvas (same as AI converter), account for current cam zoom
+          const refW = (typeof mainCanvas!=='undefined' ? mainCanvas.width  : 800) * 0.82;
+          const refH = (typeof mainCanvas!=='undefined' ? mainCanvas.height : 600) * 0.82;
+          const zoomFactor = (typeof cam!=='undefined' ? cam.zoom : 1);
+          const sc = Math.min(refW/spanX, refH/spanY) / zoomFactor;
+          rawWPs = rawWPs.map(w=>({ x:(w.x-midX)*sc, y:(w.y-midY)*sc }));
+        }
+
         const data = {
           name, sub,
-          waypoints:       wpArr.map(p => Array.isArray(p) ? { x: p[0], y: p[1] } : { x: p.x||0, y: p.y||0 }),
+          waypoints:       rawWPs,
           paintLayers:     [],
           barrierSegments: [],
           startingPointIdx: 0,
