@@ -364,68 +364,7 @@ async function runAIConvert() {
 
     setAIProgress(88); await tick();
 
-    // ── Auto-simplify: only reduce if very dense, curvature-aware ──
-    // Flat RDP with a single epsilon flattens corners — instead we pin
-    // high-curvature points and only simplify straight sections.
-    if (newWPs.length > 300 && typeof rdp === 'function') {
-      const n2 = newWPs.length;
 
-      // Per-point curvature
-      const curv2 = new Float32Array(n2);
-      for (let i = 0; i < n2; i++) {
-        const prev = newWPs[(i - 1 + n2) % n2];
-        const cur  = newWPs[i];
-        const next = newWPs[(i + 1) % n2];
-        const ax = cur.x - prev.x, ay = cur.y - prev.y;
-        const bx = next.x - cur.x, by = next.y - cur.y;
-        const la = Math.sqrt(ax*ax + ay*ay), lb = Math.sqrt(bx*bx + by*by);
-        curv2[i] = (la < 1e-9 || lb < 1e-9) ? 0
-          : Math.acos(Math.max(-1, Math.min(1, (ax*bx + ay*by) / (la*lb))));
-      }
-
-      // Pin corners — points with curvature above threshold are never removed
-      let cSum = 0;
-      for (let i = 0; i < n2; i++) cSum += curv2[i];
-      const cMean = cSum / n2;
-      const CORNER_PIN = Math.max(0.08, cMean * 0.6);
-      const pinned = Array.from({length: n2}, (_, i) => curv2[i] >= CORNER_PIN);
-
-      // Cut the closed loop at the first pinned point so runs are linear
-      let seam = pinned.indexOf(true);
-      if (seam < 0) seam = 0;
-
-      const reordered = [], reordPin = [];
-      for (let i = 0; i < n2; i++) {
-        reordered.push(newWPs[(seam + i) % n2]);
-        reordPin.push(pinned[(seam + i) % n2]);
-      }
-
-      const simplified = [];
-      let runStart = 0;
-
-      const flushRun = (from, to) => {
-        if (to <= from + 1) {
-          for (let i = from; i < to; i++) simplified.push(reordered[i]);
-          return;
-        }
-        const seg = reordered.slice(from, to + 1);
-        const runLen = seg.reduce((s, p, i) =>
-          i === 0 ? 0 : s + Math.hypot(p.x - seg[i-1].x, p.y - seg[i-1].y), 0);
-        const eps = Math.min(1.8, Math.max(0.4, runLen / seg.length * 0.35));
-        const simp = rdp(seg, eps);
-        for (let i = 0; i < simp.length - 1; i++) simplified.push(simp[i]);
-      };
-
-      for (let i = 1; i <= n2; i++) {
-        if (i === n2 || reordPin[i]) {
-          flushRun(runStart, i < n2 ? i : n2 - 1);
-          if (i < n2) simplified.push(reordered[i]);
-          runStart = i;
-        }
-      }
-
-      if (simplified.length >= 3) newWPs = simplified;
-    }
 
     setAIProgress(100);
     waypoints = newWPs;
