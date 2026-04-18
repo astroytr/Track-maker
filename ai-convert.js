@@ -332,7 +332,7 @@ async function runAIConvert() {
     //   (large tracks are fine; the user can zoom/pan).
     //   We prefer too big over too small: large tracks don't overlap.
     //
-    const WORLD_HALF_WIDTH = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 60;
+    const WORLD_HALF_WIDTH = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 7;
     const skelSpanX = (maxX - minX) || 1;
     const skelSpanY = (maxY - minY) || 1;
 

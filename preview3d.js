@@ -32,15 +32,15 @@ const SURF_COLOR_3D = {
 };
 
 const P3D_SURFACE_LANES = {
-  flat_kerb: { inner:  60.9, outer:  78.0, y: 0.80 },
-  rumble:    { inner:  63.4, outer:  84.9, y: 0.90 },
-  sausage:   { inner:  80.6, outer:  95.1, y: 1.00 },
-  gravel:    { inner:  98.6, outer: 150.0, y: 0.50 },
-  sand:      { inner:  98.6, outer: 150.0, y: 0.50 },
-  grass:     { inner: 154.3, outer: 214.3, y: 0.30 },
-  armco:     { inner: 231.4, outer: 244.3, y: 0.50 },
-  tecpro:    { inner: 227.1, outer: 248.6, y: 0.50 },
-  tyrewall:  { inner: 222.9, outer: 248.6, y: 0.50 },
+  flat_kerb: { inner: 14.2, outer: 18.2, y: 0.075 },
+  rumble:    { inner: 14.8, outer: 19.8, y: 0.085 },
+  sausage:   { inner: 18.8, outer: 22.2, y: 0.10  },
+  gravel:    { inner: 23.0, outer: 35.0, y: 0.025 },
+  sand:      { inner: 23.0, outer: 35.0, y: 0.026 },
+  grass:     { inner: 36.0, outer: 50.0, y: 0.02  },
+  armco:     { inner: 54.0, outer: 57.0, y: 0.02  },
+  tecpro:    { inner: 53.0, outer: 58.0, y: 0.02  },
+  tyrewall:  { inner: 52.0, outer: 58.0, y: 0.02  },
 };
 
 function p3dLane(surface, lane = 0) {
@@ -258,35 +258,45 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
     const mat   = new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide });
 
     if (surface==='armco') {
-      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, off, 0.5, 6.0), mat));
-      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, off+0.15*s, 2.0, 0.5), mat));
+      // Wall: yBase=0.02, height=0.90 — matches export.js wallMeshCode
+      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, off, 0.02, 0.90), mat));
+      // Corrugation rail: yBase=0.28, height=0.07
+      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, off + 0.08*s, 0.28, 0.07), mat));
     } else if (surface==='tecpro') {
-      for (let i=0;i<spPts.length-1;i+=3) {
-        const p=spPts[i];
-        const { px, pz } = normals[i];
-        const m=new THREE.Mesh(new THREE.BoxGeometry(1.1,10.0,1.1), mat);
-        m.position.set(p.x+px*off, 5.0, p.z+pz*off);
+      // BoxGeometry(1.15, 1.00, 1.15), step every 3 pts — matches export.js
+      for (let i=0; i<spPts.length-1; i+=3) {
+        const p=spPts[i], { px, pz } = normals[i];
+        const m=new THREE.Mesh(new THREE.BoxGeometry(1.15,1.00,1.15), mat);
+        m.position.set(p.x+px*off, 0.50, p.z+pz*off);
         scene.add(m);
+        const m2=new THREE.Mesh(new THREE.BoxGeometry(1.15,1.00,1.15),
+          new THREE.MeshLambertMaterial({color:0x2a3f7a, side:THREE.DoubleSide}));
+        m2.position.set(p.x+px*off, 0.50, p.z+pz*off);
+        scene.add(m2);
       }
     } else if (surface==='tyrewall') {
-      for (let i=0;i<spPts.length-1;i+=4) {
-        const p=spPts[i];
-        const { px, pz } = normals[i];
-        const m=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,4.0,10), mat);
-        m.position.set(p.x+px*off, 2.0, p.z+pz*off);
+      // CylinderGeometry(r=0.55, h=0.48) stacked ×2 — matches export.js
+      for (let i=0; i<spPts.length-1; i+=4) {
+        const p=spPts[i], { px, pz } = normals[i];
+        const m=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,0.48,10), mat);
+        m.position.set(p.x+px*off, 0.24, p.z+pz*off);
         scene.add(m);
-        const m2=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,4.0,10), mat);
-        m2.position.set(p.x+px*off, 6.0, p.z+pz*off);
+        const m2=new THREE.Mesh(new THREE.CylinderGeometry(0.55,0.55,0.48,10), mat);
+        m2.position.set(p.x+px*off, 0.72, p.z+pz*off);
         scene.add(m2);
       }
     } else if (surface==='sausage') {
+      // White base ribbon ±1.8, then yellow wall yBase=0.02 height=0.18
       const kOff = lane.center * s;
       const whiteMat = new THREE.MeshLambertMaterial({color:0xffffff, side:THREE.DoubleSide});
-      scene.add(new THREE.Mesh(p3dRibbon(spPts,kOff-1.5,kOff+1.5,0.99), whiteMat));
-      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts,kOff,0.5,2.5), mat));
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, kOff-1.8, kOff+1.8, 0.03), whiteMat));
+      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, kOff, 0.02, 0.18), mat));
     } else if (surface==='flat_kerb') {
       const band = p3dSignedBand(lane, s);
+      const halfBand = s < 0 ? [-lane.center, -lane.inner] : [lane.inner, lane.center];
       scene.add(new THREE.Mesh(p3dRibbon(spPts,band[0],band[1],lane.y), mat));
+      scene.add(new THREE.Mesh(p3dRibbon(spPts,halfBand[0],halfBand[1],lane.y),
+        new THREE.MeshLambertMaterial({color:0xffffff, side:THREE.DoubleSide})));
     } else if (surface==='rumble') {
       const band = p3dSignedBand(lane, s);
       scene.add(new THREE.Mesh(p3dRibbon(spPts,band[0],band[1],lane.y), mat));
@@ -364,12 +374,13 @@ function build3DScene() {
   p3dOrbit.dist = trackSpan * 0.85;
   p3dOrbitTarget = { cx: 0, cz: 0 };
 
-  // TH = track half-width in world units
-  const TH = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 60;
+  // TW=14 in game, h=TW/2=7, car scale=1.0
+  const TH_BASE = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 7;
+  const TH = TH_BASE;
   const dblSide = { side: THREE.DoubleSide };
 
-  // ── Asphalt (y=2 keeps it clear of ground, eliminates Z-fight on zoom) ──
-  const ROAD_Y = 2.0;
+  // ── Asphalt — y=0.01 matches physics.js exactly ──
+  const ROAD_Y = 0.01;
   preview3dScene.add(new THREE.Mesh(
     p3dRibbon(spPts, -TH, TH, ROAD_Y),
     new THREE.MeshLambertMaterial({color:0x333338, ...dblSide})
@@ -377,51 +388,45 @@ function build3DScene() {
 
   // ── Outer kerb edge band ──
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH, TH+2.5, ROAD_Y - 0.3),
+    p3dRibbon(spPts, TH, TH+0.7, ROAD_Y + 0.01),
     new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH-2.5, -TH, ROAD_Y - 0.3),
+    p3dRibbon(spPts, -TH-0.7, -TH, ROAD_Y + 0.01),
     new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
   ));
 
   // ── White edge line ──
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH-0.8, TH+0.8, ROAD_Y + 0.1),
+    p3dRibbon(spPts, TH-0.08, TH+0.08, ROAD_Y + 0.02),
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH-0.8, -TH+0.8, ROAD_Y + 0.1),
+    p3dRibbon(spPts, -TH-0.08, -TH+0.08, ROAD_Y + 0.02),
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
 
-  // ── Start / Finish line ──
-  // Build a short ribbon across the track at spPts[0] using just 2 adjacent points
-  const sfLineNorm = p3dComputeNormals(spPts);
-  const sfLinePts = [spPts[0]]; // single-point ribbon won't work; build a 3-pt segment
+  // ── Start / Finish line — matches physics.js PlaneGeometry at y=0.03 ──
   const sfSegLen = Math.min(6, Math.floor(spPts.length * 0.01)) || 3;
   const sfSeg = spPts.slice(0, sfSegLen + 1);
-  // Checker pattern: alternate white/black strips across track
   const chkW = TH / 4;
   for (let c = 0; c < 4; c++) {
     const inner = -TH + c * chkW * 2;
     const outer = inner + chkW;
     const color = c % 2 === 0 ? 0xffffff : 0x111111;
     preview3dScene.add(new THREE.Mesh(
-      p3dRibbon(sfSeg, inner, outer, ROAD_Y + 0.15),
+      p3dRibbon(sfSeg, inner, outer, ROAD_Y + 0.02),
       new THREE.MeshLambertMaterial({ color, ...dblSide })
     ));
     preview3dScene.add(new THREE.Mesh(
-      p3dRibbon(sfSeg, -(inner), -(outer), ROAD_Y + 0.15),
+      p3dRibbon(sfSeg, -(inner), -(outer), ROAD_Y + 0.02),
       new THREE.MeshLambertMaterial({ color: c % 2 === 0 ? 0x111111 : 0xffffff, ...dblSide })
     ));
   }
 
   // ── Static car on starting line ──
   // Car geometry is in ~car-sized units; scale it so body width ≈ 1/5 of track width
-  const carBodyWidth = 1.8;
-  const targetCarWidth = TH * 0.38; // car should be ~38% of track half-width
-  const carScale = targetCarWidth / carBodyWidth;
+  const carScale = 1.0; // matches physics.js exactly — no scaling applied in game
 
   const sfPt = spPts[0];
   const sfNext = spPts[Math.min(4, spPts.length - 1)];
