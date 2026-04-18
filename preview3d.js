@@ -683,6 +683,7 @@ function setupP3DControls(cnv) {
     }
   }, { passive: false });
 
+  cnv.addEventListener('touchend', e=>{
     if (e.touches.length === 0) _twoActive = false;
   }, { passive: true });
 
