@@ -323,7 +323,7 @@ button, input, textarea { font: inherit; }
 /* ─────────────────── 3D PREVIEW ─────────────────── */
 #preview3d-overlay {
   display: none;
-  position: fixed; inset: 0; z-index: 25;
+  position: fixed; inset: 0; z-index: 500;
   background: #000;
   flex-direction: column;
 }
