@@ -713,19 +713,28 @@ function autoPlaceTrackFeatures(wps) {
 
   function wrapIndex(i) { return ((i % n) + n) % n; }
 
+  // Total track arc length for normalisation — independent of waypoint density
+  let totalTrackLen = 0;
+  for (let i = 0; i < n; i++) totalTrackLen += segLen[i];
+  const avgSegLenGlobal = totalTrackLen / n;
+
   function zoneStats(zone) {
-    let turn=0, curv=0, len=0, samples=0;
+    let turn=0, curv=0, arcLen=0, totalTurn=0, samples=0;
     for (let i=zone.from; i<=zone.to; i++) {
       const idx = wrapIndex(i);
-      turn += signedTurn[idx]; curv = Math.max(curv, curvatures[idx]);
-      len += segLen[idx]; samples++;
+      turn      += signedTurn[idx];
+      curv       = Math.max(curv, curvatures[idx]);
+      arcLen    += segLen[idx];
+      totalTurn += rawCurv[idx];
+      samples++;
     }
     const avgTurn = samples ? turn / samples : 0;
     return {
-      insideSide:  avgTurn >= 0 ? 1 : -1,
-      outsideSide: avgTurn >= 0 ? -1 : 1,
-      maxCurv: curv,
-      avgSegLen: samples ? len / samples : 0
+      insideSide:   avgTurn >= 0 ? 1 : -1,
+      outsideSide:  avgTurn >= 0 ? -1 : 1,
+      maxCurv:      curv,
+      totalArcLen:  arcLen,
+      totalTurnDeg: totalTurn * (180 / Math.PI),
     };
   }
 
@@ -739,9 +748,16 @@ function autoPlaceTrackFeatures(wps) {
     const entryLen = Math.max(1, Math.floor(len * 0.25));
     const exitLen  = Math.max(1, Math.floor(len * 0.25));
     const stats = zoneStats(z);
-    const isTight = stats.maxCurv > Math.PI * 0.40;
-    const isFast  = stats.maxCurv < Math.PI * 0.22 && stats.avgSegLen > 4;
-    const isMed   = !isTight && !isFast;
+
+    // Classification based on actual geometry, not waypoint density:
+    //   isTight — apex > 65° OR sharp but short (hairpin)
+    //   isFast  — total direction change < 35° AND zone covers >4% of track (long sweeper)
+    //   isMed   — everything else
+    const apexDeg  = stats.maxCurv * (180 / Math.PI);
+    const arcRatio = totalTrackLen > 0 ? stats.totalArcLen / totalTrackLen : 0;
+    const isTight  = apexDeg > 65 || (apexDeg > 45 && stats.totalArcLen < avgSegLenGlobal * 4);
+    const isFast   = !isTight && stats.totalTurnDeg < 35 && arcRatio > 0.04;
+    const isMed    = !isTight && !isFast;
 
     pushZone({ from:z.from, to:Math.min(z.from+entryLen, z.to) }, 'rumble', stats.insideSide, 0);
     pushZone({
@@ -749,18 +765,29 @@ function autoPlaceTrackFeatures(wps) {
       to:   Math.min(z.to,   apex + Math.floor(len*0.2))
     }, 'sausage', stats.insideSide, 1);
     pushZone({ from:Math.max(z.from, z.to-exitLen), to:z.to }, 'flat_kerb', stats.insideSide, 0);
-    pushZone(z, isTight ? 'armco' : isFast ? 'tecpro' : 'gravel', stats.outsideSide, 0);
 
+    // Outside runoff: gravel (medium), sand (fast/wide), armco behind tight corners
     if (isTight) {
+      // Tight corner: gravel runoff zone + armco wall behind it + tyrewall at apex
+      pushZone(z, 'gravel', stats.outsideSide, 0);
+      pushZone(z, 'armco',  stats.outsideSide, 1);
       pushZone({
         from: Math.max(z.from, apex - Math.floor(len*0.12)),
         to:   Math.min(z.to,   apex + Math.floor(len*0.12))
-      }, 'tyrewall', stats.outsideSide, 1);
-    } else if (isMed) {
+      }, 'tyrewall', stats.outsideSide, 2);
+    } else if (isFast) {
+      // Fast corner: wide sand trap + tecpro barrier behind
+      pushZone(z, 'sand',   stats.outsideSide, 0);
+      pushZone(z, 'grass',  stats.outsideSide, 1);
+      pushZone(z, 'tecpro', stats.outsideSide, 2);
+    } else {
+      // Medium corner: gravel trap + grass behind + armco at back
+      pushZone(z, 'gravel', stats.outsideSide, 0);
       pushZone({
         from: Math.max(z.from, apex - Math.floor(len*0.35)),
         to:   Math.min(z.to,   apex + Math.floor(len*0.35))
       }, 'grass', stats.outsideSide, 1);
+      pushZone(z, 'armco',  stats.outsideSide, 2);
     }
   });
 
