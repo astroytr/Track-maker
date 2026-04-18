@@ -465,7 +465,7 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
           const off = (row / 2.5) * halfW + (Math.sin(d * 1.7 + row) * 0.3) * halfW;
           const r = Math.max(1.2, (1.5 + Math.sin(d * 3.3 + row) * 0.5) * zoom);
           const alpha = 0.45 + Math.sin(d * 2.1 + row * 1.3) * 0.2;
-          ctx.fillStyle = \`rgba(145,122,88,\${alpha})\`;
+          ctx.fillStyle = 'rgba(145,122,88,' + alpha + ')';
           ctx.beginPath();
           ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
           ctx.fill();
@@ -493,7 +493,7 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
           const off = (row / 2.5) * halfW + (Math.cos(d * 2.3 + row) * 0.25) * halfW;
           const r = Math.max(0.9, (1.1 + Math.cos(d * 4.1 + row) * 0.4) * zoom);
           const alpha = 0.38 + Math.cos(d * 1.9 + row * 1.1) * 0.18;
-          ctx.fillStyle = \`rgba(185,158,90,\${alpha})\`;
+          ctx.fillStyle = 'rgba(185,158,90,' + alpha + ')';
           ctx.beginPath();
           ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
           ctx.fill();
