@@ -26,15 +26,15 @@ const SURF_COLOR_3D = {
 };
 
 const P3D_SURFACE_LANES = {
-  flat_kerb: { inner: 14.2, outer: 18.2, y: 0.80 },
-  rumble:    { inner: 14.8, outer: 19.8, y: 0.90 },
-  sausage:   { inner: 18.8, outer: 22.2, y: 1.00 },
-  gravel:    { inner: 23.0, outer: 35.0, y: 0.50 },
-  sand:      { inner: 23.0, outer: 35.0, y: 0.50 },
-  grass:     { inner: 36.0, outer: 50.0, y: 0.30 },
-  armco:     { inner: 54.0, outer: 57.0, y: 0.50 },
-  tecpro:    { inner: 53.0, outer: 58.0, y: 0.50 },
-  tyrewall:  { inner: 52.0, outer: 58.0, y: 0.50 },
+  flat_kerb: { inner:  60.9, outer:  78.0, y: 0.80 },
+  rumble:    { inner:  63.4, outer:  84.9, y: 0.90 },
+  sausage:   { inner:  80.6, outer:  95.1, y: 1.00 },
+  gravel:    { inner:  98.6, outer: 150.0, y: 0.50 },
+  sand:      { inner:  98.6, outer: 150.0, y: 0.50 },
+  grass:     { inner: 154.3, outer: 214.3, y: 0.30 },
+  armco:     { inner: 231.4, outer: 244.3, y: 0.50 },
+  tecpro:    { inner: 227.1, outer: 248.6, y: 0.50 },
+  tyrewall:  { inner: 222.9, outer: 248.6, y: 0.50 },
 };
 
 function p3dLane(surface, lane = 0) {
@@ -138,26 +138,39 @@ function p3dBuildSpline(wps, spp) {
 function p3dComputeNormals(spPts) {
   const n = spPts.length;
 
-  // Compute centroid of all spline points
-  let cx = 0, cz = 0;
-  for (let i = 0; i < n; i++) { cx += spPts[i].x; cz += spPts[i].z; }
-  cx /= n; cz /= n;
-
-  return spPts.map((p, i) => {
+  // Step 1 — raw perpendiculars (arbitrary sign)
+  const raw = spPts.map((p, i) => {
     const prev = spPts[(i - 1 + n) % n];
     const next = spPts[(i + 1) % n];
     const dx = next.x - prev.x;
     const dz = next.z - prev.z;
     const len = Math.sqrt(dx*dx + dz*dz) || 1;
-    let px = dz / len, pz = -dx / len;
-
-    // Vector from centroid to this point
-    const ox = p.x - cx, oz = p.z - cz;
-    // If normal points toward centroid (dot < 0), flip it
-    if (px * ox + pz * oz < 0) { px = -px; pz = -pz; }
-
-    return { px, pz };
+    return { px: dz / len, pz: -dx / len };
   });
+
+  // Step 2 — shoelace signed area to get winding direction
+  // CCW (area>0): left-hand normal already points outward
+  // CW  (area<0): flip all normals
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const a = spPts[i], b = spPts[(i + 1) % n];
+    area += a.x * b.z - b.x * a.z;
+  }
+  const windSign = area >= 0 ? 1 : -1;
+
+  // Step 3 — seed point 0 with the correct winding sign
+  const out = new Array(n);
+  out[0] = { px: raw[0].px * windSign, pz: raw[0].pz * windSign };
+
+  // Step 4 — propagate forward: each normal inherits sign from
+  // its predecessor so local flips never cascade into twisted quads
+  for (let i = 1; i < n; i++) {
+    const dot = raw[i].px * out[i-1].px + raw[i].pz * out[i-1].pz;
+    const s = dot >= 0 ? 1 : -1;
+    out[i] = { px: raw[i].px * s, pz: raw[i].pz * s };
+  }
+
+  return out;
 }
 
 // ─── Flat ribbon geometry (road, kerbs, runoff) ───
@@ -341,7 +354,7 @@ function build3DScene() {
   const scz = wps.reduce((s,p)=>s+p.z,0)/n;
   p3dOrbitTarget = { cx: scx, cz: scz };
 
-  const TH = 14;
+  const TH = 60;
   const dblSide = { side: THREE.DoubleSide };
 
   // ── Asphalt (y=0.5) — DoubleSide so normals don't hide it ──
@@ -352,21 +365,21 @@ function build3DScene() {
 
   // ── Outer kerb edge band (y=0.4) ──
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH, TH+2.5, 0.4),
+    p3dRibbon(spPts, TH, TH+10.7, 0.4),
     new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH-2.5, -TH, 0.4),
+    p3dRibbon(spPts, -TH-10.7, -TH, 0.4),
     new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
   ));
 
   // ── White edge line ──
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH-0.8, TH+0.8, 0.55),
+    p3dRibbon(spPts, TH-3.4, TH+3.4, 0.55),
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH-0.8, -TH+0.8, 0.55),
+    p3dRibbon(spPts, -TH-3.4, -TH+3.4, 0.55),
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
 
