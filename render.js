@@ -71,16 +71,18 @@ const SURFACES = {
 };
 
 const TRACK_HALF_WIDTH = 7;
+// Offsets from centreline in world units (TW=14, half-width=7, scale=0.9286 m/wu)
+// Layout: track edge at 7wu, surfaces placed outward from there
 const SURFACE_LANES = {
-  flat_kerb: { inner: 14.2, outer: 18.2, labelOffset: 26 },
-  rumble:    { inner: 14.8, outer: 19.8, labelOffset: 29 },
-  sausage:   { inner: 18.8, outer: 22.2, labelOffset: 32 },
-  gravel:    { inner: 23.0, outer: 35.0, labelOffset: 42 },
-  sand:      { inner: 23.0, outer: 35.0, labelOffset: 42 },
-  grass:     { inner: 36.0, outer: 50.0, labelOffset: 56 },
-  armco:     { inner: 54.0, outer: 57.0, labelOffset: 64 },
-  tecpro:    { inner: 53.0, outer: 58.0, labelOffset: 65 },
-  tyrewall:  { inner: 52.0, outer: 58.0, labelOffset: 65 },
+  flat_kerb: { inner:  7.0, outer:  8.1, labelOffset: 10 },
+  rumble:    { inner:  7.0, outer:  7.5, labelOffset: 10 },
+  sausage:   { inner:  7.5, outer:  8.6, labelOffset: 11 },
+  gravel:    { inner:  8.1, outer: 14.5, labelOffset: 18 },
+  sand:      { inner:  8.1, outer: 14.5, labelOffset: 18 },
+  grass:     { inner: 14.5, outer: 19.9, labelOffset: 24 },
+  armco:     { inner: 17.8, outer: 18.7, labelOffset: 26 },
+  tecpro:    { inner: 15.6, outer: 17.2, labelOffset: 24 },
+  tyrewall:  { inner: 14.5, outer: 16.3, labelOffset: 23 },
 };
 
 function normalizeSideValue(side) {
@@ -319,11 +321,269 @@ function drawTrackRoad() {
 }
 
 // ═══════════════════════════════════════════════════
+// SURFACE PATTERN DRAWING
+// Each surface type is drawn with its real-world visual
+// pattern rather than a plain colour strip.
+// ═══════════════════════════════════════════════════
+
+// Helper: stroke a polyline path
+function _polyPath(ctx, poly) {
+  ctx.beginPath();
+  poly.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+}
+
+// Helper: compute arc-length distances along a screen polyline
+function _arcLengths(poly) {
+  const d = [0];
+  for (let i = 1; i < poly.length; i++) {
+    const dx = poly[i].x - poly[i-1].x, dy = poly[i].y - poly[i-1].y;
+    d.push(d[i-1] + Math.sqrt(dx*dx + dy*dy));
+  }
+  return d;
+}
+
+// Helper: point + tangent at arc-length t along a polyline
+function _polyAtDist(poly, arcs, t) {
+  if (poly.length === 1) return { x: poly[0].x, y: poly[0].y, tx: 1, ty: 0 };
+  const total = arcs[arcs.length - 1];
+  t = Math.max(0, Math.min(total, t));
+  let lo = 0, hi = arcs.length - 1;
+  while (lo < hi - 1) { const mid = (lo+hi)>>1; arcs[mid] <= t ? lo=mid : hi=mid; }
+  const alpha = arcs[hi] - arcs[lo] < 1e-9 ? 0 : (t - arcs[lo]) / (arcs[hi] - arcs[lo]);
+  const x = poly[lo].x + alpha * (poly[hi].x - poly[lo].x);
+  const y = poly[lo].y + alpha * (poly[hi].y - poly[lo].y);
+  const dx = poly[hi].x - poly[lo].x, dy = poly[hi].y - poly[lo].y;
+  const len = Math.sqrt(dx*dx + dy*dy) || 1;
+  return { x, y, tx: dx/len, ty: dy/len };
+}
+
+function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
+  if (poly.length < 2) return;
+  const w = Math.max(1.5, lane.width * zoom);
+  ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+
+  switch (surface) {
+
+    // ── FLAT KERB — alternating red / white blocks ─────────────────
+    case 'flat_kerb': {
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
+      const blockLen = Math.max(4, 10 * zoom);
+      let dist = 0, block = 0;
+      ctx.lineWidth = w;
+      while (dist < total) {
+        const end = Math.min(dist + blockLen, total);
+        // Sample a few sub-points for this block
+        const steps = 4;
+        ctx.beginPath();
+        for (let s = 0; s <= steps; s++) {
+          const p = _polyAtDist(poly, arcs, dist + (end - dist) * s / steps);
+          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+        }
+        ctx.strokeStyle = block % 2 === 0 ? 'rgba(220,30,30,0.92)' : 'rgba(245,245,245,0.92)';
+        ctx.stroke();
+        dist = end; block++;
+      }
+      break;
+    }
+
+    // ── RUMBLE STRIP — orange/white serrated chevrons ──────────────
+    case 'rumble': {
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
+      const blockLen = Math.max(3, 7 * zoom);
+      let dist = 0, block = 0;
+      ctx.lineWidth = w;
+      while (dist < total) {
+        const end = Math.min(dist + blockLen, total);
+        const steps = 3;
+        ctx.beginPath();
+        for (let s = 0; s <= steps; s++) {
+          const p = _polyAtDist(poly, arcs, dist + (end - dist) * s / steps);
+          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+        }
+        ctx.strokeStyle = block % 2 === 0 ? 'rgba(230,100,0,0.90)' : 'rgba(240,240,240,0.88)';
+        ctx.stroke();
+        dist = end; block++;
+      }
+      break;
+    }
+
+    // ── SAUSAGE KERB — thick yellow rounded ridge ──────────────────
+    case 'sausage': {
+      // Base: wide yellow
+      ctx.lineWidth = w * 1.1;
+      ctx.strokeStyle = 'rgba(245,197,24,0.95)';
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      // White highlight ridge on top
+      ctx.lineWidth = Math.max(1, w * 0.35);
+      ctx.strokeStyle = 'rgba(255,255,255,0.70)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+      break;
+    }
+
+    // ── GRAVEL — stippled sandy dots ──────────────────────────────
+    case 'gravel': {
+      // Base fill strip
+      ctx.lineWidth = w;
+      ctx.strokeStyle = 'rgba(190,170,135,0.72)';
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      // Stipple dots along strip
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
+      const spacing = Math.max(3, 5 * zoom);
+      const halfW = w * 0.38;
+      ctx.fillStyle = 'rgba(155,135,100,0.55)';
+      for (let d = spacing * 0.5; d < total; d += spacing) {
+        const p = _polyAtDist(poly, arcs, d);
+        const perp = { x: -p.ty, y: p.tx };
+        const off = (Math.sin(d * 2.7) * 0.5) * halfW;
+        const r = Math.max(0.8, 1.2 * zoom);
+        ctx.beginPath();
+        ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.lineCap = 'butt';
+      break;
+    }
+
+    // ── SAND — lighter stipple, warm tone ─────────────────────────
+    case 'sand': {
+      ctx.lineWidth = w;
+      ctx.strokeStyle = 'rgba(220,200,145,0.70)';
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
+      const spacing = Math.max(3, 5 * zoom);
+      ctx.fillStyle = 'rgba(190,165,100,0.45)';
+      for (let d = spacing * 0.5; d < total; d += spacing) {
+        const p = _polyAtDist(poly, arcs, d);
+        const perp = { x: -p.ty, y: p.tx };
+        const off = (Math.cos(d * 3.1) * 0.4) * w * 0.35;
+        const r = Math.max(0.7, zoom);
+        ctx.beginPath();
+        ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.lineCap = 'butt';
+      break;
+    }
+
+    // ── GRASS — green with darker stripe ──────────────────────────
+    case 'grass': {
+      ctx.lineWidth = w;
+      ctx.strokeStyle = 'rgba(38,105,38,0.78)';
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      // Darker stripe down centre for depth
+      ctx.lineWidth = Math.max(1, w * 0.3);
+      ctx.strokeStyle = 'rgba(20,70,20,0.45)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineCap = 'butt';
+      break;
+    }
+
+    // ── ARMCO — silver corrugated wall ────────────────────────────
+    case 'armco': {
+      // Base wall
+      ctx.lineWidth = w;
+      ctx.strokeStyle = 'rgba(185,185,185,0.95)';
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      // Corrugation ticks
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
+      const tickSpacing = Math.max(4, 8 * zoom);
+      const tickH = Math.max(1, w * 0.55);
+      ctx.strokeStyle = 'rgba(100,100,100,0.60)';
+      ctx.lineWidth = Math.max(0.8, 0.8 * zoom);
+      ctx.lineCap = 'butt';
+      for (let d = 0; d < total; d += tickSpacing) {
+        const p = _polyAtDist(poly, arcs, d);
+        const perp = { x: -p.ty, y: p.tx };
+        ctx.beginPath();
+        ctx.moveTo(p.x - perp.x * tickH, p.y - perp.y * tickH);
+        ctx.lineTo(p.x + perp.x * tickH, p.y + perp.y * tickH);
+        ctx.stroke();
+      }
+      break;
+    }
+
+    // ── TECPRO — blue block segments ──────────────────────────────
+    case 'tecpro': {
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
+      const segLen = Math.max(5, 12 * zoom);
+      const gap    = Math.max(1, 1.5 * zoom);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      let d = 0;
+      while (d < total) {
+        const end = Math.min(d + segLen - gap, total);
+        const steps = 4;
+        ctx.beginPath();
+        for (let s = 0; s <= steps; s++) {
+          const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
+          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+        }
+        ctx.lineWidth = w;
+        ctx.strokeStyle = 'rgba(35,75,175,0.92)';
+        ctx.stroke();
+        // Light face highlight
+        ctx.lineWidth = Math.max(1, w * 0.3);
+        ctx.strokeStyle = 'rgba(100,150,255,0.55)';
+        ctx.stroke();
+        d += segLen;
+      }
+      ctx.lineCap = 'butt';
+      break;
+    }
+
+    // ── TYRE WALL — black with white band ─────────────────────────
+    case 'tyrewall': {
+      // Black base
+      ctx.lineWidth = w;
+      ctx.strokeStyle = 'rgba(28,28,28,0.95)';
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      // White centre band (tyre sidewall markings)
+      ctx.lineWidth = Math.max(1, w * 0.25);
+      ctx.strokeStyle = 'rgba(220,220,220,0.65)';
+      _polyPath(ctx, poly); ctx.stroke();
+      // Tyre circle ticks
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
+      const tyreSpacing = Math.max(4, w * 1.2);
+      ctx.strokeStyle = 'rgba(50,50,50,0.70)';
+      ctx.lineWidth = Math.max(0.7, 0.7 * zoom);
+      ctx.lineCap = 'butt';
+      for (let d = tyreSpacing * 0.5; d < total; d += tyreSpacing) {
+        const p = _polyAtDist(poly, arcs, d);
+        const r = Math.max(1, w * 0.42);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      break;
+    }
+
+    // ── FALLBACK — plain colour strip ─────────────────────────────
+    default: {
+      const cfg = SURFACES[surface] || { color: 'rgba(180,180,180,0.8)' };
+      ctx.lineWidth = w;
+      ctx.strokeStyle = cfg.color;
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      break;
+    }
+  }
+}
+
+// ═══════════════════════════════════════════════════
 // BARRIER SEGMENTS
-// FIX v7.1: label collision detection — labels are
-// spaced out so they never stack on top of each other.
-// FIX v7.1: correct perpendicular normal at endpoints
-// so offset polylines don't produce spiky artifacts.
 // ═══════════════════════════════════════════════════
 function drawBarrierSegments() {
   const splinePts = buildSplinePoints(20);
@@ -355,12 +615,7 @@ function drawBarrierSegments() {
     const lane = getSurfaceLane(seg.surface, seg.lane || 0);
 
     const screenPoly = buildOffsetScreenPolyline(pts, seg.sideNum, lane.center);
-    ctx.beginPath();
-    screenPoly.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-    ctx.strokeStyle = cfg.color;
-    ctx.lineWidth   = Math.max(2, lane.width * cam.zoom);
-    ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
-    ctx.stroke();
+    drawSurfacePattern(ctx, seg.surface, screenPoly, lane, seg.sideNum, cam.zoom);
 
     const labelKey = `${seg.surface}:${seg.sideNum}:${seg.lane || 0}`;
     const shouldLabel = !seg.auto || (labelCount < 7 && !labelKeys.has(labelKey) && (seg.to - seg.from) >= Math.max(3, waypoints.length * 0.018));
@@ -480,25 +735,58 @@ function getSplineSegmentPoints(splinePts, from, to) {
   return pts;
 }
 
-// FIX v7.1: compute correct perpendicular at endpoints by using the
-// segment direction (not the degenerate self→self vector that produces nx=0,ny=0).
+// Stable offset polyline — normals use sign propagation so they never
+// flip at tight corners (the triangle/spike artefact from v7.1 is gone).
+//
+// Algorithm:
+//   1. Compute raw perpendicular at each point from centred-difference tangent.
+//   2. Seed point 0 using the shoelace winding of the full spline so the
+//      first normal already points the right way for sideNum=+1.
+//   3. Each subsequent normal dot-checks against its predecessor — if the
+//      dot product is negative the raw normal is flipped to match.  This
+//      ensures continuity around every bend without ever consulting a global
+//      winding flag again.
+//   4. Finally scale by sideNum (+1 right / -1 left) and offset.
 function buildOffsetScreenPolyline(pts, sideNum, offset) {
   const len = pts.length;
+  if (len < 2) return [];
+
+  // Step 1 — raw perpendiculars from centred-difference tangent
+  const raw = pts.map((p, i) => {
+    const prev = pts[Math.max(0, i - 1)];
+    const next = pts[Math.min(len - 1, i + 1)];
+    // Use forward difference at start, backward at end — avoids zero vector
+    const ax = i === 0   ? pts[1].pt.x - pts[0].pt.x
+             : i === len-1 ? pts[len-1].pt.x - pts[len-2].pt.x
+             : next.pt.x - prev.pt.x;
+    const ay = i === 0   ? pts[1].pt.y - pts[0].pt.y
+             : i === len-1 ? pts[len-1].pt.y - pts[len-2].pt.y
+             : next.pt.y - prev.pt.y;
+    const sl = Math.sqrt(ax*ax + ay*ay) || 1;
+    return { px: -ay / sl, py: ax / sl };  // left-hand perp
+  });
+
+  // Step 2 — shoelace winding of this segment's pts to seed sign
+  let area = 0;
+  for (let i = 0; i < len - 1; i++) {
+    area += pts[i].pt.x * pts[i+1].pt.y - pts[i+1].pt.x * pts[i].pt.y;
+  }
+  // CCW (area>0) → raw perp points left → sideNum=+1 means right → flip seed
+  const windSign = area >= 0 ? -1 : 1;
+
+  // Step 3 — propagate sign forward so no flip ever jumps across a bend
+  const normals = new Array(len);
+  normals[0] = { px: raw[0].px * windSign, py: raw[0].py * windSign };
+  for (let i = 1; i < len; i++) {
+    const dot = raw[i].px * normals[i-1].px + raw[i].py * normals[i-1].py;
+    const s   = dot >= 0 ? 1 : -1;
+    normals[i] = { px: raw[i].px * s, py: raw[i].py * s };
+  }
+
+  // Step 4 — apply sideNum and offset, convert to screen
   return pts.map((p, i) => {
-    // Use the tangent formed by the two neighbours (or clamp at ends).
-    // For the first point use pts[0]→pts[1]; for the last use pts[n-2]→pts[n-1].
-    // This avoids the zero-vector normal that created triangular spikes.
-    const prevPt = pts[Math.max(0, i - 1)];
-    const nextPt = pts[Math.min(len - 1, i + 1)];
-    // When i==0 or i==len-1 the two are the same — use adjacent instead.
-    const ax = i === 0        ? (pts[1] ? pts[1].pt.x - pts[0].pt.x : 0)
-                               : nextPt.pt.x - prevPt.pt.x;
-    const ay = i === 0        ? (pts[1] ? pts[1].pt.y - pts[0].pt.y : 0)
-                               : nextPt.pt.y - prevPt.pt.y;
-    const segLen = Math.sqrt(ax*ax + ay*ay) || 1;
-    // Perpendicular (rotated 90°): (-dy, dx) / len, scaled by sideNum
-    const nx = (-ay / segLen) * sideNum;
-    const ny = ( ax / segLen) * sideNum;
+    const nx = normals[i].px * sideNum;
+    const ny = normals[i].py * sideNum;
     return worldToScreen(p.pt.x + nx * offset, p.pt.y + ny * offset);
   });
 }
@@ -511,17 +799,13 @@ function drawBarrierHover(splinePts, N) {
   const pts  = splinePts.filter(p => p.seg>=from && p.seg<=to);
   if (pts.length < 2) return;
   const sides = barrierSide==='both' ? [-1,1] : [barrierSide==='left' ? -1 : 1];
-  const cfg = SURFACES[surface];
   const lane = getSurfaceLane(surface, 0);
+  ctx.save(); ctx.globalAlpha = 0.55;
   sides.forEach(s => {
     const screenPoly = buildOffsetScreenPolyline(pts, s, lane.center);
-    ctx.beginPath();
-    screenPoly.forEach((p,i) => i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
-    ctx.strokeStyle = (cfg?cfg.color:'rgba(200,200,200,0.5)').replace(/[\d.]+\)$/,'0.5)');
-    ctx.lineWidth = Math.max(2, lane.width*cam.zoom);
-    ctx.lineCap='round'; ctx.lineJoin='round';
-    ctx.stroke();
+    drawSurfacePattern(ctx, surface, screenPoly, lane, s, cam.zoom);
   });
+  ctx.restore();
 }
 
 // ═══════════════════════════════════════════════════
