@@ -364,22 +364,22 @@ _cw.addEventListener('drop',e=>{
 // DRIVABILITY ANALYSIS
 // Derived from physics.js constants:
 //   WHEELBASE = 3.8m,  maxSteer = 0.26 rad  (S.ss=5)
-//   min turning radius = WHEELBASE/tan(0.26) = 14.4m
-//   Track width TW = 60 units  ≈ 8m real  → scale 0.133 m/unit
-//   Min radius in units: 14.4/0.133 ≈ 107 units  (hard limit — car can't turn tighter)
-//   Tight radius: 25m / 0.133 ≈ 188 units  (needs hard braking, ~20–35 km/h)
-//   Comfortable racing radius: 40m / 0.133 ≈ 300 units  (can hold at ~73 km/h)
-//   Oval hairpin radius = HW=60 units → 8.0m → tight fast oval style
+//   min turning radius = WHEELBASE/tan(0.26) = 14.3m
+//   Track width TW = 14 units  ≈ 13m real  → scale 0.9286 m/unit
+//   Min radius in units: 14.3/0.9286 ≈ 16 units  (hard limit — car can't turn tighter)
+//   Tight radius: 127m / 0.9286 ≈ 137 units  (needs braking below 130 km/h)
+//   Comfortable racing radius: 191m / 0.9286 ≈ 206 units  (can hold 140+ km/h)
+//   Oval hairpin radius = HW=60 units → 55.7m → ~107 km/h cornering speed
 // ═══════════════════════════════════════════════════
 const _DRIVE = {
-  SCALE:       0.1333,  // units → metres
+  SCALE:       0.9286,  // units → metres  (TW=14 units ≈ 13m real)
   // Hard limit: car physically cannot make this turn at any speed
-  R_HARD:      107,     // units — below this = undriveable hairpin
-  // Tight: driveable but requires braking to ~20–35 km/h, very slow chicane feel
-  R_TIGHT:     188,     // units — below this = tight corner
-  // Comfortable: can carry reasonable speed (~73 km/h+)
-  R_COMFY:     300,     // units — above this = fine
-  TW:          60,      // track width in units (from oval HW)
+  R_HARD:      16,      // units — below this = undriveable (tighter than min steering radius)
+  // Tight: requires braking below 130 km/h
+  R_TIGHT:     137,     // units — below this = tight corner
+  // Comfortable: can carry 140+ km/h
+  R_COMFY:     206,     // units — above this = fine
+  TW:          14,      // track width in units (from tracks.js)
 };
 
 function _cornerRadius(prev, cur, next) {
@@ -460,10 +460,10 @@ function updateDrivabilityBadge() {
     if (a2.tight > 0)       msg += '^ ' + a2.tight + ' tight corner(s) — very slow chicane\n';
     if (a2.undriveable === 0 && a2.tight === 0) msg += 'All corners comfortable\n';
     msg += '\nThresholds (from your car physics):\n';
-    msg += '  Undriveable : R < 107u  (< 14m)\n';
-    msg += '  Tight       : R < 188u  (< 25m)\n';
-    msg += '  Comfortable : R >= 188u (>= 25m)\n\n';
-    msg += 'Ref: oval hairpin = R60u (8m)';
+    msg += '  Undriveable : R < 16u   (< 14m  — below min steering radius)\n';
+    msg += '  Tight       : R < 137u  (< 127m — needs braking below 130 km/h)\n';
+    msg += '  Comfortable : R >= 206u (>= 191m — can hold 140+ km/h)\n\n';
+    msg += 'Ref: oval hairpin = R60u (55.7m → ~107 km/h)';
     alert(msg);
   };
 }
