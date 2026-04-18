@@ -103,7 +103,7 @@ function renameStoredTrack(storageKey) {
 function uploadExistingTrack() {
   const input    = document.createElement('input');
   input.type     = 'file';
-  input.accept   = '.js';
+  input.accept   = '.js,text/javascript,application/javascript,text/plain';
   input.onchange = e => {
     const file = e.target.files[0];
     if (!file) return;
@@ -131,16 +131,12 @@ function uploadExistingTrack() {
         const sub      = subMatch  ? subMatch[1] : 'Imported track';
         const storageKey = STORAGE_PREFIX + name.toLowerCase().replace(/[^a-z0-9]/g,'_');
 
-        // wpArr is in exported/game-space (±250 range).
-        // Re-map to canvas space so the track shape is preserved
-        // (same logic runAIConvert uses: fit inside 82% of the canvas).
         let rawWPs = wpArr.map(p => Array.isArray(p) ? { x: p[0], y: p[1] } : { x: p.x||0, y: p.y||0 });
         if (rawWPs.length >= 2) {
           let mnX=Infinity,mxX=-Infinity,mnY=Infinity,mxY=-Infinity;
           rawWPs.forEach(w=>{mnX=Math.min(mnX,w.x);mxX=Math.max(mxX,w.x);mnY=Math.min(mnY,w.y);mxY=Math.max(mxY,w.y);});
           const spanX=mxX-mnX||1, spanY=mxY-mnY||1;
           const midX=(mnX+mxX)/2, midY=(mnY+mxY)/2;
-          // Fit into 82% of canvas (same as AI converter), account for current cam zoom
           const refW = (typeof mainCanvas!=='undefined' ? mainCanvas.width  : 800) * 0.82;
           const refH = (typeof mainCanvas!=='undefined' ? mainCanvas.height : 600) * 0.82;
           const zoomFactor = (typeof cam!=='undefined' ? cam.zoom : 1);
@@ -158,7 +154,7 @@ function uploadExistingTrack() {
         };
         localStorage.setItem(storageKey, JSON.stringify(data));
         renderHomeTrackList();
-        showToast(`Imported "${name}"`);
+        showToast(`Imported "${name}" — click Load to open it`);
       } catch(err) {
         showToast('Could not parse track file');
         console.error(err);
@@ -200,6 +196,48 @@ function renderHomeTrackList() {
 
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function newTrack() {
+  const modal = document.getElementById('new-track-modal');
+  const input = document.getElementById('new-track-name');
+  input.value = '';
+  document.getElementById('new-track-preview').textContent = 'track_???.js';
+  modal.style.display = 'flex';
+  setTimeout(() => input.focus(), 60);
+}
+
+function confirmNewTrack() {
+  const raw = document.getElementById('new-track-name').value.trim();
+  if (!raw) { document.getElementById('new-track-name').focus(); return; }
+  const name = raw.toUpperCase();
+  const key  = raw.toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_');
+
+  // Reset canvas state
+  waypoints = []; paintLayers = []; barrierSegments = [];
+  startingPointIdx = 0; selectedWP = -1;
+
+  // Pre-fill the track name fields used by export/save
+  const nameEl = document.getElementById('track-name');
+  const subEl  = document.getElementById('track-sub');
+  if (nameEl) nameEl.value = name;
+  if (subEl)  subEl.value  = 'Custom circuit';
+
+  // Pre-fill export filename
+  const fnEl = document.getElementById('export-filename');
+  if (fnEl) fnEl.value = key;
+
+  updateWPList();
+  if (typeof updateBarrierList === 'function') updateBarrierList();
+  render();
+
+  document.getElementById('new-track-modal').style.display = 'none';
+  closeHomeScreen();
+  showToast('New track: ' + name);
+}
+
+function cancelNewTrack() {
+  document.getElementById('new-track-modal').style.display = 'none';
 }
 
 function openHomeScreen() {

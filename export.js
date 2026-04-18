@@ -216,10 +216,7 @@ function buildExportCode() {
   const sub      = document.getElementById('track-sub').value.trim()  || 'Custom circuit';
   const barriers = document.getElementById('barriers-toggle').checked;
   const nPerSeg  = parseInt(document.getElementById('nperseg').value) || 12;
-  // Key comes from the filename input — this is what the file will be named
-  // and what the engine will register it under. Defaults to name-derived value.
-  const rawKey   = (document.getElementById('export-filename')?.value || '').toLowerCase().replace(/[^a-z0-9_]/g,'_').replace(/__+/g,'_').replace(/^_|_$/g,'');
-  const key      = rawKey || name.toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_');
+  const key      = name.toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_');
   const roadWidth = 28;
 
   if (waypoints.length < 3) return '';
@@ -371,27 +368,8 @@ function expMergeBarrierSegments(segments, wpCount) {
   return merged;
 }
 
-function updateExportPreview() {
-  const raw = (document.getElementById('export-filename').value || 'my_circuit').toLowerCase().replace(/[^a-z0-9_]/g,'_').replace(/__+/g,'_').replace(/^_|_$/g,'');
-  const key = raw || 'my_circuit';
-  document.getElementById('export-fname-preview').textContent = 'track_' + key + '.js';
-  document.getElementById('export-key-preview').textContent   = key;
-}
-
-function applyExportFilename() {
-  document.getElementById('export-code').value = buildExportCode();
-  showToast('Name applied');
-}
-
 function openExport() {
   if (waypoints.length < 3) { alert('Add at least 3 waypoints before exporting.'); return; }
-  // Pre-fill filename from track name field if available
-  const nameField = document.getElementById('track-name');
-  if (nameField && nameField.value.trim()) {
-    const suggested = nameField.value.trim().toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_').replace(/^_|_$/g,'');
-    document.getElementById('export-filename').value = suggested;
-  }
-  updateExportPreview();
   const code = buildExportCode();
   document.getElementById('export-code').value = code;
   document.getElementById('export-modal').classList.add('open');
@@ -409,9 +387,8 @@ function copyExport() {
 function downloadTrack() {
   if (waypoints.length < 3) { showToast('Need at least 3 waypoints'); return; }
   const code = buildExportCode();
-  const rawKey = (document.getElementById('export-filename')?.value || '').toLowerCase().replace(/[^a-z0-9_]/g,'_').replace(/__+/g,'_').replace(/^_|_$/g,'');
-  const key = rawKey || (document.getElementById('track-name').value.trim() || 'track').toLowerCase().replace(/[^a-z0-9]/g,'_');
-  const fname = 'track_' + key + '.js';
+  const name = (document.getElementById('track-name').value.trim() || 'track').toLowerCase().replace(/[^a-z0-9]/g,'_');
+  const fname = 'track_' + name + '.js';
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([code], { type: 'text/javascript' }));
   a.download = fname;

@@ -88,7 +88,7 @@ window.addEventListener('load', () => {
       <button class="home-close-btn" onclick="closeHomeScreen()">✕ Close</button>
     </div>
     <div class="home-actions-row">
-      <button class="home-action-btn primary" onclick="closeHomeScreen()">+ New Track</button>
+      <button class="home-action-btn primary" onclick="newTrack()">+ New Track</button>
       <button class="home-action-btn" onclick="uploadExistingTrack()">⬆ Import .js File</button>
       <button class="home-action-btn" onclick="saveCurrentTrack()">💾 Save Current Track</button>
     </div>
@@ -338,6 +338,34 @@ window.addEventListener('load', () => {
   <div class="ma-btn" onclick="mobileDeleteLast()" title="Delete last waypoint">🗑️</div>
 </div>
 
+<!-- NEW TRACK NAME MODAL -->
+<div id="new-track-modal" style="display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;">
+  <div class="modal-box" style="width:min(400px,calc(100vw - 28px));">
+    <div class="modal-header">
+      <div class="modal-title">New Track</div>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:12px;color:var(--text3);margin-bottom:14px;">
+        This will be used as the filename when you export — e.g. <code style="color:var(--accent2);">track_monaco.js</code>
+      </p>
+      <label style="font-size:11px;font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text3);display:block;margin-bottom:6px;">Track Name</label>
+      <input id="new-track-name"
+             class="track-name-input"
+             placeholder="e.g. Monaco"
+             style="width:100%;"
+             oninput="var k=this.value.trim().toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_');document.getElementById('new-track-preview').textContent=k?'track_'+k+'.js':'track_???.js'"
+             onkeydown="if(event.key==='Enter')confirmNewTrack()">
+      <div style="margin-top:8px;font-size:11px;color:var(--text3);">
+        Will export as <code id="new-track-preview" style="color:var(--accent2);">track_???.js</code>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn" onclick="cancelNewTrack()">Cancel</button>
+      <button class="modal-btn copy" onclick="confirmNewTrack()">Start Building</button>
+    </div>
+  </div>
+</div>
+
 <!-- EXPORT MODAL -->
 <div id="export-modal">
   <div class="modal-box">
@@ -346,26 +374,10 @@ window.addEventListener('load', () => {
       <button class="modal-close" onclick="closeExport()">✕</button>
     </div>
     <div class="modal-body">
-      <p style="font-size:12px;color:var(--text3);margin-bottom:12px;">
-        Download the <strong style="color:var(--text2);">.js file</strong> and upload it directly to your racing game GitHub repo.
-        The file is self-contained — it includes 3D geometry for all surfaces.
+      <p style="font-size:12px;color:var(--text3);margin-bottom:10px;">
+        Download the <strong style="color:var(--text2);">.js file</strong> and upload it to your racing game GitHub repo.
+        The file is self-contained — includes 3D geometry for all surfaces.
       </p>
-      <div style="margin-bottom:14px;">
-        <label style="font-size:11px;font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text3);display:block;margin-bottom:6px;">File Name</label>
-        <div style="display:flex;align-items:center;gap:0;">
-          <span style="padding:9px 10px;background:rgba(255,255,255,0.04);border:1px solid var(--border2);border-right:none;border-radius:7px 0 0 7px;font-family:'Barlow Condensed',sans-serif;font-size:13px;color:var(--accent);font-weight:700;white-space:nowrap;">track_</span>
-          <input id="export-filename"
-                 class="track-name-input"
-                 style="border-radius:0;font-size:14px;letter-spacing:0.5px;text-transform:lowercase;"
-                 placeholder="my_circuit"
-                 oninput="this.value=this.value.replace(/[^a-z0-9_]/g,'').toLowerCase();updateExportPreview()"
-                 value="my_circuit">
-          <button onclick="applyExportFilename()" style="padding:9px 14px;background:var(--accent2);color:#080808;border:1px solid var(--accent2);border-left:none;border-radius:0 7px 7px 0;font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:800;letter-spacing:0.8px;cursor:pointer;white-space:nowrap;">Apply</button>
-        </div>
-        <div style="margin-top:5px;font-size:11px;color:var(--text3);">
-          Will download as <code id="export-fname-preview" style="color:var(--accent2);">track_my_circuit.js</code> and register in-game as <code id="export-key-preview" style="color:var(--accent2);">my_circuit</code>
-        </div>
-      </div>
       <textarea id="export-code" readonly></textarea>
     </div>
     <div class="modal-footer">
