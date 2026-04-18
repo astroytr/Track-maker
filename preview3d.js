@@ -332,7 +332,7 @@ function build3DScene() {
   preview3dScene.fog = new THREE.Fog(0x87ceeb, 8000, 20000);
 
   // ── Camera ──
-  preview3dCamera = new THREE.PerspectiveCamera(60, ol.clientWidth/ol.clientHeight, 1, 40000);
+  preview3dCamera = new THREE.PerspectiveCamera(60, ol.clientWidth/ol.clientHeight, 0.5, 40000);
 
   // ── Lights ──
   preview3dScene.add(new THREE.AmbientLight(0xffffff, 0.65));
@@ -366,42 +366,65 @@ function build3DScene() {
   const TH = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 60;
   const dblSide = { side: THREE.DoubleSide };
 
-  // ── Asphalt ──
+  // ── Asphalt (y=2 keeps it clear of ground, eliminates Z-fight on zoom) ──
+  const ROAD_Y = 2.0;
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH, TH, 0.5),
+    p3dRibbon(spPts, -TH, TH, ROAD_Y),
     new THREE.MeshLambertMaterial({color:0x333338, ...dblSide})
   ));
 
   // ── Outer kerb edge band ──
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH, TH+2.5, 0.4),
+    p3dRibbon(spPts, TH, TH+2.5, ROAD_Y - 0.3),
     new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH-2.5, -TH, 0.4),
+    p3dRibbon(spPts, -TH-2.5, -TH, ROAD_Y - 0.3),
     new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
   ));
 
   // ── White edge line ──
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH-0.8, TH+0.8, 0.55),
+    p3dRibbon(spPts, TH-0.8, TH+0.8, ROAD_Y + 0.1),
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH-0.8, -TH+0.8, 0.55),
+    p3dRibbon(spPts, -TH-0.8, -TH+0.8, ROAD_Y + 0.1),
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
 
+  // ── Start / Finish line ──
+  // Build a short ribbon across the track at spPts[0] using just 2 adjacent points
+  const sfLineNorm = p3dComputeNormals(spPts);
+  const sfLinePts = [spPts[0]]; // single-point ribbon won't work; build a 3-pt segment
+  const sfSegLen = Math.min(6, Math.floor(spPts.length * 0.01)) || 3;
+  const sfSeg = spPts.slice(0, sfSegLen + 1);
+  // Checker pattern: alternate white/black strips across track
+  const chkW = TH / 4;
+  for (let c = 0; c < 4; c++) {
+    const inner = -TH + c * chkW * 2;
+    const outer = inner + chkW;
+    const color = c % 2 === 0 ? 0xffffff : 0x111111;
+    preview3dScene.add(new THREE.Mesh(
+      p3dRibbon(sfSeg, inner, outer, ROAD_Y + 0.15),
+      new THREE.MeshLambertMaterial({ color, ...dblSide })
+    ));
+    preview3dScene.add(new THREE.Mesh(
+      p3dRibbon(sfSeg, -(inner), -(outer), ROAD_Y + 0.15),
+      new THREE.MeshLambertMaterial({ color: c % 2 === 0 ? 0x111111 : 0xffffff, ...dblSide })
+    ));
+  }
+
   // ── Static car on starting line ──
-  // Scaled to match world units (physics car is ~1.8 wide in game units,
-  // track is TH*2 wide — scale car so it looks right relative to the track)
-  const carScale = TH / 14; // 14 = game half-width that car was designed for
+  // Car geometry is in ~car-sized units; scale it so body width ≈ 1/5 of track width
+  const carBodyWidth = 1.8;
+  const targetCarWidth = TH * 0.38; // car should be ~38% of track half-width
+  const carScale = targetCarWidth / carBodyWidth;
+
   const sfPt = spPts[0];
-  // Tangent at start: use points 0 and 1
-  const sfNext = spPts[1] || spPts[0];
+  const sfNext = spPts[Math.min(4, spPts.length - 1)];
   const sfDx = sfNext.x - sfPt.x, sfDz = sfNext.z - sfPt.z;
-  const sfLen = Math.sqrt(sfDx*sfDx + sfDz*sfDz) || 1;
-  const sfYaw = Math.atan2(sfDx, sfDz); // heading angle in XZ plane
+  const sfYaw = Math.atan2(sfDx, sfDz);
 
   const p3dCarGroup = new THREE.Group();
 
@@ -439,9 +462,10 @@ function build3DScene() {
     p3dCarGroup.add(whl);
   }
 
-  // Scale and place at start line
+  // Scale and place at start line — offset slightly to the right of centre
   p3dCarGroup.scale.setScalar(carScale);
-  p3dCarGroup.position.set(sfPt.x, 0, sfPt.z);
+  // Place car so wheels sit on road surface (ROAD_Y)
+  p3dCarGroup.position.set(sfPt.x, ROAD_Y + 0.36 * carScale, sfPt.z);
   p3dCarGroup.rotation.y = sfYaw;
   preview3dScene.add(p3dCarGroup);
 
@@ -497,6 +521,59 @@ function build3DScene() {
   hintEl.style.display = 'none';
   ol.appendChild(hintEl);
 
+  // ── Touch joystick for free-roam movement ──
+  const joystickEl = document.createElement('div');
+  joystickEl.id = 'p3d-joystick';
+  joystickEl.style.cssText = `
+    display:none;position:absolute;bottom:70px;left:24px;
+    width:100px;height:100px;border-radius:50%;
+    background:rgba(255,255,255,0.12);border:2px solid rgba(255,255,255,0.3);
+    touch-action:none;
+  `;
+  const joystickKnob = document.createElement('div');
+  joystickKnob.style.cssText = `
+    position:absolute;width:40px;height:40px;border-radius:50%;
+    background:rgba(255,255,255,0.5);top:50%;left:50%;
+    transform:translate(-50%,-50%);pointer-events:none;
+  `;
+  joystickEl.appendChild(joystickKnob);
+  ol.appendChild(joystickEl);
+
+  // Joystick touch state — drives p3dKeys-equivalent axes
+  let p3dJoyActive = false, p3dJoyId = -1;
+  let p3dJoyX = 0, p3dJoyZ = 0; // -1..1 each axis
+  joystickEl.addEventListener('touchstart', e => {
+    e.preventDefault();
+    const t = e.changedTouches[0];
+    p3dJoyActive = true; p3dJoyId = t.identifier;
+    p3dJoyX = 0; p3dJoyZ = 0;
+  }, { passive: false });
+  joystickEl.addEventListener('touchmove', e => {
+    e.preventDefault();
+    for (const t of e.changedTouches) {
+      if (t.identifier !== p3dJoyId) continue;
+      const r = joystickEl.getBoundingClientRect();
+      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      const dx = t.clientX - cx, dy = t.clientY - cy;
+      const maxR = r.width / 2 - 4;
+      const len = Math.sqrt(dx*dx + dy*dy);
+      const clamp = Math.min(len, maxR);
+      const nx = len > 0 ? dx / len : 0, ny = len > 0 ? dy / len : 0;
+      joystickKnob.style.transform = `translate(calc(-50% + ${nx*clamp}px), calc(-50% + ${ny*clamp}px))`;
+      p3dJoyX = clamp / maxR * nx;  // left/right → strafe
+      p3dJoyZ = clamp / maxR * ny;  // up/down → forward/back
+    }
+  }, { passive: false });
+  const joyEnd = e => {
+    for (const t of e.changedTouches) {
+      if (t.identifier !== p3dJoyId) continue;
+      p3dJoyActive = false; p3dJoyX = 0; p3dJoyZ = 0;
+      joystickKnob.style.transform = 'translate(-50%,-50%)';
+    }
+  };
+  joystickEl.addEventListener('touchend', joyEnd, { passive: true });
+  joystickEl.addEventListener('touchcancel', joyEnd, { passive: true });
+
   // Key tracking
   window.addEventListener('keydown', e=>{ if (preview3dActive) p3dKeys[e.code]=true; });
   window.addEventListener('keyup',   e=>{ p3dKeys[e.code]=false; });
@@ -508,10 +585,12 @@ function build3DScene() {
     const dt = Math.min((now - lastT) / 1000, 0.05);
     lastT = now;
     if (p3dFreeRoam) {
-      updateFreeRoamCamera(dt);
+      updateFreeRoamCamera(dt, p3dJoyX, p3dJoyZ);
       document.getElementById('p3d-freeroam-hint').style.display = 'block';
+      document.getElementById('p3d-joystick').style.display = 'block';
     } else {
       document.getElementById('p3d-freeroam-hint').style.display = 'none';
+      document.getElementById('p3d-joystick').style.display = 'none';
     }
     preview3dRenderer.render(preview3dScene, preview3dCamera);
   }
@@ -636,17 +715,24 @@ function setupP3DControls(cnv) {
 }
 
 // ── Free-roam camera update (called every frame when active) ──
-function updateFreeRoamCamera(dt) {
+function updateFreeRoamCamera(dt, joyX = 0, joyZ = 0) {
   if (!p3dFreeRoam || !preview3dCamera) return;
   const speed = (p3dKeys['ShiftLeft']||p3dKeys['ShiftRight']) ? 800 : 200;
   const s = speed * dt;
   const sy = Math.sin(p3dCamYaw), cy2 = Math.cos(p3dCamYaw);
+  // Keyboard
   if (p3dKeys['KeyW']||p3dKeys['ArrowUp'])    { p3dCamPos.x += sy*s; p3dCamPos.z += cy2*s; }
   if (p3dKeys['KeyS']||p3dKeys['ArrowDown'])  { p3dCamPos.x -= sy*s; p3dCamPos.z -= cy2*s; }
   if (p3dKeys['KeyA']||p3dKeys['ArrowLeft'])  { p3dCamPos.x -= cy2*s; p3dCamPos.z += sy*s; }
   if (p3dKeys['KeyD']||p3dKeys['ArrowRight']) { p3dCamPos.x += cy2*s; p3dCamPos.z -= sy*s; }
   if (p3dKeys['KeyE']) p3dCamPos.y += s;
   if (p3dKeys['KeyQ']) p3dCamPos.y = Math.max(5, p3dCamPos.y - s);
+  // Touch joystick (forward = -joyZ, strafe = joyX)
+  if (joyX !== 0 || joyZ !== 0) {
+    const js = s * 1.5; // joystick slightly faster since no shift key on touch
+    p3dCamPos.x += (sy * (-joyZ) + cy2 * joyX) * js;
+    p3dCamPos.z += (cy2 * (-joyZ) - sy * joyX) * js;
+  }
   preview3dCamera.position.set(p3dCamPos.x, p3dCamPos.y, p3dCamPos.z);
   preview3dCamera.rotation.order = 'YXZ';
   preview3dCamera.rotation.y = p3dCamYaw;
