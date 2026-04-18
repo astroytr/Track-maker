@@ -112,6 +112,18 @@ window.addEventListener('load', () => {
   <button class="preview3d-exit-btn" onclick="close3DPreview()">← Back to 2D</button>
 </div>
 
+<!-- TRACK NAME TOP BAR -->
+<div id="track-topbar">
+  <span id="track-topbar-label">CIRCUIT FORGE</span>
+  <div id="track-topbar-name-wrap">
+    <input id="track-topbar-name" type="text" value="MY CIRCUIT" maxlength="24" placeholder="TRACK NAME"
+      oninput="syncTrackName(this.value)"
+      onkeydown="if(event.key==='Enter')this.blur()">
+    <span id="track-topbar-key"></span>
+  </div>
+  <button id="track-topbar-details-btn" onclick="openDetailsPanel()">ⓘ Details</button>
+</div>
+
 <!-- MAIN APP -->
 <div id="app">
 
@@ -318,6 +330,7 @@ window.addEventListener('load', () => {
   <div class="mb-btn" onclick="openHomeScreen()"><span class="mb-icon">🏠</span>Tracks</div>
   <div class="mb-btn" onclick="openExport()"><span class="mb-icon">💾</span>Export</div>
   <div class="mb-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;flex-shrink:0;"><span class="mb-icon">✦</span>Convert</div>
+  <div class="mb-btn" onclick="openDetailsPanel()" style="border-color:#00ccff;color:#00ccff;flex-shrink:0;"><span class="mb-icon">ⓘ</span>Details</div>
 </div>
 
 <!-- MOBILE SURFACE OVERLAY -->
@@ -498,6 +511,171 @@ window.addEventListener('load', () => {
 </div>
 
 <div id="toast"></div>
+
+<!-- DETAILS MODAL -->
+<div id="details-modal" style="display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.78);align-items:center;justify-content:center;">
+  <div class="modal-box" style="width:min(420px,calc(100vw - 28px));">
+    <div class="modal-header">
+      <div class="modal-title">Track Details</div>
+      <button class="modal-close" onclick="closeDetailsPanel()">✕</button>
+    </div>
+    <div class="modal-body">
+      <label style="font-size:11px;font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:var(--text3);display:block;margin-bottom:6px;">Track Name</label>
+      <input id="details-name"
+             class="track-name-input"
+             placeholder="e.g. Monaco"
+             maxlength="24"
+             style="width:100%;margin-bottom:8px;"
+             oninput="syncTrackName(this.value)"
+             onkeydown="if(event.key==='Enter')this.blur()">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:16px;">
+        Exports as <code id="details-key-preview" style="color:var(--accent2);">track_my_circuit.js</code>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px;background:rgba(255,255,255,0.04);border-radius:8px;padding:12px 14px;">
+        <div style="display:flex;justify-content:space-between;font-size:13px;">
+          <span style="color:var(--text3);">Waypoints</span>
+          <span style="color:var(--accent);font-family:'Barlow Condensed',sans-serif;font-weight:800;" id="details-stat-wp">0</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;">
+          <span style="color:var(--text3);">Paint layers</span>
+          <span style="color:var(--accent);font-family:'Barlow Condensed',sans-serif;font-weight:800;" id="details-stat-paint">0</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:13px;">
+          <span style="color:var(--text3);">AI scale applied</span>
+          <span style="color:#00ccff;font-family:'Barlow Condensed',sans-serif;font-weight:800;" id="details-stat-scale">—</span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn" onclick="closeDetailsPanel()">Close</button>
+      <button class="modal-btn copy" onclick="closeDetailsPanel()">Save Name</button>
+    </div>
+  </div>
+</div>
+
+<style>
+/* ── Top bar ── */
+#track-topbar {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  height: 38px;
+  background: rgba(10,10,14,0.97);
+  border-bottom: 1px solid rgba(167,139,250,0.18);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  z-index: 400;
+  font-family: 'Barlow Condensed', sans-serif;
+}
+#track-topbar-label {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 2px;
+  color: #a78bfa;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+#track-topbar-name-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+#track-topbar-name {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(167,139,250,0.25);
+  border-radius: 4px;
+  color: #e8ff47;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  outline: none;
+  width: 160px;
+  min-width: 80px;
+}
+#track-topbar-name:focus {
+  border-color: #a78bfa;
+  background: rgba(167,139,250,0.08);
+}
+#track-topbar-key {
+  font-size: 10px;
+  color: var(--text3, #555);
+  font-family: monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+}
+#track-topbar-details-btn {
+  background: rgba(0,204,255,0.08);
+  border: 1px solid rgba(0,204,255,0.3);
+  border-radius: 4px;
+  color: #00ccff;
+  font-family: 'Barlow Condensed', sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  padding: 4px 10px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+#track-topbar-details-btn:active { opacity: 0.75; }
+/* Push app content down so topbar doesn't overlap */
+#app { padding-top: 38px; }
+#mobile-bar { bottom: 0; }
+</style>
+
+<script>
+// ── Track name sync across all inputs ──────────────────
+function syncTrackName(val) {
+  // Update all name inputs to stay in sync
+  ['track-name', 'track-topbar-name', 'details-name'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && el.value !== val) el.value = val;
+  });
+  // Update key previews
+  const key = val.trim().toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_') || 'my_circuit';
+  const keyStr = 'track_' + key + '.js';
+  const topbarKey = document.getElementById('track-topbar-key');
+  if (topbarKey) topbarKey.textContent = keyStr;
+  const detailsKey = document.getElementById('details-key-preview');
+  if (detailsKey) detailsKey.textContent = keyStr;
+}
+
+// Hook the existing right-panel track-name input to also call syncTrackName
+window.addEventListener('load', () => {
+  const rp = document.getElementById('track-name');
+  if (rp) rp.addEventListener('input', () => syncTrackName(rp.value));
+  syncTrackName(rp ? rp.value : 'MY CIRCUIT');
+});
+
+// ── Details panel ──────────────────────────────────────
+function openDetailsPanel() {
+  const modal = document.getElementById('details-modal');
+  if (!modal) return;
+  // Sync current name
+  const nameEl = document.getElementById('track-name');
+  const curName = nameEl ? nameEl.value : 'MY CIRCUIT';
+  syncTrackName(curName);
+  // Update stats
+  const wpCount = (typeof waypoints !== 'undefined') ? waypoints.length : 0;
+  const paintCount = (typeof paintLayers !== 'undefined') ? paintLayers.length : 0;
+  document.getElementById('details-stat-wp').textContent = wpCount;
+  document.getElementById('details-stat-paint').textContent = paintCount;
+  const scale = (typeof window._aiLastScale !== 'undefined') ? '×' + window._aiLastScale.toFixed(2) : '—';
+  document.getElementById('details-stat-scale').textContent = scale;
+  modal.style.display = 'flex';
+}
+function closeDetailsPanel() {
+  const modal = document.getElementById('details-modal');
+  if (modal) modal.style.display = 'none';
+}
+</script>
 
 <!-- Three.js (needed for 3D preview) -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"

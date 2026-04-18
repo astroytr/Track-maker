@@ -392,6 +392,8 @@ async function runAIConvert() {
     setAIProgress(100);
     waypoints = newWPs;
     startingPointIdx = 0;
+    // Store scale globally for the Details panel
+    window._aiLastScale = finalSc;
     updateWPList();
     autoPlaceTrackFeatures(newWPs);
     render();
