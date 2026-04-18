@@ -12,6 +12,12 @@ let preview3dCamera   = null;
 let preview3dAnimId   = null;
 let p3dOrbit          = { ax: 0, ay: 0.5, dist: 1200 }; // overwritten by build3DScene
 let p3dOrbitTarget    = { cx: 0, cz: 0 };
+// Free-roam camera state
+let p3dFreeRoam = false;
+let p3dCamPos   = { x: 0, y: 200, z: 0 };
+let p3dCamYaw   = 0;   // left/right
+let p3dCamPitch = -0.3; // up/down
+let p3dKeys     = {};
 
 const SURF_COLOR_3D = {
   flat_kerb: 0xe8392a,
@@ -25,17 +31,16 @@ const SURF_COLOR_3D = {
   tyrewall:  0x222222,
 };
 
-// Surface lane offsets in world units — match SURFACE_LANES in render.js exactly
 const P3D_SURFACE_LANES = {
-  flat_kerb: { inner: 14.2, outer: 18.2, y: 0.80 },
-  rumble:    { inner: 14.8, outer: 19.8, y: 0.90 },
-  sausage:   { inner: 18.8, outer: 22.2, y: 1.00 },
-  gravel:    { inner: 23.0, outer: 35.0, y: 0.50 },
-  sand:      { inner: 23.0, outer: 35.0, y: 0.50 },
-  grass:     { inner: 36.0, outer: 50.0, y: 0.30 },
-  armco:     { inner: 54.0, outer: 57.0, y: 2.00 },
-  tecpro:    { inner: 53.0, outer: 58.0, y: 0.50 },
-  tyrewall:  { inner: 52.0, outer: 58.0, y: 0.50 },
+  flat_kerb: { inner:  60.9, outer:  78.0, y: 0.80 },
+  rumble:    { inner:  63.4, outer:  84.9, y: 0.90 },
+  sausage:   { inner:  80.6, outer:  95.1, y: 1.00 },
+  gravel:    { inner:  98.6, outer: 150.0, y: 0.50 },
+  sand:      { inner:  98.6, outer: 150.0, y: 0.50 },
+  grass:     { inner: 154.3, outer: 214.3, y: 0.30 },
+  armco:     { inner: 231.4, outer: 244.3, y: 0.50 },
+  tecpro:    { inner: 227.1, outer: 248.6, y: 0.50 },
+  tyrewall:  { inner: 222.9, outer: 248.6, y: 0.50 },
 };
 
 function p3dLane(surface, lane = 0) {
@@ -64,13 +69,15 @@ function open3DPreview() {
   document.getElementById('preview3d-overlay').style.display = 'flex';
   document.getElementById('btn-3d-toggle').classList.add('active-3d');
   document.getElementById('btn-3d-toggle').textContent = '← 2D View';
-  document.getElementById('tool-hud').textContent = '3D Preview  ·  drag = orbit  ·  scroll = zoom  ·  Q = exit';
+  document.getElementById('tool-hud').textContent = '3D Preview  ·  drag = orbit  ·  scroll = zoom  ·  click 🎥 for free roam  ·  Q = exit';
   build3DScene();
 }
 
 function close3DPreview() {
   preview3dActive = false;
   if (preview3dAnimId) { cancelAnimationFrame(preview3dAnimId); preview3dAnimId = null; }
+  p3dFreeRoam = false; p3dKeys = {};
+  document.exitPointerLock && document.exitPointerLock();
   if (preview3dRenderer) { preview3dRenderer.dispose(); preview3dRenderer = null; }
   preview3dScene  = null;
   preview3dCamera = null;
@@ -88,8 +95,6 @@ function close3DPreview() {
 }
 
 // ─── Use world coordinates directly (same as 2D renderer) ──────────
-// No rescaling — waypoints are already in world units so TH, lane
-// offsets and surface widths all match the 2D view automatically.
 function p3dGetScaledData() {
   if (waypoints.length === 0) return { wps: [], cx: 0, cy: 0 };
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
@@ -98,7 +103,6 @@ function p3dGetScaledData() {
     minY=Math.min(minY,w.y); maxY=Math.max(maxY,w.y);
   });
   const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
-  // Map 2D (x,y) → 3D (x,z), centred at origin so camera targets (0,0)
   let wps = waypoints.map(w => ({ x: w.x - cx, z: w.y - cy }));
   if (startingPointIdx>0) wps=[...wps.slice(startingPointIdx),...wps.slice(0,startingPointIdx)];
   return { wps, cx, cy };
@@ -325,41 +329,40 @@ function build3DScene() {
   // ── Scene ──
   preview3dScene = new THREE.Scene();
   preview3dScene.background = new THREE.Color(0x87ceeb);
-  preview3dScene.fog = new THREE.Fog(0x87ceeb, 1500, 5000);
+  preview3dScene.fog = new THREE.Fog(0x87ceeb, 8000, 20000);
 
   // ── Camera ──
-  preview3dCamera = new THREE.PerspectiveCamera(55, ol.clientWidth/ol.clientHeight, 1, 20000);
+  preview3dCamera = new THREE.PerspectiveCamera(60, ol.clientWidth/ol.clientHeight, 1, 40000);
 
   // ── Lights ──
-  preview3dScene.add(new THREE.AmbientLight(0xffffff, 0.55));
-  const sun = new THREE.DirectionalLight(0xfffae0, 0.85);
+  preview3dScene.add(new THREE.AmbientLight(0xffffff, 0.65));
+  const sun = new THREE.DirectionalLight(0xfffae0, 0.90);
   sun.position.set(1000, 1500, 800); sun.castShadow=true;
   preview3dScene.add(sun);
 
   // ── Ground (y=0) ──
   const gnd = new THREE.Mesh(
-    new THREE.PlaneGeometry(30000,30000),
+    new THREE.PlaneGeometry(60000,60000),
     new THREE.MeshLambertMaterial({color:0x2d5a1b})
   );
   gnd.rotation.x=-Math.PI/2; gnd.receiveShadow=true;
   preview3dScene.add(gnd);
 
-  // ── World-space data (no rescaling) ──
+  // ── World-space data ──
   const { wps, cx, cy } = p3dGetScaledData();
   if (wps.length < 2) return;
   const n = wps.length;
-  const SPP = 14;   // spline points per waypoint segment
+  const SPP = 14;
   const spPts = p3dBuildSpline(wps, SPP);
 
-  // Track span for camera distance
+  // Track span for initial camera distance
   let minX=Infinity,maxX=-Infinity,minZ=Infinity,maxZ=-Infinity;
   wps.forEach(w=>{ minX=Math.min(minX,w.x);maxX=Math.max(maxX,w.x);minZ=Math.min(minZ,w.z);maxZ=Math.max(maxZ,w.z); });
   const trackSpan = Math.max(maxX-minX, maxZ-minZ);
   p3dOrbit.dist = trackSpan * 0.85;
-  // Camera targets origin (wps are already centred)
   p3dOrbitTarget = { cx: 0, cz: 0 };
 
-  // TH = track half-width in world units — same as TRACK_HALF_WIDTH in render.js
+  // TH = track half-width in world units
   const TH = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 60;
   const dblSide = { side: THREE.DoubleSide };
 
@@ -389,6 +392,59 @@ function build3DScene() {
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
 
+  // ── Static car on starting line ──
+  // Scaled to match world units (physics car is ~1.8 wide in game units,
+  // track is TH*2 wide — scale car so it looks right relative to the track)
+  const carScale = TH / 14; // 14 = game half-width that car was designed for
+  const sfPt = spPts[0];
+  // Tangent at start: use points 0 and 1
+  const sfNext = spPts[1] || spPts[0];
+  const sfDx = sfNext.x - sfPt.x, sfDz = sfNext.z - sfPt.z;
+  const sfLen = Math.sqrt(sfDx*sfDx + sfDz*sfDz) || 1;
+  const sfYaw = Math.atan2(sfDx, sfDz); // heading angle in XZ plane
+
+  const p3dCarGroup = new THREE.Group();
+
+  // Body
+  const p3dBody = new THREE.Mesh(
+    new THREE.BoxGeometry(1.8, 0.58, 3.8),
+    new THREE.MeshLambertMaterial({ color: 0xe63946 })
+  );
+  p3dBody.position.set(0, 0.52, 0);
+  p3dCarGroup.add(p3dBody);
+
+  // Cabin
+  const p3dCabin = new THREE.Mesh(
+    new THREE.BoxGeometry(1.38, 0.43, 1.75),
+    new THREE.MeshLambertMaterial({ color: 0xb02832 })
+  );
+  p3dCabin.position.set(0, 0.98, -0.18);
+  p3dCarGroup.add(p3dCabin);
+
+  // Windscreen
+  const p3dWs = new THREE.Mesh(
+    new THREE.BoxGeometry(1.28, 0.34, 0.05),
+    new THREE.MeshLambertMaterial({ color: 0x7ad8f0, transparent: true, opacity: 0.75 })
+  );
+  p3dWs.position.set(0, 0.96, 0.69);
+  p3dCarGroup.add(p3dWs);
+
+  // Wheels
+  const p3dWGeo = new THREE.CylinderGeometry(0.36, 0.36, 0.26, 14);
+  const p3dWMat = new THREE.MeshLambertMaterial({ color: 0x111111 });
+  for (const [wx, wz] of [[-1,-1.3],[1,-1.3],[-1,1.3],[1,1.3]]) {
+    const whl = new THREE.Mesh(p3dWGeo, p3dWMat);
+    whl.rotation.z = Math.PI / 2;
+    whl.position.set(wx, 0.36, wz);
+    p3dCarGroup.add(whl);
+  }
+
+  // Scale and place at start line
+  p3dCarGroup.scale.setScalar(carScale);
+  p3dCarGroup.position.set(sfPt.x, 0, sfPt.z);
+  p3dCarGroup.rotation.y = sfYaw;
+  preview3dScene.add(p3dCarGroup);
+
   // NOTE: paintLayers are 2D identification markers only — they are
   // intentionally NOT rendered in 3D. Surface elements come from
   // barrierSegments below, which are auto-placed by autoPlaceTrackFeatures().
@@ -406,8 +462,57 @@ function build3DScene() {
   updateP3DCamera();
   setupP3DControls(cnv);
 
+  // ── Camera mode toggle button ──
+  const camBtn = document.createElement('button');
+  camBtn.className = 'preview3d-exit-btn';
+  camBtn.style.cssText += ';right:auto;left:12px;background:rgba(0,0,0,0.55);font-size:11px;padding:6px 10px;';
+  camBtn.textContent = '🎥 Free Roam';
+  camBtn.onclick = () => {
+    p3dFreeRoam = !p3dFreeRoam;
+    if (p3dFreeRoam) {
+      // Seed free-roam position from current orbit camera
+      p3dCamPos.x = preview3dCamera.position.x;
+      p3dCamPos.y = preview3dCamera.position.y;
+      p3dCamPos.z = preview3dCamera.position.z;
+      p3dCamYaw   = p3dOrbit.ax;
+      p3dCamPitch = -p3dOrbit.ay + Math.PI/2;
+      camBtn.textContent = '🔭 Orbit';
+      camBtn.style.borderColor = '#a78bfa';
+      camBtn.style.color = '#a78bfa';
+    } else {
+      document.exitPointerLock && document.exitPointerLock();
+      camBtn.textContent = '🎥 Free Roam';
+      camBtn.style.borderColor = '';
+      camBtn.style.color = '';
+      updateP3DCamera();
+    }
+  };
+  ol.appendChild(camBtn);
+
+  // WASD hint
+  const hintEl = document.createElement('div');
+  hintEl.style.cssText = 'position:absolute;bottom:48px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.45);font-size:10px;font-family:"Barlow Condensed",sans-serif;letter-spacing:.08em;pointer-events:none;';
+  hintEl.textContent = 'FREE ROAM: WASD/arrows = move · Q/E = up/down · drag = look · Shift = fast';
+  hintEl.id = 'p3d-freeroam-hint';
+  hintEl.style.display = 'none';
+  ol.appendChild(hintEl);
+
+  // Key tracking
+  window.addEventListener('keydown', e=>{ if (preview3dActive) p3dKeys[e.code]=true; });
+  window.addEventListener('keyup',   e=>{ p3dKeys[e.code]=false; });
+
+  let lastT = performance.now();
   function loop() {
     preview3dAnimId = requestAnimationFrame(loop);
+    const now = performance.now();
+    const dt = Math.min((now - lastT) / 1000, 0.05);
+    lastT = now;
+    if (p3dFreeRoam) {
+      updateFreeRoamCamera(dt);
+      document.getElementById('p3d-freeroam-hint').style.display = 'block';
+    } else {
+      document.getElementById('p3d-freeroam-hint').style.display = 'none';
+    }
     preview3dRenderer.render(preview3dScene, preview3dCamera);
   }
   loop();
@@ -452,10 +557,20 @@ function updateP3DCamera() {
 }
 
 function setupP3DControls(cnv) {
+  // ── Orbit mode (default): drag to orbit, scroll/pinch to zoom ──
   let dragging=false, lx=0, ly=0;
-  cnv.addEventListener('mousedown', e=>{dragging=true; lx=e.clientX; ly=e.clientY;});
-  window.addEventListener('mouseup',  ()=>dragging=false);
+  cnv.addEventListener('mousedown', e=>{
+    if (p3dFreeRoam) { cnv.requestPointerLock(); return; }
+    dragging=true; lx=e.clientX; ly=e.clientY;
+  });
+  window.addEventListener('mouseup', ()=>dragging=false);
   cnv.addEventListener('mousemove', e=>{
+    if (p3dFreeRoam) {
+      p3dCamYaw   -= e.movementX * 0.003;
+      p3dCamPitch -= e.movementY * 0.003;
+      p3dCamPitch  = Math.max(-1.4, Math.min(1.4, p3dCamPitch));
+      return;
+    }
     if (!dragging) return;
     p3dOrbit.ax -= (e.clientX-lx)*0.004;
     p3dOrbit.ay += (e.clientY-ly)*0.004;
@@ -463,10 +578,12 @@ function setupP3DControls(cnv) {
     updateP3DCamera();
   });
   cnv.addEventListener('wheel', e=>{
+    if (p3dFreeRoam) return;
     p3dOrbit.dist = Math.max(100, Math.min(20000, p3dOrbit.dist + e.deltaY*2.0));
     updateP3DCamera();
   }, {passive:true});
 
+  // ── Touch: 1 finger = orbit/look, 2 fingers = zoom ──
   let ltx=0,lty=0, lastPinchDist=0;
   cnv.addEventListener('touchstart', e=>{
     if (e.touches.length===1){ltx=e.touches[0].clientX;lty=e.touches[0].clientY;}
@@ -479,18 +596,34 @@ function setupP3DControls(cnv) {
   cnv.addEventListener('touchmove', e=>{
     e.preventDefault();
     if (e.touches.length===1){
-      p3dOrbit.ax -= (e.touches[0].clientX-ltx)*0.004;
-      p3dOrbit.ay += (e.touches[0].clientY-lty)*0.004;
+      const tdx = e.touches[0].clientX-ltx;
+      const tdy = e.touches[0].clientY-lty;
+      if (p3dFreeRoam) {
+        p3dCamYaw   -= tdx * 0.004;
+        p3dCamPitch -= tdy * 0.004;
+        p3dCamPitch  = Math.max(-1.4, Math.min(1.4, p3dCamPitch));
+      } else {
+        p3dOrbit.ax -= tdx*0.004;
+        p3dOrbit.ay += tdy*0.004;
+        updateP3DCamera();
+      }
       ltx=e.touches[0].clientX; lty=e.touches[0].clientY;
     }
     if (e.touches.length===2){
       const dx=e.touches[0].clientX-e.touches[1].clientX;
       const dy=e.touches[0].clientY-e.touches[1].clientY;
       const dist=Math.sqrt(dx*dx+dy*dy);
-      p3dOrbit.dist=Math.max(100,Math.min(20000,p3dOrbit.dist*(lastPinchDist/dist)));
+      if (p3dFreeRoam) {
+        // pinch = move forward/back in free roam
+        const speed = (dist - lastPinchDist) * 2;
+        p3dCamPos.x += Math.sin(p3dCamYaw)*speed;
+        p3dCamPos.z += Math.cos(p3dCamYaw)*speed;
+      } else {
+        p3dOrbit.dist=Math.max(100,Math.min(20000,p3dOrbit.dist*(lastPinchDist/dist)));
+        updateP3DCamera();
+      }
       lastPinchDist=dist;
     }
-    updateP3DCamera();
   },{passive:false});
 
   window.addEventListener('resize', ()=>{
@@ -500,6 +633,24 @@ function setupP3DControls(cnv) {
     preview3dCamera.aspect = ol.clientWidth / ol.clientHeight;
     preview3dCamera.updateProjectionMatrix();
   });
+}
+
+// ── Free-roam camera update (called every frame when active) ──
+function updateFreeRoamCamera(dt) {
+  if (!p3dFreeRoam || !preview3dCamera) return;
+  const speed = (p3dKeys['ShiftLeft']||p3dKeys['ShiftRight']) ? 800 : 200;
+  const s = speed * dt;
+  const sy = Math.sin(p3dCamYaw), cy2 = Math.cos(p3dCamYaw);
+  if (p3dKeys['KeyW']||p3dKeys['ArrowUp'])    { p3dCamPos.x += sy*s; p3dCamPos.z += cy2*s; }
+  if (p3dKeys['KeyS']||p3dKeys['ArrowDown'])  { p3dCamPos.x -= sy*s; p3dCamPos.z -= cy2*s; }
+  if (p3dKeys['KeyA']||p3dKeys['ArrowLeft'])  { p3dCamPos.x -= cy2*s; p3dCamPos.z += sy*s; }
+  if (p3dKeys['KeyD']||p3dKeys['ArrowRight']) { p3dCamPos.x += cy2*s; p3dCamPos.z -= sy*s; }
+  if (p3dKeys['KeyE']) p3dCamPos.y += s;
+  if (p3dKeys['KeyQ']) p3dCamPos.y = Math.max(5, p3dCamPos.y - s);
+  preview3dCamera.position.set(p3dCamPos.x, p3dCamPos.y, p3dCamPos.z);
+  preview3dCamera.rotation.order = 'YXZ';
+  preview3dCamera.rotation.y = p3dCamYaw;
+  preview3dCamera.rotation.x = p3dCamPitch;
 }
 
 window.addEventListener('keydown', e=>{
