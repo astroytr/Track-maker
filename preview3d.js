@@ -522,100 +522,10 @@ function build3DScene() {
   // WASD hint
   const hintEl = document.createElement('div');
   hintEl.style.cssText = 'position:absolute;bottom:48px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.45);font-size:10px;font-family:"Barlow Condensed",sans-serif;letter-spacing:.08em;pointer-events:none;';
-  hintEl.textContent = 'FREE ROAM: WASD/arrows = move · Q/E = up/down · drag = look · Shift = fast';
+  hintEl.textContent = 'FREE ROAM: 1-finger = look · 2-finger drag = move · WASD = move · Shift = fast';
   hintEl.id = 'p3d-freeroam-hint';
   hintEl.style.display = 'none';
   ol.appendChild(hintEl);
-
-  // ── Touch joysticks for free-roam (left = move, right = look) ──
-  // Both joysticks sit ABOVE the canvas in z-index so touches reach them first.
-  // The canvas touch handler skips any touch that started on a joystick.
-  const JOY_CSS = `
-    display:none;position:absolute;bottom:80px;
-    width:110px;height:110px;border-radius:50%;
-    background:rgba(0,0,0,0.35);border:2px solid rgba(255,255,255,0.35);
-    touch-action:none;z-index:20;user-select:none;
-  `;
-  const KNOB_CSS = `
-    position:absolute;width:44px;height:44px;border-radius:50%;
-    top:50%;left:50%;transform:translate(-50%,-50%);
-    pointer-events:none;
-  `;
-
-  function makeJoystick(id, side, label, knobColor) {
-    const el = document.createElement('div');
-    el.id = id;
-    el.style.cssText = JOY_CSS + (side === 'left' ? 'left:20px;' : 'right:20px;');
-    const knob = document.createElement('div');
-    knob.style.cssText = KNOB_CSS + `background:${knobColor};`;
-    const lbl = document.createElement('div');
-    lbl.style.cssText = 'position:absolute;bottom:-22px;left:50%;transform:translateX(-50%);font-size:9px;font-family:"Barlow Condensed",sans-serif;letter-spacing:1px;color:rgba(255,255,255,0.5);white-space:nowrap;pointer-events:none;';
-    lbl.textContent = label;
-    el.appendChild(knob);
-    el.appendChild(lbl);
-    ol.appendChild(el);
-    return { el, knob };
-  }
-
-  const moveJoy = makeJoystick('p3d-joy-move', 'left',  'MOVE', 'rgba(167,139,250,0.7)');
-  const lookJoy = makeJoystick('p3d-joy-look', 'right', 'LOOK', 'rgba(255,200,80,0.7)');
-
-  // Shared joystick state
-  let p3dJoyX = 0, p3dJoyZ = 0;       // move axes
-  let p3dLookX = 0, p3dLookY = 0;     // look axes
-  const _joyIds = { move: -1, look: -1 };
-
-  function _joyUpdate(e, joyDef, axisObj, axisKeys) {
-    for (const t of e.changedTouches) {
-      if (t.identifier !== _joyIds[joyDef]) continue;
-      const r = joyDef === 'move' ? moveJoy.el.getBoundingClientRect() : lookJoy.el.getBoundingClientRect();
-      const cx = r.left + r.width / 2, cy = r.top + r.height / 2;
-      const dx = t.clientX - cx, dy = t.clientY - cy;
-      const maxR = r.width / 2 - 6;
-      const len = Math.sqrt(dx*dx + dy*dy) || 0.001;
-      const clamp = Math.min(len, maxR);
-      const nx = dx / len, ny = dy / len;
-      const knob = joyDef === 'move' ? moveJoy.knob : lookJoy.knob;
-      knob.style.transform = `translate(calc(-50% + ${nx*clamp}px), calc(-50% + ${ny*clamp}px))`;
-      axisObj[axisKeys[0]] = (clamp / maxR) * nx;
-      axisObj[axisKeys[1]] = (clamp / maxR) * ny;
-    }
-  }
-
-  function _bindJoystick(joyKey, joyRef, axisObj, axisKeys) {
-    joyRef.el.addEventListener('touchstart', e => {
-      e.preventDefault(); e.stopPropagation();
-      if (_joyIds[joyKey] === -1) {
-        _joyIds[joyKey] = e.changedTouches[0].identifier;
-        axisObj[axisKeys[0]] = 0; axisObj[axisKeys[1]] = 0;
-      }
-    }, { passive: false });
-    joyRef.el.addEventListener('touchmove', e => {
-      e.preventDefault(); e.stopPropagation();
-      _joyUpdate(e, joyKey, axisObj, axisKeys);
-    }, { passive: false });
-    const end = e => {
-      for (const t of e.changedTouches) {
-        if (t.identifier !== _joyIds[joyKey]) continue;
-        _joyIds[joyKey] = -1;
-        axisObj[axisKeys[0]] = 0; axisObj[axisKeys[1]] = 0;
-        joyRef.knob.style.transform = 'translate(-50%,-50%)';
-      }
-    };
-    joyRef.el.addEventListener('touchend',   end, { passive: true });
-    joyRef.el.addEventListener('touchcancel', end, { passive: true });
-  }
-
-  // move joystick → p3dJoyX / p3dJoyZ  (shared object trick)
-  const _moveAxes = { x: 0, z: 0 };
-  const _lookAxes = { x: 0, y: 0 };
-  _bindJoystick('move', moveJoy, _moveAxes, ['x', 'z']);
-  _bindJoystick('look', lookJoy, _lookAxes, ['x', 'y']);
-
-  // Expose axes so the loop can read them
-  // (use getters so p3dJoyX/Z always reflect current state)
-  Object.defineProperty(window, '_p3dMoveAxes', { get: () => _moveAxes, configurable: true });
-  Object.defineProperty(window, '_p3dLookAxes', { get: () => _lookAxes, configurable: true });
 
   // Key tracking
   window.addEventListener('keydown', e=>{ if (preview3dActive) p3dKeys[e.code]=true; });
@@ -627,16 +537,9 @@ function build3DScene() {
     const now = performance.now();
     const dt = Math.min((now - lastT) / 1000, 0.05);
     lastT = now;
-    const showJoys = p3dFreeRoam ? 'block' : 'none';
-    moveJoy.el.style.display = showJoys;
-    lookJoy.el.style.display = showJoys;
     document.getElementById('p3d-freeroam-hint').style.display = p3dFreeRoam ? 'block' : 'none';
     if (p3dFreeRoam) {
-      // Apply look joystick to yaw/pitch directly each frame
-      p3dCamYaw   -= _lookAxes.x * dt * 2.5;
-      p3dCamPitch -= _lookAxes.y * dt * 2.5;
-      p3dCamPitch  = Math.max(-1.4, Math.min(1.4, p3dCamPitch));
-      updateFreeRoamCamera(dt, _moveAxes.x, _moveAxes.z);
+      updateFreeRoamCamera(dt, 0, 0);
     }
     preview3dRenderer.render(preview3dScene, preview3dCamera);
   }
@@ -708,53 +611,80 @@ function setupP3DControls(cnv) {
     updateP3DCamera();
   }, {passive:true});
 
-  // ── Touch: 1 finger = orbit (non-free-roam only on canvas), 2 fingers = zoom ──
-  // In free-roam, look is handled by the right joystick; canvas single-finger
-  // is intentionally ignored so it doesn't fight the joystick.
-  let ltx=0,lty=0, lastPinchDist=0;
-  const _isJoyTouch = t => {
-    const el = document.elementFromPoint(t.clientX, t.clientY);
-    return el && (el.id === 'p3d-joy-move' || el.id === 'p3d-joy-look' ||
-                  el.closest('#p3d-joy-move') || el.closest('#p3d-joy-look'));
-  };
+  // ── Touch controls ──
+  // Orbit mode:   1-finger drag = orbit   |  2-finger pinch = zoom
+  // Free-roam:    1-finger drag = look    |  2-finger drag  = move (fwd/strafe)
+  let _t1x=0, _t1y=0;           // last pos of finger 1
+  let _t2x=0, _t2y=0;           // last pos of finger 2 (for 2-finger mid-point)
+  let _pinchDist=0;
+  let _twoActive=false;
+
   cnv.addEventListener('touchstart', e=>{
-    if (e.touches.length===1 && !_isJoyTouch(e.touches[0])){
-      ltx=e.touches[0].clientX; lty=e.touches[0].clientY;
+    e.preventDefault();
+    if (e.touches.length === 1) {
+      _t1x = e.touches[0].clientX;
+      _t1y = e.touches[0].clientY;
+      _twoActive = false;
     }
-    if (e.touches.length===2){
-      const dx=e.touches[0].clientX-e.touches[1].clientX;
-      const dy=e.touches[0].clientY-e.touches[1].clientY;
-      lastPinchDist=Math.sqrt(dx*dx+dy*dy);
+    if (e.touches.length === 2) {
+      _twoActive = true;
+      _t2x = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      _t2y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      const ddx = e.touches[0].clientX - e.touches[1].clientX;
+      const ddy = e.touches[0].clientY - e.touches[1].clientY;
+      _pinchDist = Math.sqrt(ddx*ddx + ddy*ddy);
     }
-  },{passive:true});
+  }, { passive: false });
+
   cnv.addEventListener('touchmove', e=>{
     e.preventDefault();
-    // Single-finger drag on canvas: orbit only in non-free-roam mode.
-    // In free-roam the right joystick handles look — canvas drag does nothing.
-    if (e.touches.length===1 && !p3dFreeRoam){
-      const tdx = e.touches[0].clientX-ltx;
-      const tdy = e.touches[0].clientY-lty;
-      p3dOrbit.ax -= tdx*0.004;
-      p3dOrbit.ay += tdy*0.004;
-      updateP3DCamera();
-      ltx=e.touches[0].clientX; lty=e.touches[0].clientY;
-    }
-    if (e.touches.length===2){
-      const dx=e.touches[0].clientX-e.touches[1].clientX;
-      const dy=e.touches[0].clientY-e.touches[1].clientY;
-      const dist=Math.sqrt(dx*dx+dy*dy);
+    if (e.touches.length === 1 && !_twoActive) {
+      const dx = e.touches[0].clientX - _t1x;
+      const dy = e.touches[0].clientY - _t1y;
+      _t1x = e.touches[0].clientX;
+      _t1y = e.touches[0].clientY;
       if (p3dFreeRoam) {
-        // pinch = move forward/back in free roam
-        const speed = (dist - lastPinchDist) * 2;
-        p3dCamPos.x += Math.sin(p3dCamYaw)*speed;
-        p3dCamPos.z += Math.cos(p3dCamYaw)*speed;
+        // 1-finger = look
+        p3dCamYaw   -= dx * 0.004;
+        p3dCamPitch -= dy * 0.004;
+        p3dCamPitch  = Math.max(-1.4, Math.min(1.4, p3dCamPitch));
       } else {
-        p3dOrbit.dist=Math.max(100,Math.min(20000,p3dOrbit.dist*(lastPinchDist/dist)));
+        // 1-finger = orbit
+        p3dOrbit.ax -= dx * 0.004;
+        p3dOrbit.ay += dy * 0.004;
         updateP3DCamera();
       }
-      lastPinchDist=dist;
     }
-  },{passive:false});
+
+    if (e.touches.length === 2) {
+      _twoActive = true;
+      const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      const ddx = e.touches[0].clientX - e.touches[1].clientX;
+      const ddy = e.touches[0].clientY - e.touches[1].clientY;
+      const dist = Math.sqrt(ddx*ddx + ddy*ddy);
+
+      if (p3dFreeRoam) {
+        // 2-finger drag mid-point = move forward/strafe
+        const panDx = mx - _t2x;
+        const panDy = my - _t2y;
+        const speed = 3.5;
+        const sy = Math.sin(p3dCamYaw), cy2 = Math.cos(p3dCamYaw);
+        p3dCamPos.x += (-panDy * sy + panDx * cy2) * speed;
+        p3dCamPos.z += (-panDy * cy2 - panDx * sy) * speed;
+      } else {
+        // 2-finger pinch = zoom
+        p3dOrbit.dist = Math.max(100, Math.min(20000, p3dOrbit.dist * (_pinchDist / dist)));
+        updateP3DCamera();
+      }
+
+      _t2x = mx; _t2y = my;
+      _pinchDist = dist;
+    }
+  }, { passive: false });
+
+    if (e.touches.length === 0) _twoActive = false;
+  }, { passive: true });
 
   window.addEventListener('resize', ()=>{
     const ol=document.getElementById('preview3d-overlay');
