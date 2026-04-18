@@ -10,7 +10,7 @@ let preview3dRenderer = null;
 let preview3dScene    = null;
 let preview3dCamera   = null;
 let preview3dAnimId   = null;
-let p3dOrbit          = { ax: 0, ay: 0.5, dist: 380 };
+let p3dOrbit          = { ax: 0, ay: 0.5, dist: 1200 }; // overwritten by build3DScene
 let p3dOrbitTarget    = { cx: 0, cz: 0 };
 
 const SURF_COLOR_3D = {
@@ -25,16 +25,17 @@ const SURF_COLOR_3D = {
   tyrewall:  0x222222,
 };
 
+// Surface lane offsets in world units — match SURFACE_LANES in render.js exactly
 const P3D_SURFACE_LANES = {
-  flat_kerb: { inner:  60.9, outer:  78.0, y: 0.80 },
-  rumble:    { inner:  63.4, outer:  84.9, y: 0.90 },
-  sausage:   { inner:  80.6, outer:  95.1, y: 1.00 },
-  gravel:    { inner:  98.6, outer: 150.0, y: 0.50 },
-  sand:      { inner:  98.6, outer: 150.0, y: 0.50 },
-  grass:     { inner: 154.3, outer: 214.3, y: 0.30 },
-  armco:     { inner: 231.4, outer: 244.3, y: 0.50 },
-  tecpro:    { inner: 227.1, outer: 248.6, y: 0.50 },
-  tyrewall:  { inner: 222.9, outer: 248.6, y: 0.50 },
+  flat_kerb: { inner: 14.2, outer: 18.2, y: 0.80 },
+  rumble:    { inner: 14.8, outer: 19.8, y: 0.90 },
+  sausage:   { inner: 18.8, outer: 22.2, y: 1.00 },
+  gravel:    { inner: 23.0, outer: 35.0, y: 0.50 },
+  sand:      { inner: 23.0, outer: 35.0, y: 0.50 },
+  grass:     { inner: 36.0, outer: 50.0, y: 0.30 },
+  armco:     { inner: 54.0, outer: 57.0, y: 2.00 },
+  tecpro:    { inner: 53.0, outer: 58.0, y: 0.50 },
+  tyrewall:  { inner: 52.0, outer: 58.0, y: 0.50 },
 };
 
 function p3dLane(surface, lane = 0) {
@@ -86,20 +87,21 @@ function close3DPreview() {
   if (hud) hud.textContent = hudMap[tool] || tool;
 }
 
-// ─── Scale helpers ──────────────────────────────────
+// ─── Use world coordinates directly (same as 2D renderer) ──────────
+// No rescaling — waypoints are already in world units so TH, lane
+// offsets and surface widths all match the 2D view automatically.
 function p3dGetScaledData() {
-  if (waypoints.length === 0) return { wps: [], factor: 1, cx: 0, cy: 0 };
+  if (waypoints.length === 0) return { wps: [], cx: 0, cy: 0 };
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
   waypoints.forEach(w => {
     minX=Math.min(minX,w.x); maxX=Math.max(maxX,w.x);
     minY=Math.min(minY,w.y); maxY=Math.max(maxY,w.y);
   });
   const cx=(minX+maxX)/2, cy=(minY+maxY)/2;
-  const span=Math.max(maxX-minX,maxY-minY);
-  const factor=span>0?500/span:1;
-  let wps=waypoints.map(w=>({x:(w.x-cx)*factor,z:(w.y-cy)*factor}));
+  // Map 2D (x,y) → 3D (x,z), centred at origin so camera targets (0,0)
+  let wps = waypoints.map(w => ({ x: w.x - cx, z: w.y - cy }));
   if (startingPointIdx>0) wps=[...wps.slice(startingPointIdx),...wps.slice(0,startingPointIdx)];
-  return { wps, factor, cx, cy };
+  return { wps, cx, cy };
 }
 
 // ─── Catmull-Rom spline ────────────────────────────
@@ -323,63 +325,67 @@ function build3DScene() {
   // ── Scene ──
   preview3dScene = new THREE.Scene();
   preview3dScene.background = new THREE.Color(0x87ceeb);
-  preview3dScene.fog = new THREE.Fog(0x87ceeb, 300, 900);
+  preview3dScene.fog = new THREE.Fog(0x87ceeb, 1500, 5000);
 
   // ── Camera ──
-  preview3dCamera = new THREE.PerspectiveCamera(55, ol.clientWidth/ol.clientHeight, 0.5, 2000);
+  preview3dCamera = new THREE.PerspectiveCamera(55, ol.clientWidth/ol.clientHeight, 1, 20000);
 
   // ── Lights ──
   preview3dScene.add(new THREE.AmbientLight(0xffffff, 0.55));
   const sun = new THREE.DirectionalLight(0xfffae0, 0.85);
-  sun.position.set(200, 300, 150); sun.castShadow=true;
+  sun.position.set(1000, 1500, 800); sun.castShadow=true;
   preview3dScene.add(sun);
 
   // ── Ground (y=0) ──
   const gnd = new THREE.Mesh(
-    new THREE.PlaneGeometry(3000,3000),
+    new THREE.PlaneGeometry(30000,30000),
     new THREE.MeshLambertMaterial({color:0x2d5a1b})
   );
   gnd.rotation.x=-Math.PI/2; gnd.receiveShadow=true;
   preview3dScene.add(gnd);
 
-  // ── Scaled data ──
-  const { wps, factor, cx, cy } = p3dGetScaledData();
+  // ── World-space data (no rescaling) ──
+  const { wps, cx, cy } = p3dGetScaledData();
   if (wps.length < 2) return;
   const n = wps.length;
   const SPP = 14;   // spline points per waypoint segment
   const spPts = p3dBuildSpline(wps, SPP);
 
-  // Centroid for camera target
-  const scx = wps.reduce((s,p)=>s+p.x,0)/n;
-  const scz = wps.reduce((s,p)=>s+p.z,0)/n;
-  p3dOrbitTarget = { cx: scx, cz: scz };
+  // Track span for camera distance
+  let minX=Infinity,maxX=-Infinity,minZ=Infinity,maxZ=-Infinity;
+  wps.forEach(w=>{ minX=Math.min(minX,w.x);maxX=Math.max(maxX,w.x);minZ=Math.min(minZ,w.z);maxZ=Math.max(maxZ,w.z); });
+  const trackSpan = Math.max(maxX-minX, maxZ-minZ);
+  p3dOrbit.dist = trackSpan * 0.85;
+  // Camera targets origin (wps are already centred)
+  p3dOrbitTarget = { cx: 0, cz: 0 };
 
-  const TH = 60;
+  // TH = track half-width in world units — same as TRACK_HALF_WIDTH in render.js
+  const TH = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 60;
   const dblSide = { side: THREE.DoubleSide };
 
-  // ── Asphalt (y=0.5) — DoubleSide so normals don't hide it ──
+  // ── Asphalt ──
   preview3dScene.add(new THREE.Mesh(
     p3dRibbon(spPts, -TH, TH, 0.5),
     new THREE.MeshLambertMaterial({color:0x333338, ...dblSide})
   ));
 
-  // ── Outer kerb edge band (y=0.4) ──
+  // ── Outer kerb edge band ──
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH, TH+10.7, 0.4),
+    p3dRibbon(spPts, TH, TH+2.5, 0.4),
     new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH-10.7, -TH, 0.4),
+    p3dRibbon(spPts, -TH-2.5, -TH, 0.4),
     new THREE.MeshLambertMaterial({color:0xff4444, ...dblSide})
   ));
 
   // ── White edge line ──
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH-3.4, TH+3.4, 0.55),
+    p3dRibbon(spPts, TH-0.8, TH+0.8, 0.55),
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH-3.4, -TH+3.4, 0.55),
+    p3dRibbon(spPts, -TH-0.8, -TH+0.8, 0.55),
     new THREE.MeshLambertMaterial({color:0xffffff, ...dblSide})
   ));
 
@@ -457,7 +463,7 @@ function setupP3DControls(cnv) {
     updateP3DCamera();
   });
   cnv.addEventListener('wheel', e=>{
-    p3dOrbit.dist = Math.max(40, Math.min(1200, p3dOrbit.dist + e.deltaY*0.5));
+    p3dOrbit.dist = Math.max(100, Math.min(20000, p3dOrbit.dist + e.deltaY*2.0));
     updateP3DCamera();
   }, {passive:true});
 
@@ -481,7 +487,7 @@ function setupP3DControls(cnv) {
       const dx=e.touches[0].clientX-e.touches[1].clientX;
       const dy=e.touches[0].clientY-e.touches[1].clientY;
       const dist=Math.sqrt(dx*dx+dy*dy);
-      p3dOrbit.dist=Math.max(40,Math.min(1200,p3dOrbit.dist*(lastPinchDist/dist)));
+      p3dOrbit.dist=Math.max(100,Math.min(20000,p3dOrbit.dist*(lastPinchDist/dist)));
       lastPinchDist=dist;
     }
     updateP3DCamera();
