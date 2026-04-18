@@ -7,17 +7,15 @@ let preview3dScene    = null;
 let preview3dCamera   = null;
 let preview3dAnimId   = null;
 
-// Single unified camera state — both modes read/write these
+// Single camera state — no orbit/freeroam modes, one camera always
 let p3dPos   = { x: 0, y: 200, z: 0 };  // world position
-let p3dYaw   = 0;                          // horizontal look angle
-let p3dPitch = -0.3;                       // vertical look angle
+let p3dYaw   = 0;                          // horizontal look (left/right)
+let p3dPitch = -0.4;                       // vertical look (up/down)
+let p3dKeys  = {};
 
-// Orbit parameters (converted → p3dPos/Yaw/Pitch every frame in orbit mode)
-let p3dOrbit       = { ax: 0, ay: 0.5, dist: 1200 };
-let p3dOrbitTarget = { cx: 0, cz: 0 };
-
-let p3dFreeRoam = false;
-let p3dKeys     = {};
+// Chase cam mode — snaps to behind the static start-line car
+let p3dChaseMode = false;
+let _p3dChasePos = null;   // {x,y,z,yaw} set by build3DScene from car heading
 
 const SURF_COLOR_3D = {
   flat_kerb: 0xe8392a,
@@ -69,15 +67,14 @@ function open3DPreview() {
   document.getElementById('preview3d-overlay').style.display = 'flex';
   document.getElementById('btn-3d-toggle').classList.add('active-3d');
   document.getElementById('btn-3d-toggle').textContent = '← 2D View';
-  document.getElementById('tool-hud').textContent = '3D Preview  ·  drag = orbit  ·  scroll = zoom  ·  click 🎥 for free roam  ·  Q = exit';
+  document.getElementById('tool-hud').textContent = '3D Preview  ·  1-finger = look  ·  2-finger = move fwd/back  ·  Q = exit';
   build3DScene();
 }
 
 function close3DPreview() {
   preview3dActive = false;
   if (preview3dAnimId) { cancelAnimationFrame(preview3dAnimId); preview3dAnimId = null; }
-  p3dFreeRoam = false; p3dKeys = {};
-  document.exitPointerLock && document.exitPointerLock();
+  p3dKeys = {};
   if (preview3dRenderer) { preview3dRenderer.dispose(); preview3dRenderer = null; }
   preview3dScene  = null;
   preview3dCamera = null;
@@ -322,7 +319,7 @@ function build3DScene() {
   const hud = document.createElement('div');
   hud.className = 'preview3d-hud';
   hud.style.top = '50px';
-  hud.innerHTML = '<span>Drag = orbit</span><span>Scroll = zoom</span><span>Q = exit</span>';
+  hud.innerHTML = '<span>1-finger = look</span><span>2-finger = fwd/back</span><span>WASD = move</span><span>Q = exit</span>';
   ol.appendChild(hud);
 
   const backBtn = document.createElement('button');
@@ -371,8 +368,6 @@ function build3DScene() {
   let minX=Infinity,maxX=-Infinity,minZ=Infinity,maxZ=-Infinity;
   wps.forEach(w=>{ minX=Math.min(minX,w.x);maxX=Math.max(maxX,w.x);minZ=Math.min(minZ,w.z);maxZ=Math.max(maxZ,w.z); });
   const trackSpan = Math.max(maxX-minX, maxZ-minZ);
-  p3dOrbit.dist = trackSpan * 0.85;
-  p3dOrbitTarget = { cx: 0, cz: 0 };
 
   // TW=14 in game, h=TW/2=7, car scale=1.0
   const TH_BASE = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 7;
@@ -489,43 +484,60 @@ function build3DScene() {
     p3dPlaceBarrier(preview3dScene, seg.surface, segPts, TH, seg.side, seg.lane || 0);
   });
 
-  // ── Camera + controls ──
-  updateP3DCamera();
+  // ── Compute chase cam position from start-line car (mirrors physics.js updateCamera chase) ──
+  // S.ch=5 (cam height), S.cd=9 (distance behind), FOV=60 — same as game
+  const CHASE_H = 5, CHASE_D = 9;
+  const csh = Math.cos(sfYaw), snh = Math.sin(sfYaw);
+  _p3dChasePos = {
+    x:   sfPt.x - snh * CHASE_D,
+    y:   ROAD_Y + CHASE_H,
+    z:   sfPt.z - csh * CHASE_D,
+    yaw: sfYaw,             // look toward car (heading direction)
+    tx:  sfPt.x,
+    ty:  ROAD_Y + 0.65,     // lookAt height matches physics.js
+    tz:  sfPt.z
+  };
+
+  // Initial camera: above track, angled down, facing the track
+  p3dChaseMode = false;
+  p3dPos.x = 0;
+  p3dPos.y = trackSpan * 0.6;
+  p3dPos.z = -trackSpan * 0.5;
+  p3dYaw   = 0;
+  p3dPitch = -0.5;
+  preview3dCamera.fov = 60;
+  preview3dCamera.updateProjectionMatrix();
+  _applyCamera();
   setupP3DControls(cnv);
 
-  // ── Camera mode toggle button ──
-  const camBtn = document.createElement('button');
-  camBtn.className = 'preview3d-exit-btn';
-  camBtn.style.cssText += ';right:auto;left:12px;top:50px;background:rgba(0,0,0,0.55);font-size:11px;padding:6px 10px;';
-  camBtn.textContent = '🎥 Free Roam';
-  camBtn.onclick = () => {
-    p3dFreeRoam = !p3dFreeRoam;
-    if (p3dFreeRoam) {
-      camBtn.textContent = '🔭 Orbit';
-      camBtn.style.borderColor = '#a78bfa';
-      camBtn.style.color = '#a78bfa';
-      // p3dPos/Yaw/Pitch already match camera — updateP3DCamera kept them in sync
+  // ── Chase cam toggle button ──
+  const chaseBtn = document.createElement('button');
+  chaseBtn.className = 'preview3d-exit-btn';
+  chaseBtn.style.cssText += ';right:auto;left:12px;top:50px;background:rgba(0,0,0,0.55);font-size:11px;padding:6px 10px;';
+  chaseBtn.textContent = '🎥 Chase Cam';
+  chaseBtn.onclick = () => {
+    p3dChaseMode = !p3dChaseMode;
+    if (p3dChaseMode) {
+      // Snap to chase position and set FOV to match game
+      const cp = _p3dChasePos;
+      p3dPos.x = cp.x; p3dPos.y = cp.y; p3dPos.z = cp.z;
+      // Compute yaw/pitch from chase position to car position (lookAt equivalent)
+      const dx = cp.tx - cp.x, dy = cp.ty - cp.y, dz = cp.tz - cp.z;
+      p3dYaw   = Math.atan2(dx, dz);
+      p3dPitch = Math.atan2(dy, Math.sqrt(dx*dx + dz*dz));
+      preview3dCamera.fov = 60;
+      preview3dCamera.updateProjectionMatrix();
+      _applyCamera();
+      chaseBtn.style.borderColor = '#a78bfa';
+      chaseBtn.style.color = '#a78bfa';
     } else {
-      // Sync orbit params back from current camera position so orbit resumes correctly
-      const dx = p3dPos.x - p3dOrbitTarget.cx;
-      const dz = p3dPos.z - p3dOrbitTarget.cz;
-      p3dOrbit.dist = Math.sqrt(dx*dx + p3dPos.y*p3dPos.y + dz*dz);
-      p3dOrbit.ax   = Math.atan2(dz, dx);
-      p3dOrbit.ay   = Math.acos(Math.max(0.08, Math.min(Math.PI/2 - 0.04, p3dPos.y / p3dOrbit.dist)));
-      camBtn.textContent = '🎥 Free Roam';
-      camBtn.style.borderColor = '';
-      camBtn.style.color = '';
+      preview3dCamera.fov = 60;
+      preview3dCamera.updateProjectionMatrix();
+      chaseBtn.style.borderColor = '';
+      chaseBtn.style.color = '';
     }
   };
-  ol.appendChild(camBtn);
-
-  // WASD hint
-  const hintEl = document.createElement('div');
-  hintEl.style.cssText = 'position:absolute;bottom:48px;left:50%;transform:translateX(-50%);color:rgba(255,255,255,0.45);font-size:10px;font-family:"Barlow Condensed",sans-serif;letter-spacing:.08em;pointer-events:none;';
-  hintEl.textContent = 'FREE ROAM: 1-finger = look · 2-finger drag = move · WASD = move · Shift = fast';
-  hintEl.id = 'p3d-freeroam-hint';
-  hintEl.style.display = 'none';
-  ol.appendChild(hintEl);
+  ol.appendChild(chaseBtn);
 
   // Key tracking
   window.addEventListener('keydown', e=>{ if (preview3dActive) p3dKeys[e.code]=true; });
@@ -537,10 +549,7 @@ function build3DScene() {
     const now = performance.now();
     const dt = Math.min((now - lastT) / 1000, 0.05);
     lastT = now;
-    document.getElementById('p3d-freeroam-hint').style.display = p3dFreeRoam ? 'block' : 'none';
-    if (p3dFreeRoam) {
-      updateFreeRoamCamera(dt);
-    }
+    updateFreeRoamCamera(dt);
     preview3dRenderer.render(preview3dScene, preview3dCamera);
   }
   loop();
@@ -570,21 +579,6 @@ function p3dMergeBarrierSegments(segments, wpCount) {
   return merged;
 }
 
-function updateP3DCamera() {
-  if (!preview3dCamera) return;
-  const { cx, cz } = p3dOrbitTarget;
-  const r   = p3dOrbit.dist;
-  const phi = Math.max(0.08, Math.min(Math.PI / 2 - 0.04, p3dOrbit.ay));
-  // Orbit position
-  p3dPos.x = cx + r * Math.sin(phi) * Math.cos(p3dOrbit.ax);
-  p3dPos.y = r  * Math.cos(phi);
-  p3dPos.z = cz + r * Math.sin(phi) * Math.sin(p3dOrbit.ax);
-  // Derive yaw/pitch so free-roam inherits correct look direction
-  p3dYaw   = p3dOrbit.ax + Math.PI;
-  p3dPitch = -(Math.PI / 2 - phi);  // phi=0 → pitch=-π/2 (down), phi=π/2 → pitch=0 (level)
-  _applyCamera();
-}
-
 function _applyCamera() {
   if (!preview3dCamera) return;
   preview3dCamera.position.set(p3dPos.x, p3dPos.y, p3dPos.z);
@@ -594,7 +588,7 @@ function _applyCamera() {
 }
 
 function setupP3DControls(cnv) {
-  // ── Mouse: drag = orbit/look, scroll = zoom (orbit) ──
+  // ── Mouse: drag = look (yaw/pitch), scroll = move forward/back ──
   let dragging = false, lx = 0, ly = 0;
   cnv.addEventListener('mousedown', e => { dragging = true; lx = e.clientX; ly = e.clientY; });
   window.addEventListener('mouseup', () => dragging = false);
@@ -602,25 +596,25 @@ function setupP3DControls(cnv) {
     if (!dragging) return;
     const dx = e.clientX - lx, dy = e.clientY - ly;
     lx = e.clientX; ly = e.clientY;
-    if (p3dFreeRoam) {
-      p3dYaw   -= dx * 0.004;
-      p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - dy * 0.004));
-      _applyCamera();
-    } else {
-      p3dOrbit.ax -= dx * 0.004;
-      p3dOrbit.ay  = Math.max(0.08, Math.min(Math.PI / 2 - 0.04, p3dOrbit.ay + dy * 0.004));
-      updateP3DCamera();
-    }
+    p3dYaw   -= dx * 0.004;
+    p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - dy * 0.004));
+    _applyCamera();
   });
   cnv.addEventListener('wheel', e => {
-    p3dOrbit.dist = Math.max(100, Math.min(20000, p3dOrbit.dist + e.deltaY * 2.0));
-    if (!p3dFreeRoam) updateP3DCamera();
-    // In free-roam: scroll zooms orbit.dist so returning to orbit snaps correctly
+    // Scroll = move forward/back along look direction
+    const spd = 8;
+    const sy = Math.sin(p3dYaw), cy2 = Math.cos(p3dYaw);
+    const fwd = e.deltaY < 0 ? 1 : -1;
+    p3dPos.x += sy * spd * fwd * Math.abs(e.deltaY) * 0.05;
+    p3dPos.z += cy2 * spd * fwd * Math.abs(e.deltaY) * 0.05;
+    _applyCamera();
   }, { passive: true });
 
-  // ── Touch: 1-finger = orbit/look, 2-finger drag = move (free-roam) / pinch-zoom (orbit) ──
+  // ── Touch controls ──
+  // 1 finger slide left/right/up/down → look left/right/up/down  (yaw + pitch)
+  // 2 fingers slide up/down           → move forward / backward   (along look dir)
   let _t1x = 0, _t1y = 0;
-  let _t2mx = 0, _t2my = 0, _pinchDist = 0;
+  let _t2my = 0;
   let _twoActive = false;
 
   cnv.addEventListener('touchstart', e => {
@@ -633,11 +627,7 @@ function setupP3DControls(cnv) {
     }
     if (n >= 2) {
       _twoActive = true;
-      _t2mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
       _t2my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      const ddx = e.touches[0].clientX - e.touches[1].clientX;
-      const ddy = e.touches[0].clientY - e.touches[1].clientY;
-      _pinchDist = Math.sqrt(ddx * ddx + ddy * ddy);
     }
   }, { passive: false });
 
@@ -646,47 +636,28 @@ function setupP3DControls(cnv) {
     const n = e.touches.length;
 
     if (n === 1 && !_twoActive) {
+      // 1-finger: look left/right and up/down
       const dx = e.touches[0].clientX - _t1x;
       const dy = e.touches[0].clientY - _t1y;
       _t1x = e.touches[0].clientX;
       _t1y = e.touches[0].clientY;
-      if (p3dFreeRoam) {
-        p3dYaw   -= dx * 0.004;
-        p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - dy * 0.004));
-        _applyCamera();
-      } else {
-        p3dOrbit.ax -= dx * 0.004;
-        p3dOrbit.ay  = Math.max(0.08, Math.min(Math.PI / 2 - 0.04, p3dOrbit.ay + dy * 0.004));
-        updateP3DCamera();
-      }
+      p3dYaw   -= dx * 0.006;
+      p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - dy * 0.006));
+      _applyCamera();
     }
 
     if (n >= 2) {
       _twoActive = true;
-      const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
       const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      const ddx = e.touches[0].clientX - e.touches[1].clientX;
-      const ddy = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.sqrt(ddx * ddx + ddy * ddy);
+      const dy = my - _t2my;   // positive = fingers moved down = move backward
+      _t2my = my;
 
-      if (p3dFreeRoam) {
-        // 2-finger drag mid-point = move in camera-facing direction
-        const panDx = mx - _t2mx;
-        const panDy = my - _t2my;
-        const spd = 3.5;
-        const sy = Math.sin(p3dYaw), cy2 = Math.cos(p3dYaw);
-        p3dPos.x += (-panDy * sy + panDx * cy2) * spd;
-        p3dPos.z += (-panDy * cy2 - panDx * sy) * spd;
-        _applyCamera();
-      } else {
-        // pinch = zoom
-        if (_pinchDist > 0)
-          p3dOrbit.dist = Math.max(100, Math.min(20000, p3dOrbit.dist * (_pinchDist / dist)));
-        updateP3DCamera();
-      }
-
-      _t2mx = mx; _t2my = my;
-      _pinchDist = dist;
+      // Move forward/back along the horizontal look direction (ignore pitch for movement)
+      const spd = 6;
+      const sy  = Math.sin(p3dYaw), cy2 = Math.cos(p3dYaw);
+      p3dPos.x -= sy  * dy * spd;
+      p3dPos.z -= cy2 * dy * spd;
+      _applyCamera();
     }
   }, { passive: false });
 
@@ -707,9 +678,9 @@ function setupP3DControls(cnv) {
   });
 }
 
-// ── Free-roam keyboard movement (called every frame when active) ──
+// ── Keyboard movement (called every frame) ──
 function updateFreeRoamCamera(dt) {
-  if (!p3dFreeRoam || !preview3dCamera) return;
+  if (!preview3dCamera) return;
   const speed = (p3dKeys['ShiftLeft'] || p3dKeys['ShiftRight']) ? 800 : 200;
   const s = speed * dt;
   const sy = Math.sin(p3dYaw), cy2 = Math.cos(p3dYaw);
