@@ -40,9 +40,9 @@ const P3D_SURFACE_LANES = {
   grass:     { inner:  9.2, outer: 25.5, y: 0.005 },
   gravel:    { inner: 11.2, outer: 20.5, y: 0.01  },
   sand:      { inner: 11.2, outer: 20.5, y: 0.01  },
-  tecpro:    { inner: 20.5, outer: 22.8, y: 0.02  },
-  armco:     { inner: 22.5, outer: 23.5, y: 0.02  },
-  tyrewall:  { inner: 21.5, outer: 23.8, y: 0.02  },
+  tecpro:    { inner: 20.5, outer: 22.8, y: 0.50  },
+  armco:     { inner: 22.5, outer: 23.5, y: 0.45  },
+  tyrewall:  { inner: 21.5, outer: 23.8, y: 0.24  },
 };
 
 function p3dLane(surface, lane = 0) {
