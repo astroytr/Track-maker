@@ -356,119 +356,38 @@ async function runAIConvert() {
     // ─────────────────────────────────────────────────────────────────────
 
     const mx=(minX+maxX)/2, my=(minY+maxY)/2;
-    let newWPs = pts.map(p => ({ x:(p.x-mx)*sc, y:(p.y-my)*sc }));
+
+    // ── Scale-up to clear hard corners ───────────────────────────────────
+    //
+    // Instead of reshaping the track geometry, we simply scale the whole
+    // track up uniformly until every corner's turning radius is large
+    // enough that analyseTrack() reports no "hard" (red-dot) issues.
+    //
+    // Why this works: red dots appear when the turning radius is too tight
+    // in world units. Scaling the whole track up increases every radius
+    // proportionally without changing the shape — so tight corners become
+    // drivable while the track outline stays identical.
+    //
+    // We start from `sc` (physical scale) and boost by 5% per step,
+    // stopping as soon as all hard issues are gone or after 30 attempts
+    // (a ~4× max scale-up — enough for any realistic track image).
+    //
+    let finalSc = sc;
+    if (typeof analyseTrack === 'function') {
+      const SCALE_STEP = 1.05; // 5% per step
+      const MAX_STEPS  = 30;
+      for (let step = 0; step < MAX_STEPS; step++) {
+        waypoints = pts.map(p => ({ x:(p.x-mx)*finalSc, y:(p.y-my)*finalSc }));
+        const da = analyseTrack();
+        if (!da || !da.issues.some(i => i.level === 'hard')) break;
+        finalSc *= SCALE_STEP;
+      }
+    }
+
+    let newWPs = pts.map(p => ({ x:(p.x-mx)*finalSc, y:(p.y-my)*finalSc }));
+    // ─────────────────────────────────────────────────────────────────────
 
     setAIProgress(90); await tick();
-
-    // Assign to global so analyseTrack() can read it during the fix pass
-    waypoints = newWPs;
-
-    // ── Auto-fix hard corners — structure-preserving bulge ───────────────
-    //
-    // PROBLEM with plain apex nudging: pushing the apex outward closes the
-    // gap between it and the parallel straight on the other side, which
-    // causes overlap and makes barrier placement impossible.
-    //
-    // SOLUTION — treat each fix as a "bulge":
-    //   1. Compute the total displacement needed at the apex (outward bisector).
-    //   2. Apply that displacement not just to the apex but to a window of
-    //      neighbours on both sides, tapering with a cosine falloff.
-    //      This stretches the adjacent straights outward proportionally,
-    //      preserving the gap between sections just like pulling on a rubber
-    //      track — the whole local region expands together.
-    //   3. Per-waypoint outward normal (lateral perpendicular) is used for
-    //      neighbours instead of the apex bisector, so each point moves in
-    //      the direction that actually widens its own section.
-    //
-    // BULGE_RADIUS controls how many waypoints either side of the apex share
-    // the displacement. A value of ~8% of total waypoints ensures the
-    // deformation spreads far enough to keep straights parallel.
-    //
-    if (typeof analyseTrack === 'function') {
-      const MAX_ITER   = 4;
-      const MAX_NUDGES = 20;
-      const NUDGE_STEP = 2.0;   // world units per nudge at apex
-
-      // Helper: outward lateral normal at waypoint idx (perpendicular to
-      // the chord prev→next, pointing away from the inside of any corner).
-      function lateralNormal(wps, idx) {
-        const n = wps.length;
-        const prev = wps[(idx - 1 + n) % n];
-        const next = wps[(idx + 1) % n];
-        const dx = next.x - prev.x, dy = next.y - prev.y;
-        const len = Math.sqrt(dx*dx + dy*dy) || 1;
-        // Perpendicular: rotate 90° — which side is "out" depends on corner
-        // direction, but for the apex we use the bisector (computed below).
-        // For neighbours we just want a consistent lateral direction so we
-        // return both options and let the caller pick by dot-product sign.
-        return { nx: -dy/len, ny: dx/len };
-      }
-
-      // Apply a cosine-tapered bulge centred on `apexIdx` with total apex
-      // displacement `(totalDist * apexNormalX/Y)`. Neighbours move along
-      // their own lateral normal, scaled by the taper weight, so the
-      // straights stretch rather than kink.
-      function applyBulge(wps, apexIdx, apexDX, apexDY, totalDist) {
-        const n = wps.length;
-        const BULGE_RADIUS = Math.max(6, Math.round(n * 0.08));
-
-        for (let offset = -BULGE_RADIUS; offset <= BULGE_RADIUS; offset++) {
-          const i = ((apexIdx + offset) % n + n) % n;
-          // Cosine taper: 1.0 at apex, 0.0 at radius edge
-          const weight = Math.cos((offset / BULGE_RADIUS) * (Math.PI / 2));
-          if (weight <= 0) continue;
-
-          if (offset === 0) {
-            // Apex: move in the pre-computed bisector direction
-            wps[i].x += apexDX * totalDist;
-            wps[i].y += apexDY * totalDist;
-          } else {
-            // Neighbour: move along its own lateral normal, same side as apex
-            const { nx, ny } = lateralNormal(wps, i);
-            // Choose sign so neighbour moves same side as apex
-            const dot = nx * apexDX + ny * apexDY;
-            const sign = dot >= 0 ? 1 : -1;
-            wps[i].x += sign * nx * totalDist * weight;
-            wps[i].y += sign * ny * totalDist * weight;
-          }
-        }
-      }
-
-      for (let iter = 0; iter < MAX_ITER; iter++) {
-        const da = analyseTrack();
-        if (!da || !da.issues.length) break;
-        const hardIndices = da.issues.filter(i => i.level === 'hard').map(i => i.idx);
-        if (!hardIndices.length) break;
-
-        for (const idx of hardIndices) {
-          const n    = waypoints.length;
-          const prev = waypoints[(idx - 1 + n) % n];
-          const next = waypoints[(idx + 1) % n];
-          const cur  = waypoints[idx];
-
-          // Outward bisector at apex
-          const ax = cur.x - prev.x, ay = cur.y - prev.y;
-          const bx = next.x - cur.x, by = next.y - cur.y;
-          const la = Math.sqrt(ax*ax + ay*ay) || 1;
-          const lb = Math.sqrt(bx*bx + by*by) || 1;
-          const ix = ax/la + bx/lb, iy = ay/la + by/lb;
-          const il = Math.sqrt(ix*ix + iy*iy) || 1;
-          const outX = -(ix / il), outY = -(iy / il);
-
-          // Nudge one step at a time, spreading each step as a bulge,
-          // so after every NUDGE_STEP the whole local region has moved
-          // and we re-check the radius with the new shape.
-          for (let nudge = 0; nudge < MAX_NUDGES; nudge++) {
-            applyBulge(waypoints, idx, outX, outY, NUDGE_STEP);
-            const check = analyseTrack();
-            const stillHard = check && check.issues.some(i => i.idx === idx && i.level === 'hard');
-            if (!stillHard) break;
-          }
-        }
-      }
-      newWPs = waypoints;
-    }
-    // ─────────────────────────────────────────────────────────────────────
 
     setAIProgress(100);
     waypoints = newWPs;
@@ -476,7 +395,7 @@ async function runAIConvert() {
     updateWPList();
     autoPlaceTrackFeatures(newWPs);
     render();
-    setAIStatus(`✓ ${newWPs.length} waypoints · ${Math.round(trackWidthPx)}px → ${(WORLD_HALF_WIDTH*2).toFixed(0)}wu track width · scale ×${scPhysical.toFixed(2)} · barriers auto-placed`, 'ok');
+    setAIStatus(`✓ ${newWPs.length} waypoints · ${Math.round(trackWidthPx)}px → ${(WORLD_HALF_WIDTH*2).toFixed(0)}wu track width · scale ×${finalSc.toFixed(2)} · barriers auto-placed`, 'ok');
     showToast(`${newWPs.length} waypoints placed!`);
 
   } finally {
