@@ -365,20 +365,21 @@ _cw.addEventListener('drop',e=>{
 // Derived from physics.js constants:
 //   WHEELBASE = 3.8m,  maxSteer = 0.26 rad  (S.ss=5)
 //   min turning radius = WHEELBASE/tan(0.26) = 14.4m
-//   Track width TW = 28 units  ≈ 8m real  → scale 0.286 m/unit
-//   Min radius in units: 14.4/0.286 ≈ 50 units  (hard limit — car can't turn tighter)
-//   Comfortable racing radius: 25m / 0.286 ≈ 87 units  (can hold at ~54 km/h)
-//   Oval hairpin radius = HW=60 units → 17.1m → just above the hard limit, fast oval style
+//   Track width TW = 60 units  ≈ 8m real  → scale 0.133 m/unit
+//   Min radius in units: 14.4/0.133 ≈ 107 units  (hard limit — car can't turn tighter)
+//   Tight radius: 25m / 0.133 ≈ 188 units  (needs hard braking, ~20–35 km/h)
+//   Comfortable racing radius: 40m / 0.133 ≈ 300 units  (can hold at ~73 km/h)
+//   Oval hairpin radius = HW=60 units → 8.0m → tight fast oval style
 // ═══════════════════════════════════════════════════
 const _DRIVE = {
-  SCALE:       0.286,   // units → metres
+  SCALE:       0.1333,  // units → metres
   // Hard limit: car physically cannot make this turn at any speed
-  R_HARD:      50,      // units — below this = undriveable hairpin
-  // Tight: driveable but requires braking to ~20 km/h, very slow chicane feel
-  R_TIGHT:     87,      // units — below this = tight corner
-  // Comfortable: can carry reasonable speed (~54 km/h+)
-  R_COMFY:     140,     // units — above this = fine
-  TW:          28,      // track width in units (from export.js)
+  R_HARD:      107,     // units — below this = undriveable hairpin
+  // Tight: driveable but requires braking to ~20–35 km/h, very slow chicane feel
+  R_TIGHT:     188,     // units — below this = tight corner
+  // Comfortable: can carry reasonable speed (~73 km/h+)
+  R_COMFY:     300,     // units — above this = fine
+  TW:          60,      // track width in units (from oval HW)
 };
 
 function _cornerRadius(prev, cur, next) {
@@ -459,10 +460,10 @@ function updateDrivabilityBadge() {
     if (a2.tight > 0)       msg += '^ ' + a2.tight + ' tight corner(s) — very slow chicane\n';
     if (a2.undriveable === 0 && a2.tight === 0) msg += 'All corners comfortable\n';
     msg += '\nThresholds (from your car physics):\n';
-    msg += '  Undriveable : R < 50u  (< 14m)\n';
-    msg += '  Tight       : R < 87u  (< 25m)\n';
-    msg += '  Comfortable : R >= 87u (>= 25m)\n\n';
-    msg += 'Ref: oval hairpin = R60u (17m)';
+    msg += '  Undriveable : R < 107u  (< 14m)\n';
+    msg += '  Tight       : R < 188u  (< 25m)\n';
+    msg += '  Comfortable : R >= 188u (>= 25m)\n\n';
+    msg += 'Ref: oval hairpin = R60u (8m)';
     alert(msg);
   };
 }
