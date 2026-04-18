@@ -33,15 +33,16 @@ const SURF_COLOR_3D = {
 };
 
 const P3D_SURFACE_LANES = {
-  flat_kerb: { inner: 14.2, outer: 18.2, y: 0.05  },
-  rumble:    { inner: 14.8, outer: 19.8, y: 0.06  },
-  sausage:   { inner: 18.8, outer: 22.2, y: 0.18  },
-  gravel:    { inner: 23.0, outer: 35.0, y: 0.01  },
-  sand:      { inner: 23.0, outer: 35.0, y: 0.01  },
-  grass:     { inner: 36.0, outer: 50.0, y: 0.005 },
-  armco:     { inner: 54.0, outer: 57.0, y: 0.02  },
-  tecpro:    { inner: 53.0, outer: 58.0, y: 0.02  },
-  tyrewall:  { inner: 52.0, outer: 58.0, y: 0.02  },
+  // Offsets match render.js SURFACE_LANES exactly (world units from centreline)
+  flat_kerb: { inner:  7.0, outer:  8.1, y: 0.05  },
+  rumble:    { inner:  7.0, outer:  8.1, y: 0.06  },
+  sausage:   { inner:  8.1, outer:  9.2, y: 0.18  },
+  grass:     { inner:  9.2, outer: 25.5, y: 0.005 },
+  gravel:    { inner: 11.2, outer: 20.5, y: 0.01  },
+  sand:      { inner: 11.2, outer: 20.5, y: 0.01  },
+  tecpro:    { inner: 20.5, outer: 22.8, y: 0.02  },
+  armco:     { inner: 22.5, outer: 23.5, y: 0.02  },
+  tyrewall:  { inner: 21.5, outer: 23.8, y: 0.02  },
 };
 
 function p3dLane(surface, lane = 0) {
@@ -98,7 +99,7 @@ function open3DPreview() {
   document.getElementById('preview3d-overlay').style.display = 'flex';
   document.getElementById('btn-3d-toggle').classList.add('active-3d');
   document.getElementById('btn-3d-toggle').textContent = '← 2D View';
-  document.getElementById('tool-hud').textContent = '3D Preview  ·  1-finger = look  ·  2-finger = move fwd/back  ·  Q = exit';
+  document.getElementById('tool-hud').textContent = '3D Preview  ·  Left stick = look  ·  Right stick = move  ·  Q = exit';
   build3DScene();
 }
 
@@ -413,7 +414,7 @@ function build3DScene() {
   const hud = document.createElement('div');
   hud.className = 'preview3d-hud';
   hud.style.top = '50px';
-  hud.innerHTML = '<span>1-finger = look</span><span>2-finger = fwd/back</span><span>WASD = move</span><span>Q = exit</span>';
+  hud.innerHTML = '<span>Left stick = look</span><span>Right stick = move XYZ</span><span>WASD = move</span><span>Q = exit</span>';
   ol.appendChild(hud);
 
   const backBtn = document.createElement('button');
@@ -432,7 +433,7 @@ function build3DScene() {
   preview3dScene.background = new THREE.Color(0x87ceeb);
   preview3dScene.fog = new THREE.Fog(0x87ceeb, 8000, 20000);
 
-  preview3dCamera = new THREE.PerspectiveCamera(60, ol.clientWidth/ol.clientHeight, 0.5, 40000);
+  preview3dCamera = new THREE.PerspectiveCamera(60, ol.clientWidth/ol.clientHeight, 2.0, 80000);
 
   preview3dScene.add(new THREE.AmbientLight(0xffffff, 0.70));
   const sun = new THREE.DirectionalLight(0xfffae0, 0.85);
@@ -463,7 +464,7 @@ function build3DScene() {
 
   const TH = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 7;
   const dblSide = { side: THREE.DoubleSide };
-  const ROAD_Y = 0.01;
+  const ROAD_Y = 0.02;
 
   preview3dScene.add(new THREE.Mesh(
     p3dRibbon(spPts, -TH, TH, ROAD_Y),
@@ -471,20 +472,20 @@ function build3DScene() {
   ));
 
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH, TH + 0.7, ROAD_Y + 0.01),
+    p3dRibbon(spPts, TH, TH + 0.7, ROAD_Y + 0.05),
     new THREE.MeshLambertMaterial({ color: 0xff4444, ...dblSide })
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH - 0.7, -TH, ROAD_Y + 0.01),
+    p3dRibbon(spPts, -TH - 0.7, -TH, ROAD_Y + 0.05),
     new THREE.MeshLambertMaterial({ color: 0xff4444, ...dblSide })
   ));
 
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH - 0.08, TH + 0.08, ROAD_Y + 0.02),
+    p3dRibbon(spPts, TH - 0.08, TH + 0.08, ROAD_Y + 0.12),
     new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH - 0.08, -TH + 0.08, ROAD_Y + 0.02),
+    p3dRibbon(spPts, -TH - 0.08, -TH + 0.08, ROAD_Y + 0.12),
     new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })
   ));
 
@@ -555,6 +556,36 @@ function build3DScene() {
     if (segPts.length < 2) return;
     p3dPlaceBarrier(preview3dScene, seg.surface, segPts, TH, seg.side, seg.lane || 0);
   });
+
+  // ── Paint layers → 3D (the freehand brush strokes from 2D view) ──
+  // paintLayers are stored in 2D canvas coords centred at (cx,cy).
+  // We mirror the same scaling p3dGetScaledData() uses: subtract (cx,cy).
+  if (typeof paintLayers !== 'undefined' && paintLayers.length > 0) {
+    const matCache = {};
+    // Render order: grass first (widest/lowest), then runoff, then kerbs on top
+    const paintOrder = ['grass','gravel','sand','sausage','rumble','flat_kerb','armco','tecpro','tyrewall'];
+    const sorted3dPaint = paintLayers.slice().sort((a, b) => {
+      return paintOrder.indexOf(b.surface) - paintOrder.indexOf(a.surface);
+    });
+    sorted3dPaint.forEach(p => {
+      const color = SURF_COLOR_3D[p.surface];
+      if (color === undefined) return;
+      if (!matCache[p.surface]) {
+        matCache[p.surface] = new THREE.MeshLambertMaterial({ color });
+      }
+      // Convert from 2D world coords to 3D (x→x, y→z), subtract centroid
+      const px3 = p.x - cx;
+      const pz3 = p.y - cy;
+      const lane = P3D_SURFACE_LANES[p.surface] || P3D_SURFACE_LANES.flat_kerb;
+      const yOff = lane.y + 0.01;
+      // Radius: paint layer r is in 2D world units — use directly
+      const r3 = Math.max(1, p.r * 0.92);
+      const geo = new THREE.CylinderGeometry(r3, r3, 0.07, 14);
+      const mesh = new THREE.Mesh(geo, matCache[p.surface]);
+      mesh.position.set(px3, yOff, pz3);
+      preview3dScene.add(mesh);
+    });
+  }
 
   const CHASE_H = 5, CHASE_D = 9;
   const csh = Math.cos(sfYaw), snh = Math.sin(sfYaw);
@@ -655,6 +686,7 @@ function _applyCamera() {
 }
 
 function setupP3DControls(cnv) {
+  // ── Mouse drag (desktop look) ─────────────────────
   let dragging = false, lx = 0, ly = 0;
   cnv.addEventListener('mousedown', e => { dragging = true; lx = e.clientX; ly = e.clientY; });
   window.addEventListener('mouseup', () => dragging = false);
@@ -675,48 +707,97 @@ function setupP3DControls(cnv) {
     _applyCamera();
   }, { passive: true });
 
-  let _t1x = 0, _t1y = 0, _t2my = 0, _twoActive = false;
+  // ── Dual joystick (mobile) ────────────────────────
+  const joyOl = document.getElementById('preview3d-overlay');
 
-  cnv.addEventListener('touchstart', e => {
-    e.preventDefault();
-    const n = e.touches.length;
-    if (n === 1) { _t1x = e.touches[0].clientX; _t1y = e.touches[0].clientY; _twoActive = false; }
-    if (n >= 2)  { _twoActive = true; _t2my = (e.touches[0].clientY + e.touches[1].clientY) / 2; }
-  }, { passive: false });
+  function makeJoystick(side, label) {
+    const RADIUS = 52, KNOB = 22;
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'position:absolute;bottom:28px;' + side + ':20px;' +
+      'width:' + (RADIUS*2) + 'px;height:' + (RADIUS*2) + 'px;border-radius:50%;' +
+      'background:rgba(255,255,255,0.10);border:2px solid rgba(255,255,255,0.30);' +
+      'touch-action:none;user-select:none;z-index:200;';
+    const knob = document.createElement('div');
+    knob.style.cssText = 'position:absolute;width:' + (KNOB*2) + 'px;height:' + (KNOB*2) + 'px;' +
+      'border-radius:50%;background:rgba(255,255,255,0.45);' +
+      'top:' + (RADIUS-KNOB) + 'px;left:' + (RADIUS-KNOB) + 'px;pointer-events:none;';
+    const lbl = document.createElement('div');
+    lbl.textContent = label;
+    lbl.style.cssText = 'position:absolute;bottom:-20px;left:0;width:100%;text-align:center;' +
+      'color:rgba(255,255,255,0.55);font-size:11px;pointer-events:none;';
+    wrap.appendChild(knob);
+    wrap.appendChild(lbl);
+    joyOl.appendChild(wrap);
 
-  cnv.addEventListener('touchmove', e => {
-    e.preventDefault();
-    const n = e.touches.length;
-    if (n === 1 && !_twoActive) {
-      const dx = e.touches[0].clientX - _t1x, dy = e.touches[0].clientY - _t1y;
-      _t1x = e.touches[0].clientX; _t1y = e.touches[0].clientY;
-      p3dYaw   -= dx * 0.006;
-      p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - dy * 0.006));
-      _applyCamera();
+    let active = false, tid = -1, ox = 0, oy = 0;
+    const axis = { x: 0, y: 0 };
+
+    function setKnob(nx, ny) {
+      const cx = Math.max(-1, Math.min(1, nx));
+      const cy = Math.max(-1, Math.min(1, ny));
+      knob.style.left = (RADIUS - KNOB + cx * (RADIUS - KNOB)) + 'px';
+      knob.style.top  = (RADIUS - KNOB + cy * (RADIUS - KNOB)) + 'px';
+      axis.x = cx; axis.y = cy;
     }
-    if (n >= 2) {
-      _twoActive = true;
-      const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
-      const dy = my - _t2my;
-      _t2my = my;
-      const spd = 6;
-      const sy = Math.sin(p3dYaw), cy2 = Math.cos(p3dYaw);
-      p3dPos.x -= sy  * dy * spd;
-      p3dPos.z -= cy2 * dy * spd;
-      _applyCamera();
-    }
-  }, { passive: false });
 
-  cnv.addEventListener('touchend', e => {
-    if (e.touches.length < 2) _twoActive = false;
-    if (e.touches.length === 1) { _t1x = e.touches[0].clientX; _t1y = e.touches[0].clientY; }
-  }, { passive: true });
+    wrap.addEventListener('touchstart', e => {
+      e.preventDefault();
+      const t = e.changedTouches[0];
+      tid = t.identifier;
+      const r = wrap.getBoundingClientRect();
+      ox = r.left + RADIUS; oy = r.top + RADIUS;
+      active = true;
+      knob.style.background = 'rgba(255,255,255,0.70)';
+    }, { passive: false });
+
+    window.addEventListener('touchmove', e => {
+      if (!active) return;
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        const t = e.changedTouches[i];
+        if (t.identifier !== tid) continue;
+        setKnob((t.clientX - ox) / (RADIUS - KNOB), (t.clientY - oy) / (RADIUS - KNOB));
+      }
+    }, { passive: true });
+
+    window.addEventListener('touchend', e => {
+      for (let i = 0; i < e.changedTouches.length; i++) {
+        if (e.changedTouches[i].identifier !== tid) continue;
+        active = false; setKnob(0, 0);
+        knob.style.background = 'rgba(255,255,255,0.45)';
+      }
+    }, { passive: true });
+
+    return axis;
+  }
+
+  window._p3dJoystickLook = makeJoystick('left',  'LOOK');
+  window._p3dJoystickMove = makeJoystick('right', 'MOVE');
+
+  // ▲▼ buttons for Y-axis (altitude)
+  const udWrap = document.createElement('div');
+  udWrap.style.cssText = 'position:absolute;bottom:28px;right:132px;display:flex;flex-direction:column;gap:6px;z-index:200;';
+  function makeUDBtn(lbl) {
+    const b = document.createElement('button');
+    b.textContent = lbl;
+    b.style.cssText = 'width:42px;height:42px;border-radius:8px;background:rgba(255,255,255,0.15);' +
+      'border:1.5px solid rgba(255,255,255,0.35);color:#fff;font-size:20px;touch-action:none;';
+    b._held = false;
+    b.addEventListener('touchstart', e => { e.preventDefault(); b._held = true; }, { passive: false });
+    b.addEventListener('touchend',   () => b._held = false);
+    b.addEventListener('mousedown',  () => b._held = true);
+    b.addEventListener('mouseup',    () => b._held = false);
+    udWrap.appendChild(b);
+    return b;
+  }
+  window._p3dBtnUp   = makeUDBtn('▲');
+  window._p3dBtnDown = makeUDBtn('▼');
+  joyOl.appendChild(udWrap);
 
   window.addEventListener('resize', () => {
-    const ol = document.getElementById('preview3d-overlay');
-    if (!ol || !preview3dRenderer || !preview3dCamera) return;
-    preview3dRenderer.setSize(ol.clientWidth, ol.clientHeight);
-    preview3dCamera.aspect = ol.clientWidth / ol.clientHeight;
+    const ol2 = document.getElementById('preview3d-overlay');
+    if (!ol2 || !preview3dRenderer || !preview3dCamera) return;
+    preview3dRenderer.setSize(ol2.clientWidth, ol2.clientHeight);
+    preview3dCamera.aspect = ol2.clientWidth / ol2.clientHeight;
     preview3dCamera.updateProjectionMatrix();
   });
 }
@@ -726,12 +807,35 @@ function updateFreeRoamCamera(dt) {
   const speed = (p3dKeys['ShiftLeft'] || p3dKeys['ShiftRight']) ? 800 : 200;
   const s = speed * dt;
   const sy = Math.sin(p3dYaw), cy2 = Math.cos(p3dYaw);
+
+  // Keyboard
   if (p3dKeys['KeyW'] || p3dKeys['ArrowUp'])    { p3dPos.x += sy * s; p3dPos.z += cy2 * s; }
   if (p3dKeys['KeyS'] || p3dKeys['ArrowDown'])  { p3dPos.x -= sy * s; p3dPos.z -= cy2 * s; }
   if (p3dKeys['KeyA'] || p3dKeys['ArrowLeft'])  { p3dPos.x -= cy2 * s; p3dPos.z += sy * s; }
   if (p3dKeys['KeyD'] || p3dKeys['ArrowRight']) { p3dPos.x += cy2 * s; p3dPos.z -= sy * s; }
   if (p3dKeys['KeyE']) p3dPos.y += s;
   if (p3dKeys['KeyQ']) p3dPos.y = Math.max(5, p3dPos.y - s);
+
+  // Left joystick = look
+  const look = window._p3dJoystickLook;
+  if (look && (look.x !== 0 || look.y !== 0)) {
+    p3dYaw   -= look.x * 2.5 * dt;
+    p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - look.y * 2.5 * dt));
+  }
+
+  // Right joystick = move (fwd/back/strafe)
+  const move = window._p3dJoystickMove;
+  if (move && (move.x !== 0 || move.y !== 0)) {
+    const jSpd = s * 2.5;
+    p3dPos.x += ( sy * (-move.y) + cy2 * move.x) * jSpd;
+    p3dPos.z += (cy2 * (-move.y) - sy  * move.x) * jSpd;
+  }
+
+  // ▲▼ buttons = altitude
+  const btnU = window._p3dBtnUp, btnD = window._p3dBtnDown;
+  if (btnU && btnU._held) p3dPos.y += s * 1.5;
+  if (btnD && btnD._held) p3dPos.y = Math.max(5, p3dPos.y - s * 1.5);
+
   _applyCamera();
 }
 
