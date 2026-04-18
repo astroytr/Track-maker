@@ -210,8 +210,45 @@ function tick() { return new Promise(r => setTimeout(r, 10)); }
 function colDist2(r,g,b,rgb) { const dr=r-rgb.r,dg=g-rgb.g,db=b-rgb.b; return dr*dr+dg*dg+db*db; }
 
 // ═══════════════════════════════════════════════════
-// PIPELINE v7.0
+// PIPELINE v7.1 — ratio-aware scaling
 // ═══════════════════════════════════════════════════
+
+// Measure median track half-width in pixels by sampling the distance transform
+// along the skeleton. Uses a fast approximate distance (BFS from background).
+function measureTrackHalfWidth(mask, skel, W, H) {
+  // Build a rough distance-to-background map for every track pixel.
+  // We only need values at skeleton pixels so a BFS from mask edges is enough.
+  const dist = new Float32Array(W * H);
+  // Seed: every background pixel has dist=0, track pixels start at Infinity
+  const queue = [];
+  for (let i = 0; i < W * H; i++) {
+    if (!mask[i]) { dist[i] = 0; queue.push(i); }
+    else dist[i] = 999999;
+  }
+  // BFS (4-connected)
+  let head = 0;
+  while (head < queue.length) {
+    const cur = queue[head++];
+    const cx = cur % W, cy = (cur / W) | 0;
+    const d = dist[cur] + 1;
+    for (const [dy, dx] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+      const nx = cx+dx, ny = cy+dy;
+      if (nx<0||nx>=W||ny<0||ny>=H) continue;
+      const ni = ny*W+nx;
+      if (dist[ni] > d) { dist[ni] = d; queue.push(ni); }
+    }
+  }
+
+  // Collect dist values at all skeleton pixels, take the median
+  const samples = [];
+  for (let i = 0; i < W * H; i++) {
+    if (skel[i]) samples.push(dist[i]);
+  }
+  if (!samples.length) return 8; // fallback
+  samples.sort((a, b) => a - b);
+  return samples[Math.floor(samples.length * 0.5)]; // median half-width
+}
+
 async function runAIConvert() {
   if (!aiImageData) { setAIStatus('Upload an image first', 'err'); return; }
   if (!aiTrackRGB)  { setAIStatus('Pick the track colour first', 'err'); return; }
@@ -242,7 +279,16 @@ async function runAIConvert() {
 
     setAIStatus('Step 4/5 — Skeletonising track…', ''); setAIProgress(38); await tick();
     const skel = zhangSuenThin(comp, W, H);
-    pruneSpurs(skel, W, H, 15);
+
+    // ── Ratio-aware spur pruning ──────────────────────────────────────────
+    // Measure how wide the track is in image pixels (median half-width × 2).
+    // Spurs shorter than one full track-width are crossing artefacts, not
+    // real track — prune them regardless of the hardcoded "15" default.
+    const halfWidth = measureTrackHalfWidth(mask, skel, W, H);
+    const trackWidthPx = halfWidth * 2;           // full track width in px
+    const spurLen = Math.max(15, Math.round(trackWidthPx * 1.1)); // at least 110% of track width
+    pruneSpurs(skel, W, H, spurLen);
+    // ─────────────────────────────────────────────────────────────────────
 
     setAIStatus('Step 5/5 — Ordering waypoints…', ''); setAIProgress(65); await tick();
     const chain = walkSkeleton(skel, W, H);
@@ -264,7 +310,31 @@ async function runAIConvert() {
 
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
     for (const p of pts) { minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y); }
-    const sc = Math.min(mainCanvas.width*.82/(maxX-minX||1), mainCanvas.height*.82/(maxY-minY||1)) / cam.zoom;
+
+    // ── Ratio-aware canvas scaling ────────────────────────────────────────
+    // The skeleton bounding box is the centreline extent.  The rendered track
+    // needs extra room on each side equal to the track half-width, scaled to
+    // canvas space.  Without this, a thick-track image gets blown up until
+    // adjacent sections overlap on the canvas.
+    //
+    // skelSpan   = bounding box of centreline in image pixels
+    // realSpan   = skelSpan + trackWidthPx on each side (what the full road occupies)
+    // fitFactor  = skelSpan / realSpan  (<1 for wide tracks, =1 for thin ones)
+    // We shrink the canvas fill fraction by fitFactor so the rendered track
+    // always fits with its actual width accounted for.
+    const skelSpanX = (maxX - minX) || 1;
+    const skelSpanY = (maxY - minY) || 1;
+    const fitFactorX = skelSpanX / (skelSpanX + trackWidthPx);
+    const fitFactorY = skelSpanY / (skelSpanY + trackWidthPx);
+    const fitFactor  = Math.min(fitFactorX, fitFactorY);          // use tighter axis
+    const fillFrac   = 0.82 * Math.max(0.35, Math.min(1, fitFactor)); // clamp [0.35, 0.82]
+
+    const sc = Math.min(
+      mainCanvas.width  * fillFrac / skelSpanX,
+      mainCanvas.height * fillFrac / skelSpanY
+    ) / cam.zoom;
+    // ─────────────────────────────────────────────────────────────────────
+
     const mx=(minX+maxX)/2, my=(minY+maxY)/2;
     let newWPs = pts.map(p => ({ x:(p.x-mx)*sc, y:(p.y-my)*sc }));
 
@@ -276,7 +346,7 @@ async function runAIConvert() {
     updateWPList();
     autoPlaceTrackFeatures(newWPs);
     render();
-    setAIStatus(`✓ ${newWPs.length} waypoints · barriers & surfaces auto-placed`, 'ok');
+    setAIStatus(`✓ ${newWPs.length} waypoints · track width ~${Math.round(trackWidthPx)}px · barriers auto-placed`, 'ok');
     showToast(`${newWPs.length} waypoints placed!`);
 
   } finally {
