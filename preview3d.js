@@ -122,48 +122,42 @@ function p3dBuildSpline(wps, spp) {
 
 // ─── Compute per-point lateral normals ────────────
 // Centered-difference tangents rotated 90° into the XZ
-// plane, then oriented so that "positive offset = track
-// right side" is consistent for the whole loop.
+// plane, oriented so "positive offset" consistently points
+// away from the track's centroid at every point.
 //
-// The old sign-consistency pass (flip if dot<0 with
-// predecessor) caused cumulative drift on closed-loop
-// tracks — by halfway round the circuit left/right had
-// swapped, producing the overlap artefact.
+// Previous approaches (sign-consistency pass, global
+// shoelace flip) both fail on tracks with S-bends or
+// inward loops because they assume a single consistent
+// winding direction for the whole shape.
 //
-// Fix: compute the signed area (shoelace) of the polyline
-// to determine winding order (CW vs CCW), then orient
-// every normal so "positive offset" always points outward.
-// This is stable regardless of how many tight corners
-// the track has.
+// This approach works per-point: for each spline point,
+// check which side of the track the overall centroid lies
+// on (dot product of normal vs centroid-to-point vector).
+// If the normal points toward the centroid, flip it.
+// "Positive offset" then always means "away from centre".
 function p3dComputeNormals(spPts) {
   const n = spPts.length;
 
-  // Raw centered-difference perpendiculars (arbitrary sign)
-  const normals = spPts.map((p, i) => {
+  // Compute centroid of all spline points
+  let cx = 0, cz = 0;
+  for (let i = 0; i < n; i++) { cx += spPts[i].x; cz += spPts[i].z; }
+  cx /= n; cz /= n;
+
+  return spPts.map((p, i) => {
     const prev = spPts[(i - 1 + n) % n];
     const next = spPts[(i + 1) % n];
     const dx = next.x - prev.x;
     const dz = next.z - prev.z;
     const len = Math.sqrt(dx*dx + dz*dz) || 1;
-    return { px: dz / len, pz: -dx / len };
+    let px = dz / len, pz = -dx / len;
+
+    // Vector from centroid to this point
+    const ox = p.x - cx, oz = p.z - cz;
+    // If normal points toward centroid (dot < 0), flip it
+    if (px * ox + pz * oz < 0) { px = -px; pz = -pz; }
+
+    return { px, pz };
   });
-
-  // Signed area (shoelace) — positive = CCW in XZ, negative = CW
-  let area = 0;
-  for (let i = 0; i < n; i++) {
-    const a = spPts[i], b = spPts[(i + 1) % n];
-    area += a.x * b.z - b.x * a.z;
-  }
-  // For CCW winding the perpendicular already points outward;
-  // for CW it points inward — flip all normals to compensate.
-  if (area > 0) {
-    for (let i = 0; i < n; i++) {
-      normals[i].px = -normals[i].px;
-      normals[i].pz = -normals[i].pz;
-    }
-  }
-
-  return normals;
 }
 
 // ─── Flat ribbon geometry (road, kerbs, runoff) ───
