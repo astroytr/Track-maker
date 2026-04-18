@@ -376,7 +376,11 @@ function updateExportPreview() {
   const key = raw || 'my_circuit';
   document.getElementById('export-fname-preview').textContent = 'track_' + key + '.js';
   document.getElementById('export-key-preview').textContent   = key;
+}
+
+function applyExportFilename() {
   document.getElementById('export-code').value = buildExportCode();
+  showToast('Name applied');
 }
 
 function openExport() {

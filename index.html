@@ -356,10 +356,11 @@ window.addEventListener('load', () => {
           <span style="padding:9px 10px;background:rgba(255,255,255,0.04);border:1px solid var(--border2);border-right:none;border-radius:7px 0 0 7px;font-family:'Barlow Condensed',sans-serif;font-size:13px;color:var(--accent);font-weight:700;white-space:nowrap;">track_</span>
           <input id="export-filename"
                  class="track-name-input"
-                 style="border-radius:0 7px 7px 0;font-size:14px;letter-spacing:0.5px;text-transform:lowercase;"
+                 style="border-radius:0;font-size:14px;letter-spacing:0.5px;text-transform:lowercase;"
                  placeholder="my_circuit"
                  oninput="this.value=this.value.replace(/[^a-z0-9_]/g,'').toLowerCase();updateExportPreview()"
                  value="my_circuit">
+          <button onclick="applyExportFilename()" style="padding:9px 14px;background:var(--accent2);color:#080808;border:1px solid var(--accent2);border-left:none;border-radius:0 7px 7px 0;font-family:'Barlow Condensed',sans-serif;font-size:12px;font-weight:800;letter-spacing:0.8px;cursor:pointer;white-space:nowrap;">Apply</button>
         </div>
         <div style="margin-top:5px;font-size:11px;color:var(--text3);">
           Will download as <code id="export-fname-preview" style="color:var(--accent2);">track_my_circuit.js</code> and register in-game as <code id="export-key-preview" style="color:var(--accent2);">my_circuit</code>
