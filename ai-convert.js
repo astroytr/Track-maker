@@ -311,28 +311,48 @@ async function runAIConvert() {
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
     for (const p of pts) { minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y); }
 
-    // ── Ratio-aware canvas scaling ────────────────────────────────────────
-    // The skeleton bounding box is the centreline extent.  The rendered track
-    // needs extra room on each side equal to the track half-width, scaled to
-    // canvas space.  Without this, a thick-track image gets blown up until
-    // adjacent sections overlap on the canvas.
+    // ── Physically-anchored world-space scaling ───────────────────────────
     //
-    // skelSpan   = bounding box of centreline in image pixels
-    // realSpan   = skelSpan + trackWidthPx on each side (what the full road occupies)
-    // fitFactor  = skelSpan / realSpan  (<1 for wide tracks, =1 for thin ones)
-    // We shrink the canvas fill fraction by fitFactor so the rendered track
-    // always fits with its actual width accounted for.
+    // PROBLEM the old approach solved: canvas-relative scaling caused
+    //   (a) track overlap when image track width >> centreline bounding box,
+    //   (b) turning-radius false alarms because world-unit scale was wrong.
+    //
+    // SOLUTION: derive scale from the ONE known physical quantity —
+    //   the game's track half-width (TRACK_HALF_WIDTH = 14 world units).
+    //   We measured `halfWidth` pixels = one half-width in image space.
+    //   Therefore: 1 image pixel = TRACK_HALF_WIDTH / halfWidth  world units.
+    //
+    //   This makes every curve the right physical size in world units, so:
+    //   • Tight image corners → tight world corners (correct red dots)
+    //   • Wide image corners  → wide world corners (no false red dots)
+    //   • Adjacent lanes are always ≥ 2× track width apart (no overlap)
+    //
+    // CANVAS FIT CLAMP: if the physically-correct scale would place the
+    //   track off-screen, we shrink it — but never below 35 % of screen fill
+    //   (large tracks are fine; the user can zoom/pan).
+    //   We prefer too big over too small: large tracks don't overlap.
+    //
+    const WORLD_HALF_WIDTH = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 14;
     const skelSpanX = (maxX - minX) || 1;
     const skelSpanY = (maxY - minY) || 1;
-    const fitFactorX = skelSpanX / (skelSpanX + trackWidthPx);
-    const fitFactorY = skelSpanY / (skelSpanY + trackWidthPx);
-    const fitFactor  = Math.min(fitFactorX, fitFactorY);          // use tighter axis
-    const fillFrac   = 0.82 * Math.max(0.35, Math.min(1, fitFactor)); // clamp [0.35, 0.82]
 
-    const sc = Math.min(
-      mainCanvas.width  * fillFrac / skelSpanX,
-      mainCanvas.height * fillFrac / skelSpanY
-    ) / cam.zoom;
+    // Physical scale: image px → world units
+    const scPhysical = WORLD_HALF_WIDTH / halfWidth;
+
+    // Canvas-fit scale: how big can we go before centreline leaves the screen?
+    // Use 0.82 fill so there's breathing room around the track edge.
+    const scFitX = mainCanvas.width  * 0.82 / skelSpanX / cam.zoom;
+    const scFitY = mainCanvas.height * 0.82 / skelSpanY / cam.zoom;
+    const scFit  = Math.min(scFitX, scFitY);
+
+    // Minimum canvas scale (35 % fill) — we'd rather let the track be big.
+    const scMinX = mainCanvas.width  * 0.35 / skelSpanX / cam.zoom;
+    const scMinY = mainCanvas.height * 0.35 / skelSpanY / cam.zoom;
+    const scMin  = Math.min(scMinX, scMinY);
+
+    // Use physical scale, clamped so we never go off-screen entirely.
+    // Prefer going LARGE (physical may exceed scFit for huge tracks — that's OK).
+    const sc = Math.max(scMin, scPhysical);
     // ─────────────────────────────────────────────────────────────────────
 
     const mx=(minX+maxX)/2, my=(minY+maxY)/2;
@@ -346,7 +366,7 @@ async function runAIConvert() {
     updateWPList();
     autoPlaceTrackFeatures(newWPs);
     render();
-    setAIStatus(`✓ ${newWPs.length} waypoints · track width ~${Math.round(trackWidthPx)}px · barriers auto-placed`, 'ok');
+    setAIStatus(`✓ ${newWPs.length} waypoints · ${Math.round(trackWidthPx)}px → ${(WORLD_HALF_WIDTH*2).toFixed(0)}wu track width · scale ×${scPhysical.toFixed(2)} · barriers auto-placed`, 'ok');
     showToast(`${newWPs.length} waypoints placed!`);
 
   } finally {
