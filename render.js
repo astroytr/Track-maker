@@ -201,11 +201,15 @@ function render() {
     ctx.fill();
   }
 
-  // ── Track ──
+  // ── Track — strict back-to-front paint order ──
+  // 1. Grass band (widest, furthest out — background for everything)
+  // 2. Barrier segments: runoff surfaces first (gravel/sand/grass), then barriers/kerbs on top
+  // 3. Track road (asphalt + kerb chevrons) — always on top of runoff
+  // 4. Centreline dashes
   if (waypoints.length >= 2) {
-    drawTrackRoad();
-    drawPermanentGrassBand();   // always-on grass both sides, base layer under segments
+    drawPermanentGrassBand();
     drawBarrierSegments();
+    drawTrackRoad();
     drawCentreline();
   }
 
@@ -650,8 +654,8 @@ function drawPermanentGrassBand() {
 
   const grassLane = getSurfaceLane('grass', 0);
   // Width covers from just outside sausage kerb all the way to armco distance
-  const innerOffset = 9.2;   // start right outside the sausage kerb
-  const outerOffset = 25.5;  // wide enough to reach behind any barrier
+  const innerOffset = 8.1;   // start at kerb outer edge (flush with sausage inner)
+  const outerOffset = 26.0;  // wide enough to sit behind any barrier
   const centerOffset = (innerOffset + outerOffset) * 0.5;
   const bandWidth = outerOffset - innerOffset;
 
@@ -690,11 +694,17 @@ function drawBarrierSegments() {
     return;
   }
 
+  // Draw order: outermost first so inner layers paint over outer ones.
+  // Priority tiers ensure runoff (gravel/sand/grass) always goes under kerbs/barriers.
+  const DRAW_TIER = { grass:0, gravel:1, sand:1, flat_kerb:2, rumble:2, sausage:2, tecpro:3, armco:3, tyrewall:3 };
   const expanded = expandBarrierDrawItems(barrierSegments)
     .sort((a,b) => {
+      const ta = DRAW_TIER[a.surface] ?? 2;
+      const tb = DRAW_TIER[b.surface] ?? 2;
+      if (ta !== tb) return ta - tb;  // lower tier (runoff) draws first
       const la = getSurfaceLane(a.surface, a.lane || 0);
       const lb = getSurfaceLane(b.surface, b.lane || 0);
-      return lb.outer - la.outer;
+      return lb.outer - la.outer;     // within same tier: outermost first
     });
 
   const labelKeys = new Set();
