@@ -1,22 +1,22 @@
 // ═══════════════════════════════════════════════════
 // 3D PREVIEW — Circuit Forge v7.2
-// FIX v7.1: surface Y heights scaled up above ground plane
-// FIX v7.2: ribbon normals use centered differences +
-//           sign-consistency pass to eliminate bowtie
-//           / twisted-quad distortion on sharp bends.
 // ═══════════════════════════════════════════════════
 let preview3dActive   = false;
 let preview3dRenderer = null;
 let preview3dScene    = null;
 let preview3dCamera   = null;
 let preview3dAnimId   = null;
-let p3dOrbit          = { ax: 0, ay: 0.5, dist: 1200 }; // overwritten by build3DScene
-let p3dOrbitTarget    = { cx: 0, cz: 0 };
-// Free-roam camera state
+
+// Single unified camera state — both modes read/write these
+let p3dPos   = { x: 0, y: 200, z: 0 };  // world position
+let p3dYaw   = 0;                          // horizontal look angle
+let p3dPitch = -0.3;                       // vertical look angle
+
+// Orbit parameters (converted → p3dPos/Yaw/Pitch every frame in orbit mode)
+let p3dOrbit       = { ax: 0, ay: 0.5, dist: 1200 };
+let p3dOrbitTarget = { cx: 0, cz: 0 };
+
 let p3dFreeRoam = false;
-let p3dCamPos   = { x: 0, y: 200, z: 0 };
-let p3dCamYaw   = 0;   // left/right
-let p3dCamPitch = -0.3; // up/down
 let p3dKeys     = {};
 
 const SURF_COLOR_3D = {
@@ -496,25 +496,20 @@ function build3DScene() {
   camBtn.onclick = () => {
     p3dFreeRoam = !p3dFreeRoam;
     if (p3dFreeRoam) {
-      // Seed position from orbit camera
-      p3dCamPos.x = preview3dCamera.position.x;
-      p3dCamPos.y = preview3dCamera.position.y;
-      p3dCamPos.z = preview3dCamera.position.z;
-      // Yaw: orbit.ax is the azimuth — camera looks INWARD so add π
-      p3dCamYaw = p3dOrbit.ax + Math.PI;
-      // Pitch: orbit.ay is polar angle from top (0=top, π/2=side).
-      // Free-roam pitch is elevation from horizon (+up, -down).
-      // From above the track looking in: pitch = -(π/2 - orbit.ay) = orbit.ay - π/2
-      p3dCamPitch = Math.max(-1.2, Math.min(0, p3dOrbit.ay - Math.PI / 2));
       camBtn.textContent = '🔭 Orbit';
       camBtn.style.borderColor = '#a78bfa';
       camBtn.style.color = '#a78bfa';
+      // p3dPos/Yaw/Pitch already match camera — updateP3DCamera kept them in sync
     } else {
-      document.exitPointerLock && document.exitPointerLock();
+      // Sync orbit params back from current camera position so orbit resumes correctly
+      const dx = p3dPos.x - p3dOrbitTarget.cx;
+      const dz = p3dPos.z - p3dOrbitTarget.cz;
+      p3dOrbit.dist = Math.sqrt(dx*dx + p3dPos.y*p3dPos.y + dz*dz);
+      p3dOrbit.ax   = Math.atan2(dz, dx);
+      p3dOrbit.ay   = Math.acos(Math.max(0.08, Math.min(Math.PI/2 - 0.04, p3dPos.y / p3dOrbit.dist)));
       camBtn.textContent = '🎥 Free Roam';
       camBtn.style.borderColor = '';
       camBtn.style.color = '';
-      updateP3DCamera();
     }
   };
   ol.appendChild(camBtn);
@@ -539,7 +534,7 @@ function build3DScene() {
     lastT = now;
     document.getElementById('p3d-freeroam-hint').style.display = p3dFreeRoam ? 'block' : 'none';
     if (p3dFreeRoam) {
-      updateFreeRoamCamera(dt, 0, 0);
+      updateFreeRoamCamera(dt);
     }
     preview3dRenderer.render(preview3dScene, preview3dCamera);
   }
@@ -573,152 +568,153 @@ function p3dMergeBarrierSegments(segments, wpCount) {
 function updateP3DCamera() {
   if (!preview3dCamera) return;
   const { cx, cz } = p3dOrbitTarget;
-  const r     = p3dOrbit.dist;
-  const theta = p3dOrbit.ax;
-  const phi   = Math.max(0.08, Math.min(Math.PI/2 - 0.04, p3dOrbit.ay));
-  preview3dCamera.position.set(
-    cx + r * Math.sin(phi) * Math.cos(theta),
-    r  * Math.cos(phi),
-    cz + r * Math.sin(phi) * Math.sin(theta)
-  );
-  preview3dCamera.lookAt(cx, 0, cz);
+  const r   = p3dOrbit.dist;
+  const phi = Math.max(0.08, Math.min(Math.PI / 2 - 0.04, p3dOrbit.ay));
+  // Orbit position
+  p3dPos.x = cx + r * Math.sin(phi) * Math.cos(p3dOrbit.ax);
+  p3dPos.y = r  * Math.cos(phi);
+  p3dPos.z = cz + r * Math.sin(phi) * Math.sin(p3dOrbit.ax);
+  // Derive yaw/pitch so free-roam inherits correct look direction
+  p3dYaw   = p3dOrbit.ax + Math.PI;
+  p3dPitch = -(Math.PI / 2 - phi);  // phi=0 → pitch=-π/2 (down), phi=π/2 → pitch=0 (level)
+  _applyCamera();
+}
+
+function _applyCamera() {
+  if (!preview3dCamera) return;
+  preview3dCamera.position.set(p3dPos.x, p3dPos.y, p3dPos.z);
+  preview3dCamera.rotation.order = 'YXZ';
+  preview3dCamera.rotation.y = p3dYaw;
+  preview3dCamera.rotation.x = p3dPitch;
 }
 
 function setupP3DControls(cnv) {
-  // ── Orbit mode (default): drag to orbit, scroll/pinch to zoom ──
-  let dragging=false, lx=0, ly=0;
-  cnv.addEventListener('mousedown', e=>{
-    if (p3dFreeRoam) { cnv.requestPointerLock(); return; }
-    dragging=true; lx=e.clientX; ly=e.clientY;
-  });
-  window.addEventListener('mouseup', ()=>dragging=false);
-  cnv.addEventListener('mousemove', e=>{
-    if (p3dFreeRoam) {
-      p3dCamYaw   -= e.movementX * 0.003;
-      p3dCamPitch -= e.movementY * 0.003;
-      p3dCamPitch  = Math.max(-1.4, Math.min(1.4, p3dCamPitch));
-      return;
-    }
+  // ── Mouse: drag = orbit/look, scroll = zoom (orbit) ──
+  let dragging = false, lx = 0, ly = 0;
+  cnv.addEventListener('mousedown', e => { dragging = true; lx = e.clientX; ly = e.clientY; });
+  window.addEventListener('mouseup', () => dragging = false);
+  cnv.addEventListener('mousemove', e => {
     if (!dragging) return;
-    p3dOrbit.ax -= (e.clientX-lx)*0.004;
-    p3dOrbit.ay += (e.clientY-ly)*0.004;
-    lx=e.clientX; ly=e.clientY;
-    updateP3DCamera();
+    const dx = e.clientX - lx, dy = e.clientY - ly;
+    lx = e.clientX; ly = e.clientY;
+    if (p3dFreeRoam) {
+      p3dYaw   -= dx * 0.004;
+      p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - dy * 0.004));
+      _applyCamera();
+    } else {
+      p3dOrbit.ax -= dx * 0.004;
+      p3dOrbit.ay  = Math.max(0.08, Math.min(Math.PI / 2 - 0.04, p3dOrbit.ay + dy * 0.004));
+      updateP3DCamera();
+    }
   });
-  cnv.addEventListener('wheel', e=>{
-    if (p3dFreeRoam) return;
-    p3dOrbit.dist = Math.max(100, Math.min(20000, p3dOrbit.dist + e.deltaY*2.0));
-    updateP3DCamera();
-  }, {passive:true});
+  cnv.addEventListener('wheel', e => {
+    p3dOrbit.dist = Math.max(100, Math.min(20000, p3dOrbit.dist + e.deltaY * 2.0));
+    if (!p3dFreeRoam) updateP3DCamera();
+    // In free-roam: scroll zooms orbit.dist so returning to orbit snaps correctly
+  }, { passive: true });
 
-  // ── Touch controls ──
-  // Orbit mode:   1-finger drag = orbit   |  2-finger pinch = zoom
-  // Free-roam:    1-finger drag = look    |  2-finger drag  = move (fwd/strafe)
-  let _t1x=0, _t1y=0;           // last pos of finger 1
-  let _t2x=0, _t2y=0;           // last pos of finger 2 (for 2-finger mid-point)
-  let _pinchDist=0;
-  let _twoActive=false;
+  // ── Touch: 1-finger = orbit/look, 2-finger drag = move (free-roam) / pinch-zoom (orbit) ──
+  let _t1x = 0, _t1y = 0;
+  let _t2mx = 0, _t2my = 0, _pinchDist = 0;
+  let _twoActive = false;
 
-  cnv.addEventListener('touchstart', e=>{
+  cnv.addEventListener('touchstart', e => {
     e.preventDefault();
-    if (e.touches.length === 1) {
+    const n = e.touches.length;
+    if (n === 1) {
       _t1x = e.touches[0].clientX;
       _t1y = e.touches[0].clientY;
       _twoActive = false;
     }
-    if (e.touches.length === 2) {
+    if (n >= 2) {
       _twoActive = true;
-      _t2x = (e.touches[0].clientX + e.touches[1].clientX) / 2;
-      _t2y = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      _t2mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      _t2my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
       const ddx = e.touches[0].clientX - e.touches[1].clientX;
       const ddy = e.touches[0].clientY - e.touches[1].clientY;
-      _pinchDist = Math.sqrt(ddx*ddx + ddy*ddy);
+      _pinchDist = Math.sqrt(ddx * ddx + ddy * ddy);
     }
   }, { passive: false });
 
-  cnv.addEventListener('touchmove', e=>{
+  cnv.addEventListener('touchmove', e => {
     e.preventDefault();
-    if (e.touches.length === 1 && !_twoActive) {
+    const n = e.touches.length;
+
+    if (n === 1 && !_twoActive) {
       const dx = e.touches[0].clientX - _t1x;
       const dy = e.touches[0].clientY - _t1y;
       _t1x = e.touches[0].clientX;
       _t1y = e.touches[0].clientY;
       if (p3dFreeRoam) {
-        // 1-finger = look
-        p3dCamYaw   -= dx * 0.004;
-        p3dCamPitch -= dy * 0.004;
-        p3dCamPitch  = Math.max(-1.4, Math.min(1.4, p3dCamPitch));
+        p3dYaw   -= dx * 0.004;
+        p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - dy * 0.004));
+        _applyCamera();
       } else {
-        // 1-finger = orbit
         p3dOrbit.ax -= dx * 0.004;
-        p3dOrbit.ay += dy * 0.004;
+        p3dOrbit.ay  = Math.max(0.08, Math.min(Math.PI / 2 - 0.04, p3dOrbit.ay + dy * 0.004));
         updateP3DCamera();
       }
     }
 
-    if (e.touches.length === 2) {
+    if (n >= 2) {
       _twoActive = true;
       const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
       const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
       const ddx = e.touches[0].clientX - e.touches[1].clientX;
       const ddy = e.touches[0].clientY - e.touches[1].clientY;
-      const dist = Math.sqrt(ddx*ddx + ddy*ddy);
+      const dist = Math.sqrt(ddx * ddx + ddy * ddy);
 
       if (p3dFreeRoam) {
-        // 2-finger drag mid-point = move forward/strafe
-        const panDx = mx - _t2x;
-        const panDy = my - _t2y;
-        const speed = 3.5;
-        const sy = Math.sin(p3dCamYaw), cy2 = Math.cos(p3dCamYaw);
-        p3dCamPos.x += (-panDy * sy + panDx * cy2) * speed;
-        p3dCamPos.z += (-panDy * cy2 - panDx * sy) * speed;
+        // 2-finger drag mid-point = move in camera-facing direction
+        const panDx = mx - _t2mx;
+        const panDy = my - _t2my;
+        const spd = 3.5;
+        const sy = Math.sin(p3dYaw), cy2 = Math.cos(p3dYaw);
+        p3dPos.x += (-panDy * sy + panDx * cy2) * spd;
+        p3dPos.z += (-panDy * cy2 - panDx * sy) * spd;
+        _applyCamera();
       } else {
-        // 2-finger pinch = zoom
-        p3dOrbit.dist = Math.max(100, Math.min(20000, p3dOrbit.dist * (_pinchDist / dist)));
+        // pinch = zoom
+        if (_pinchDist > 0)
+          p3dOrbit.dist = Math.max(100, Math.min(20000, p3dOrbit.dist * (_pinchDist / dist)));
         updateP3DCamera();
       }
 
-      _t2x = mx; _t2y = my;
+      _t2mx = mx; _t2my = my;
       _pinchDist = dist;
     }
   }, { passive: false });
 
-  cnv.addEventListener('touchend', e=>{
-    if (e.touches.length === 0) _twoActive = false;
+  cnv.addEventListener('touchend', e => {
+    if (e.touches.length < 2) _twoActive = false;
+    if (e.touches.length === 1) {
+      _t1x = e.touches[0].clientX;
+      _t1y = e.touches[0].clientY;
+    }
   }, { passive: true });
 
-  window.addEventListener('resize', ()=>{
-    const ol=document.getElementById('preview3d-overlay');
-    if(!ol||!preview3dRenderer||!preview3dCamera) return;
+  window.addEventListener('resize', () => {
+    const ol = document.getElementById('preview3d-overlay');
+    if (!ol || !preview3dRenderer || !preview3dCamera) return;
     preview3dRenderer.setSize(ol.clientWidth, ol.clientHeight);
     preview3dCamera.aspect = ol.clientWidth / ol.clientHeight;
     preview3dCamera.updateProjectionMatrix();
   });
 }
 
-// ── Free-roam camera update (called every frame when active) ──
-function updateFreeRoamCamera(dt, joyX = 0, joyZ = 0) {
+// ── Free-roam keyboard movement (called every frame when active) ──
+function updateFreeRoamCamera(dt) {
   if (!p3dFreeRoam || !preview3dCamera) return;
-  const speed = (p3dKeys['ShiftLeft']||p3dKeys['ShiftRight']) ? 800 : 200;
+  const speed = (p3dKeys['ShiftLeft'] || p3dKeys['ShiftRight']) ? 800 : 200;
   const s = speed * dt;
-  const sy = Math.sin(p3dCamYaw), cy2 = Math.cos(p3dCamYaw);
-  // Keyboard
-  if (p3dKeys['KeyW']||p3dKeys['ArrowUp'])    { p3dCamPos.x += sy*s; p3dCamPos.z += cy2*s; }
-  if (p3dKeys['KeyS']||p3dKeys['ArrowDown'])  { p3dCamPos.x -= sy*s; p3dCamPos.z -= cy2*s; }
-  if (p3dKeys['KeyA']||p3dKeys['ArrowLeft'])  { p3dCamPos.x -= cy2*s; p3dCamPos.z += sy*s; }
-  if (p3dKeys['KeyD']||p3dKeys['ArrowRight']) { p3dCamPos.x += cy2*s; p3dCamPos.z -= sy*s; }
-  if (p3dKeys['KeyE']) p3dCamPos.y += s;
-  if (p3dKeys['KeyQ']) p3dCamPos.y = Math.max(5, p3dCamPos.y - s);
-  // Touch joystick (forward = -joyZ, strafe = joyX)
-  if (joyX !== 0 || joyZ !== 0) {
-    const js = s * 1.5; // joystick slightly faster since no shift key on touch
-    p3dCamPos.x += (sy * (-joyZ) + cy2 * joyX) * js;
-    p3dCamPos.z += (cy2 * (-joyZ) - sy * joyX) * js;
-  }
-  preview3dCamera.position.set(p3dCamPos.x, p3dCamPos.y, p3dCamPos.z);
-  preview3dCamera.rotation.order = 'YXZ';
-  preview3dCamera.rotation.y = p3dCamYaw;
-  preview3dCamera.rotation.x = p3dCamPitch;
+  const sy = Math.sin(p3dYaw), cy2 = Math.cos(p3dYaw);
+  if (p3dKeys['KeyW'] || p3dKeys['ArrowUp'])    { p3dPos.x += sy * s; p3dPos.z += cy2 * s; }
+  if (p3dKeys['KeyS'] || p3dKeys['ArrowDown'])  { p3dPos.x -= sy * s; p3dPos.z -= cy2 * s; }
+  if (p3dKeys['KeyA'] || p3dKeys['ArrowLeft'])  { p3dPos.x -= cy2 * s; p3dPos.z += sy * s; }
+  if (p3dKeys['KeyD'] || p3dKeys['ArrowRight']) { p3dPos.x += cy2 * s; p3dPos.z -= sy * s; }
+  if (p3dKeys['KeyE']) p3dPos.y += s;
+  if (p3dKeys['KeyQ']) p3dPos.y = Math.max(5, p3dPos.y - s);
+  _applyCamera();
 }
 
 window.addEventListener('keydown', e=>{
