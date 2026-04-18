@@ -157,6 +157,7 @@ function p3dBuildSpline(wps, spp) {
 
 // ─── Per-point lateral normals (winding-aware, propagated) ────────
 function p3dComputeNormals(spPts) {
+  // Closed loop version — wraps endpoints (use for full track spline only)
   const n = spPts.length;
   const raw = spPts.map((p, i) => {
     const prev = spPts[(i - 1 + n) % n];
@@ -181,11 +182,39 @@ function p3dComputeNormals(spPts) {
   return out;
 }
 
+function p3dComputeNormalsOpen(pts) {
+  // Open path version — no endpoint wrap, forward/backward differences at ends
+  const n = pts.length;
+  const raw = pts.map((p, i) => {
+    const prev = pts[Math.max(0, i - 1)];
+    const next = pts[Math.min(n - 1, i + 1)];
+    const dx = next.x - prev.x, dz = next.z - prev.z;
+    const len = Math.sqrt(dx*dx + dz*dz) || 1;
+    return { px: dz / len, pz: -dx / len };
+  });
+  // Seed sign from middle segment direction (more stable than endpoints)
+  // Use cross product of first forward vector to determine consistent winding
+  const mid = Math.floor(n / 2);
+  const fdx = pts[Math.min(mid+1,n-1)].x - pts[mid].x;
+  const fdz = pts[Math.min(mid+1,n-1)].z - pts[mid].z;
+  // raw normal cross forward: if px*fdz - pz*fdx > 0, normal points left of travel
+  const cross = raw[mid].px * fdz - raw[mid].pz * fdx;
+  const windSign = cross >= 0 ? 1 : -1;
+  const out = new Array(n);
+  out[0] = { px: raw[0].px * windSign, pz: raw[0].pz * windSign };
+  for (let i=1; i<n; i++) {
+    const dot = raw[i].px * out[i-1].px + raw[i].pz * out[i-1].pz;
+    const s = dot >= 0 ? 1 : -1;
+    out[i] = { px: raw[i].px * s, pz: raw[i].pz * s };
+  }
+  return out;
+}
+
 // ─── Flat ribbon geometry (miter-corrected) ───────────────────────
 function p3dRibbon(spPts, innerOff, outerOff, yBase=0, isOpen=false) {
   const n = spPts.length;
   if (n < 2) return new THREE.BufferGeometry();
-  const normals = p3dComputeNormals(spPts);
+  const normals = isOpen ? p3dComputeNormalsOpen(spPts) : p3dComputeNormals(spPts);
   const pos=[], nor=[], uv=[], idx=[];
   // closed loop: emit n+1 verts (last == first to close seam)
   // open path:   emit n verts only, no wrap
@@ -226,7 +255,7 @@ function p3dRibbon(spPts, innerOff, outerOff, yBase=0, isOpen=false) {
 function p3dKerbRibbon(spPts, innerOff, outerOff, yBase, segLen) {
   const n = spPts.length;
   if (n < 2) return [new THREE.BufferGeometry(), new THREE.BufferGeometry()];
-  const normals = p3dComputeNormals(spPts);
+  const normals = p3dComputeNormalsOpen(spPts);
   const posA=[], norA=[], posB=[], norB=[];
   const idxA=[], idxB=[];
   let viA=0, viB=0;
@@ -277,11 +306,12 @@ function p3dKerbRibbon(spPts, innerOff, outerOff, yBase, segLen) {
 
 // ─── Sausage kerb — tube profile along miter-corrected spline ─────
 function p3dSausageRibbon(spPts, sideOff, normals) {
+  const n = spPts.length;
   const pts3 = spPts.map((p, i) => {
-    const { px, pz } = p3dMiterNormal(normals, i);
+    // Skip miter at open-path endpoints to avoid wrap-around spike
+    const { px, pz } = (i === 0 || i === n - 1) ? normals[i] : p3dMiterNormal(normals, i);
     return new THREE.Vector3(p.x + px*sideOff, 0, p.z + pz*sideOff);
   });
-  // Open path — do not close back to start
   const curve = new THREE.CatmullRomCurve3(pts3, false, 'catmullrom', 0.5);
   return new THREE.TubeGeometry(curve, pts3.length * 2, 0.18, 6, false);
 }
@@ -290,7 +320,7 @@ function p3dSausageRibbon(spPts, sideOff, normals) {
 function p3dBarrierRibbon(pts, sideOff, yBase, height) {
   const n = pts.length;
   if (n < 2) return new THREE.BufferGeometry();
-  const normals = p3dComputeNormals(pts);
+  const normals = p3dComputeNormalsOpen(pts);
   const pos=[], nor=[], idx=[];
   // Always open path — barrier segments are never full loops
   for (let i=0; i<n; i++) {
@@ -347,7 +377,7 @@ function p3dBuildInstanced(stepPts, normals, sideOff, stepEvery, geo, mat, yOff)
 // ─── Place barrier 3D objects — all surfaces ──────────────────────
 function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
   const sides = (side==='both'||!side) ? [-1,1] : [(side==='left'||side===-1) ? -1 : 1];
-  const normals = p3dComputeNormals(spPts);
+  const normals = p3dComputeNormalsOpen(spPts);
   const dblSide = THREE.DoubleSide;
 
   sides.forEach(s => {
