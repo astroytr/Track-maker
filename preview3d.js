@@ -121,31 +121,48 @@ function p3dBuildSpline(wps, spp) {
 }
 
 // ─── Compute per-point lateral normals ────────────
-// FIX v7.2: Use centered difference (prev→next) for
-// smoother normals, then do a sign-consistency pass
-// to stop normals flipping at hairpins / tight bends.
+// Centered-difference tangents rotated 90° into the XZ
+// plane, then oriented so that "positive offset = track
+// right side" is consistent for the whole loop.
+//
+// The old sign-consistency pass (flip if dot<0 with
+// predecessor) caused cumulative drift on closed-loop
+// tracks — by halfway round the circuit left/right had
+// swapped, producing the overlap artefact.
+//
+// Fix: compute the signed area (shoelace) of the polyline
+// to determine winding order (CW vs CCW), then orient
+// every normal so "positive offset" always points outward.
+// This is stable regardless of how many tight corners
+// the track has.
 function p3dComputeNormals(spPts) {
   const n = spPts.length;
+
+  // Raw centered-difference perpendiculars (arbitrary sign)
   const normals = spPts.map((p, i) => {
     const prev = spPts[(i - 1 + n) % n];
     const next = spPts[(i + 1) % n];
     const dx = next.x - prev.x;
     const dz = next.z - prev.z;
     const len = Math.sqrt(dx*dx + dz*dz) || 1;
-    // Perpendicular in XZ plane: rotate forward 90° → lateral right
     return { px: dz / len, pz: -dx / len };
   });
 
-  // Sign-consistency pass: if a normal flips relative to its
-  // predecessor (dot product negative), flip it back. This
-  // prevents the bowtie/X distortion on sharp-cornered tracks.
-  for (let i = 1; i < n; i++) {
-    const dot = normals[i].px * normals[i-1].px + normals[i].pz * normals[i-1].pz;
-    if (dot < 0) {
+  // Signed area (shoelace) — positive = CCW in XZ, negative = CW
+  let area = 0;
+  for (let i = 0; i < n; i++) {
+    const a = spPts[i], b = spPts[(i + 1) % n];
+    area += a.x * b.z - b.x * a.z;
+  }
+  // For CCW winding the perpendicular already points outward;
+  // for CW it points inward — flip all normals to compensate.
+  if (area > 0) {
+    for (let i = 0; i < n; i++) {
       normals[i].px = -normals[i].px;
       normals[i].pz = -normals[i].pz;
     }
   }
+
   return normals;
 }
 
