@@ -361,19 +361,131 @@ _cw.addEventListener('drop',e=>{
 });
 
 // ═══════════════════════════════════════════════════
+// DRIVABILITY ANALYSIS
+// Derived from physics.js constants:
+//   WHEELBASE = 3.8m,  maxSteer = 0.26 rad  (S.ss=5)
+//   min turning radius = WHEELBASE/tan(0.26) = 14.4m
+//   Track width TW = 28 units  ≈ 8m real  → scale 0.286 m/unit
+//   Min radius in units: 14.4/0.286 ≈ 50 units  (hard limit — car can't turn tighter)
+//   Comfortable racing radius: 25m / 0.286 ≈ 87 units  (can hold at ~54 km/h)
+//   Oval hairpin radius = HW=60 units → 17.1m → just above the hard limit, fast oval style
+// ═══════════════════════════════════════════════════
+const _DRIVE = {
+  SCALE:       0.286,   // units → metres
+  // Hard limit: car physically cannot make this turn at any speed
+  R_HARD:      50,      // units — below this = undriveable hairpin
+  // Tight: driveable but requires braking to ~20 km/h, very slow chicane feel
+  R_TIGHT:     87,      // units — below this = tight corner
+  // Comfortable: can carry reasonable speed (~54 km/h+)
+  R_COMFY:     140,     // units — above this = fine
+  TW:          28,      // track width in units (from export.js)
+};
+
+function _cornerRadius(prev, cur, next) {
+  // Circumradius of the triangle formed by three consecutive waypoints
+  // R = (a·b·c) / (4·Area)  — exact for any triangle
+  const ax=cur.x-prev.x, ay=cur.y-prev.y;   // side a (prev→cur)
+  const bx=next.x-cur.x, by=next.y-cur.y;   // side b (cur→next)
+  const cx=prev.x-next.x, cy=prev.y-next.y; // side c (next→prev)
+  const la=Math.hypot(ax,ay), lb=Math.hypot(bx,by), lc=Math.hypot(cx,cy);
+  const area=Math.abs(ax*by - ay*bx)*0.5;    // half cross-product
+  if (area < 1e-6) return Infinity;           // straight line
+  return (la * lb * lc) / (4 * area);
+}
+
+function analyseTrack() {
+  const n = waypoints.length;
+  if (n < 3) return null;
+
+  let minR = Infinity, minRIdx = -1;
+  let undriveable = 0, tight = 0;
+  const issues = [];
+
+  for (let i = 0; i < n; i++) {
+    const prev = waypoints[(i-1+n)%n];
+    const cur  = waypoints[i];
+    const next = waypoints[(i+1)%n];
+    const R    = _cornerRadius(prev, cur, next);
+
+    if (R < minR) { minR = R; minRIdx = i; }
+
+    if (R < _DRIVE.R_HARD) {
+      undriveable++;
+      issues.push({ idx: i, R, level: 'hard' });
+    } else if (R < _DRIVE.R_TIGHT) {
+      tight++;
+      issues.push({ idx: i, R, level: 'tight' });
+    }
+  }
+
+  // Oval reference: hairpin R=60 units → 17.1m, right at the hard limit
+  // Speed estimate at tightest corner: v = sqrt(R_metres * 9.81 * 1.05)
+  const minRm = minR * _DRIVE.SCALE;
+  const speedAtMin = Math.sqrt(Math.max(0, minRm * 9.81 * 1.05)) * 3.6; // km/h
+
+  return { minR, minRIdx, minRm, speedAtMin, undriveable, tight, issues };
+}
+
+function updateDrivabilityBadge() {
+  const el = document.getElementById('drivability-badge');
+  if (!el) return;
+  if (waypoints.length < 3) { el.style.display='none'; return; }
+
+  const a = analyseTrack();
+  el.style.display = '';
+
+  if (a.undriveable > 0) {
+    el.textContent = `⚠ ${a.undriveable} undriveable corner${a.undriveable>1?'s':''}`;
+    el.style.cssText = 'display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-family:"Barlow Condensed",sans-serif;letter-spacing:.06em;background:rgba(255,60,60,.22);color:#ff6060;border:1px solid rgba(255,60,60,.35);cursor:pointer;';
+  } else if (a.tight > 0) {
+    el.textContent = `▲ ${a.tight} tight corner${a.tight>1?'s':''}`;
+    el.style.cssText = 'display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-family:"Barlow Condensed",sans-serif;letter-spacing:.06em;background:rgba(255,180,0,.18);color:#ffb800;border:1px solid rgba(255,180,0,.3);cursor:pointer;';
+  } else {
+    el.textContent = `✓ Driveable`;
+    el.style.cssText = 'display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-family:"Barlow Condensed",sans-serif;letter-spacing:.06em;background:rgba(48,224,96,.15);color:#30e060;border:1px solid rgba(48,224,96,.28);cursor:pointer;';
+  }
+
+  // Click badge → alert with full breakdown
+  el.onclick = () => {
+    const a2 = analyseTrack();
+    if (!a2) return;
+    const minSpd = Math.round(a2.speedAtMin);
+    const minRStr = a2.minR === Infinity ? 'straight' : Math.round(a2.minR) + 'u (' + a2.minRm.toFixed(0) + 'm)';
+    let msg = 'DRIVABILITY CHECK\n';
+    msg += '─────────────────────────────\n';
+    msg += 'Tightest corner : R = ' + minRStr + '\n';
+    msg += 'Min corner speed: ~' + minSpd + ' km/h\n\n';
+    if (a2.undriveable > 0) msg += '! ' + a2.undriveable + ' corner(s) physically too tight\n';
+    if (a2.tight > 0)       msg += '^ ' + a2.tight + ' tight corner(s) — very slow chicane\n';
+    if (a2.undriveable === 0 && a2.tight === 0) msg += 'All corners comfortable\n';
+    msg += '\nThresholds (from your car physics):\n';
+    msg += '  Undriveable : R < 50u  (< 14m)\n';
+    msg += '  Tight       : R < 87u  (< 25m)\n';
+    msg += '  Comfortable : R >= 87u (>= 25m)\n\n';
+    msg += 'Ref: oval hairpin = R60u (17m)';
+    alert(msg);
+  };
+}
+
+// ═══════════════════════════════════════════════════
 // WAYPOINT LIST
 // ═══════════════════════════════════════════════════
 function updateWPList() {
   const list=document.getElementById('wp-list');
   const statWP=document.getElementById('stat-wp');
   if (statWP) statWP.textContent=waypoints.length;
+  updateDrivabilityBadge();   // ← recheck every time waypoints change
   if (!list) return;
   list.innerHTML='';
   waypoints.forEach((wp,i)=>{
     const isStart=i===startingPointIdx;
+    // Colour-code waypoints that are part of problem corners
+    const a=waypoints.length>=3?analyseTrack():null;
+    const issue=a?a.issues.find(x=>x.idx===i):null;
+    const issueCol=issue?(issue.level==='hard'?'#ff6060':'#ffb800'):null;
     const div=document.createElement('div');
     div.className='wp-item'+(i===selectedWP?' selected':'');
-    div.innerHTML=`<span class="wp-num" style="${isStart?'color:#00ff88':''}">${isStart?'🏁':i}</span>
+    div.innerHTML=`<span class="wp-num" style="${isStart?'color:#00ff88':issueCol?'color:'+issueCol:''}">${isStart?'🏁':issue?(issue.level==='hard'?'⚠':i):i}</span>
       <span class="wp-coords">${Math.round(wp.x)}, ${Math.round(wp.y)}</span>
       <span class="wp-del" onclick="event.stopPropagation();deleteWP(${i})">✕</span>`;
     div.addEventListener('click',()=>{selectedWP=i;updateWPList();render();});

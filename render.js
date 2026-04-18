@@ -193,17 +193,42 @@ function render() {
     drawCentreline();
   }
 
-  // ── Waypoint dots ──
+  // ── Waypoint dots (with drivability highlight) ──
+  // Build issue map once per render — O(n), not per-dot
+  const _driveIssues = new Map();
+  if (typeof analyseTrack === 'function' && waypoints.length >= 3) {
+    const _da = analyseTrack();
+    if (_da) _da.issues.forEach(iss => _driveIssues.set(iss.idx, iss.level));
+  }
+
   for (let i = 0; i < waypoints.length; i++) {
     const wp = waypoints[i];
     const s  = worldToScreen(wp.x, wp.y);
     const isStart       = i === startingPointIdx;
     const isSel         = i === selectedWP;
     const isBarrierSel  = tool === 'barrier' && i === barrierSelStart;
-    const r = isBarrierSel ? 11 : (isSel ? 9 : (isStart ? 8 : 5));
+    const issueLevel    = _driveIssues.get(i);  // 'hard' | 'tight' | undefined
+
+    const r = isBarrierSel ? 11 : (isSel ? 9 : (isStart ? 8 : (issueLevel ? 7 : 5)));
+
+    // Outer glow ring for problem corners
+    if (issueLevel && !isStart && !isBarrierSel) {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = issueLevel === 'hard' ? 'rgba(255,60,60,0.55)' : 'rgba(255,180,0,0.45)';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
+
     ctx.beginPath();
     ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = isBarrierSel ? '#ff8c00' : (isStart ? '#00ff88' : (isSel ? '#a78bfa' : '#e8ff47'));
+    // Fill: barrier-sel=orange, start=green, selected=purple, hard=red, tight=amber, normal=yellow
+    ctx.fillStyle = isBarrierSel ? '#ff8c00'
+                  : isStart      ? '#00ff88'
+                  : isSel        ? '#a78bfa'
+                  : issueLevel === 'hard'  ? '#ff4040'
+                  : issueLevel === 'tight' ? '#ffb800'
+                  : '#e8ff47';
     ctx.fill();
     ctx.strokeStyle = isBarrierSel ? '#fff' : '#000';
     ctx.lineWidth   = isBarrierSel ? 2.5 : 1.5;
