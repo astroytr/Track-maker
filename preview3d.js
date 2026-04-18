@@ -182,24 +182,35 @@ function p3dComputeNormals(spPts) {
 }
 
 // ─── Flat ribbon geometry (miter-corrected) ───────────────────────
-function p3dRibbon(spPts, innerOff, outerOff, yBase=0) {
+function p3dRibbon(spPts, innerOff, outerOff, yBase=0, isOpen=false) {
   const n = spPts.length;
   if (n < 2) return new THREE.BufferGeometry();
   const normals = p3dComputeNormals(spPts);
   const pos=[], nor=[], uv=[], idx=[];
-  for (let i=0; i<=n; i++) {
+  // closed loop: emit n+1 verts (last == first to close seam)
+  // open path:   emit n verts only, no wrap
+  const count = isOpen ? n : n + 1;
+  for (let i=0; i<count; i++) {
     const ci = i % n;
-    const { px, pz } = p3dMiterNormal(normals, ci);
+    let px, pz;
+    if (isOpen && (i === 0 || i === n - 1)) {
+      // At endpoints of open paths just use the raw normal, no miter
+      px = normals[ci].px; pz = normals[ci].pz;
+    } else {
+      const m = p3dMiterNormal(normals, ci);
+      px = m.px; pz = m.pz;
+    }
     const c = spPts[ci];
     pos.push(
       c.x + px*innerOff, yBase, c.z + pz*innerOff,
       c.x + px*outerOff, yBase, c.z + pz*outerOff
     );
     nor.push(0,1,0, 0,1,0);
-    const s = i / n;
+    const s = i / (count - 1);
     uv.push(s,0, s,1);
   }
-  for (let i=0; i<n; i++) {
+  const quads = isOpen ? n - 1 : n;
+  for (let i=0; i<quads; i++) {
     const b = i*2;
     idx.push(b,b+1,b+2, b+1,b+3,b+2);
   }
@@ -220,10 +231,13 @@ function p3dKerbRibbon(spPts, innerOff, outerOff, yBase, segLen) {
   const idxA=[], idxB=[];
   let viA=0, viB=0;
 
-  for (let i=0; i<n; i++) {
-    const i1 = (i + 1) % n;
-    const { px: px0, pz: pz0 } = p3dMiterNormal(normals, i);
-    const { px: px1, pz: pz1 } = p3dMiterNormal(normals, i1);
+  for (let i=0; i<n-1; i++) {
+    const i1 = i + 1;
+    const getPx = (idx) => (idx === 0 || idx === n-1)
+      ? { px: normals[idx].px, pz: normals[idx].pz }
+      : p3dMiterNormal(normals, idx);
+    const { px: px0, pz: pz0 } = getPx(i);
+    const { px: px1, pz: pz1 } = getPx(i1);
     const c0 = spPts[i], c1 = spPts[i1];
 
     const blockIdx = Math.floor(i / segLen);
@@ -267,7 +281,7 @@ function p3dSausageRibbon(spPts, sideOff, normals) {
     const { px, pz } = p3dMiterNormal(normals, i);
     return new THREE.Vector3(p.x + px*sideOff, 0, p.z + pz*sideOff);
   });
-  pts3.push(pts3[0].clone());
+  // Open path — do not close back to start
   const curve = new THREE.CatmullRomCurve3(pts3, false, 'catmullrom', 0.5);
   return new THREE.TubeGeometry(curve, pts3.length * 2, 0.18, 6, false);
 }
@@ -278,16 +292,21 @@ function p3dBarrierRibbon(pts, sideOff, yBase, height) {
   if (n < 2) return new THREE.BufferGeometry();
   const normals = p3dComputeNormals(pts);
   const pos=[], nor=[], idx=[];
-  for (let i=0; i<=n; i++) {
-    const ci = i % n;
-    const { px, pz } = p3dMiterNormal(normals, ci);
-    const c = pts[ci];
+  // Always open path — barrier segments are never full loops
+  for (let i=0; i<n; i++) {
+    let px, pz;
+    if (i === 0 || i === n - 1) {
+      px = normals[i].px; pz = normals[i].pz;
+    } else {
+      const m = p3dMiterNormal(normals, i);
+      px = m.px; pz = m.pz;
+    }
+    const c = pts[i];
     const ox = c.x + px*sideOff, oz = c.z + pz*sideOff;
     pos.push(ox, yBase, oz, ox, yBase+height, oz);
-    const raw = normals[ci];
-    nor.push(raw.px, 0, raw.pz, raw.px, 0, raw.pz);
+    nor.push(normals[i].px, 0, normals[i].pz, normals[i].px, 0, normals[i].pz);
   }
-  for (let i=0; i<n; i++) {
+  for (let i=0; i<n-1; i++) {
     const b = i*2;
     idx.push(b,b+1,b+2, b+1,b+3,b+2);
   }
@@ -369,7 +388,7 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       const whiteMat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: dblSide });
       const halfW = 2.2;
       const off = lane.center * s;
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, off - halfW, off + halfW, 0.01), whiteMat));
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, off - halfW, off + halfW, 0.01, true), whiteMat));
       const tubeGeo = p3dSausageRibbon(spPts, off, normals);
       scene.add(new THREE.Mesh(tubeGeo, mat));
 
@@ -389,15 +408,15 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
 
     } else if (surface === 'gravel') {
       const band = p3dSignedBand(lane, s);
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, band[0], band[1], lane.y), mat));
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, band[0], band[1], lane.y, true), mat));
 
     } else if (surface === 'sand') {
       const band = p3dSignedBand(lane, s);
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, band[0], band[1], lane.y), mat));
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, band[0], band[1], lane.y, true), mat));
 
     } else if (surface === 'grass') {
       const band = p3dSignedBand(lane, s);
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, band[0], band[1], lane.y), mat));
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, band[0], band[1], lane.y, true), mat));
     }
   });
 }
@@ -577,7 +596,7 @@ function build3DScene() {
       const px3 = p.x - cx;
       const pz3 = p.y - cy;
       const lane = P3D_SURFACE_LANES[p.surface] || P3D_SURFACE_LANES.flat_kerb;
-      const yOff = lane.y + 0.01;
+      const yOff = lane.y + 0.04;  // sit on road surface (half cylinder height above y)
       // Radius: paint layer r is in 2D world units — use directly
       const r3 = Math.max(1, p.r * 0.92);
       const geo = new THREE.CylinderGeometry(r3, r3, 0.07, 14);
