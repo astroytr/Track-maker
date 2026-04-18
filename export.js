@@ -376,6 +376,7 @@ function updateExportPreview() {
   const key = raw || 'my_circuit';
   document.getElementById('export-fname-preview').textContent = 'track_' + key + '.js';
   document.getElementById('export-key-preview').textContent   = key;
+  document.getElementById('export-code').value = buildExportCode();
 }
 
 function openExport() {
