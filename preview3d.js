@@ -496,12 +496,16 @@ function build3DScene() {
   camBtn.onclick = () => {
     p3dFreeRoam = !p3dFreeRoam;
     if (p3dFreeRoam) {
-      // Seed free-roam position from current orbit camera
+      // Seed position from orbit camera
       p3dCamPos.x = preview3dCamera.position.x;
       p3dCamPos.y = preview3dCamera.position.y;
       p3dCamPos.z = preview3dCamera.position.z;
-      p3dCamYaw   = p3dOrbit.ax;
-      p3dCamPitch = -p3dOrbit.ay + Math.PI/2;
+      // Yaw: orbit.ax is the azimuth — camera looks INWARD so add π
+      p3dCamYaw = p3dOrbit.ax + Math.PI;
+      // Pitch: orbit.ay is polar angle from top (0=top, π/2=side).
+      // Free-roam pitch is elevation from horizon (+up, -down).
+      // From above the track looking in: pitch = -(π/2 - orbit.ay) = orbit.ay - π/2
+      p3dCamPitch = Math.max(-1.2, Math.min(0, p3dOrbit.ay - Math.PI / 2));
       camBtn.textContent = '🔭 Orbit';
       camBtn.style.borderColor = '#a78bfa';
       camBtn.style.color = '#a78bfa';
