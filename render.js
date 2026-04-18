@@ -70,7 +70,7 @@ const SURFACES = {
   tyrewall:  { color: 'rgba(55,55,55,0.90)',     label: 'Tyre Wall',    dot: '#555555', icon: '⬛' },
 };
 
-const TRACK_HALF_WIDTH = 14;
+const TRACK_HALF_WIDTH = 60;
 const SURFACE_LANES = {
   flat_kerb: { inner: 14.2, outer: 18.2, labelOffset: 26 },
   rumble:    { inner: 14.8, outer: 19.8, labelOffset: 29 },
