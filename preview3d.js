@@ -11,6 +11,8 @@ let preview3dScene    = null;
 let preview3dCamera   = null;
 let preview3dAnimId   = null;
 
+const P3D_ROAD_Y = 0.02;
+
 let p3dPos   = { x: 0, y: 200, z: 0 };
 let p3dYaw   = 0;
 let p3dPitch = -0.4;
@@ -403,7 +405,7 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       let pi = 0;
       for (let i = 0; i < n; i += stepEvery) {
         const p = spPts[i], nm = normals[i];
-        dummy.position.set(p.x + nm.px*(sideOff - 0.06*s), ROAD_Y + H/2, p.z + nm.pz*(sideOff - 0.06*s));
+        dummy.position.set(p.x + nm.px*(sideOff - 0.06*s), P3D_ROAD_Y + H/2, p.z + nm.pz*(sideOff - 0.06*s));
         dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
         dummy.updateMatrix();
         postMesh.setMatrixAt(pi++, dummy.matrix);
@@ -423,8 +425,8 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       const stepEvery = 3;
       const count = Math.ceil(n / stepEvery);
       for (const [yOff, geo, mat] of [
-        [ROAD_Y + BH*0.5, blockGeo, blockMat], [ROAD_Y + BH*1.5, blockGeo, blockMat],
-        [ROAD_Y + BH*0.5, stripeGeo, stripeMat], [ROAD_Y + BH*1.5, stripeGeo, stripeMat],
+        [P3D_ROAD_Y + BH*0.5, blockGeo, blockMat], [P3D_ROAD_Y + BH*1.5, blockGeo, blockMat],
+        [P3D_ROAD_Y + BH*0.5, stripeGeo, stripeMat], [P3D_ROAD_Y + BH*1.5, stripeGeo, stripeMat],
       ]) {
         const mesh = new THREE.InstancedMesh(geo, mat, count);
         let idx = 0;
@@ -450,8 +452,8 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       const stepEvery = 4;
       const count = Math.ceil(n / stepEvery);
       for (const [yOff, geo, mat] of [
-        [ROAD_Y + 0.24, tyrGeo, tyrMat], [ROAD_Y + 0.72, tyrGeo, tyrMat],
-        [ROAD_Y + 0.24, swGeo, swMat],   [ROAD_Y + 0.72, swGeo, swMat],
+        [P3D_ROAD_Y + 0.24, tyrGeo, tyrMat], [P3D_ROAD_Y + 0.72, tyrGeo, tyrMat],
+        [P3D_ROAD_Y + 0.24, swGeo, swMat],   [P3D_ROAD_Y + 0.72, swGeo, swMat],
       ]) {
         const mesh = new THREE.InstancedMesh(geo, mat, count);
         let idx = 0;
@@ -475,7 +477,7 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
         p3dRibbon(spPts, off - halfW, off + halfW, 0.02, true), whiteMat));
       const pts3 = spPts.map((p, i) => {
         const { px, pz } = normals[i];
-        return new THREE.Vector3(p.x + px*off, ROAD_Y + 0.18, p.z + pz*off);
+        return new THREE.Vector3(p.x + px*off, P3D_ROAD_Y + 0.18, p.z + pz*off);
       });
       scene.add(new THREE.Mesh(
         new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts3, false, 'catmullrom', 0.5), pts3.length*2, 0.18, 8, false),
@@ -607,18 +609,18 @@ function build3DScene() {
 
   const TH = typeof TRACK_HALF_WIDTH !== 'undefined' ? TRACK_HALF_WIDTH : 7;
   const dblSide = { side: THREE.DoubleSide };
-  const ROAD_Y = 0.02;
+
 
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH, TH, ROAD_Y),
+    p3dRibbon(spPts, -TH, TH, P3D_ROAD_Y),
     new THREE.MeshLambertMaterial({ color: 0x333338, ...dblSide })
   ));
 
   // Flat kerb — alternating red/white at track edge, always present
   {
     const kerbInner = TH, kerbOuter = TH + 1.2;
-    const [gKA, gKB] = p3dKerbRibbon(spPts, kerbInner, kerbOuter, ROAD_Y + 0.05, 6);
-    const [gKC, gKD] = p3dKerbRibbon(spPts, -kerbOuter, -kerbInner, ROAD_Y + 0.05, 6);
+    const [gKA, gKB] = p3dKerbRibbon(spPts, kerbInner, kerbOuter, P3D_ROAD_Y + 0.05, 6);
+    const [gKC, gKD] = p3dKerbRibbon(spPts, -kerbOuter, -kerbInner, P3D_ROAD_Y + 0.05, 6);
     preview3dScene.add(new THREE.Mesh(gKA, new THREE.MeshLambertMaterial({ color: 0xe8392a, ...dblSide })));
     preview3dScene.add(new THREE.Mesh(gKB, new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })));
     preview3dScene.add(new THREE.Mesh(gKC, new THREE.MeshLambertMaterial({ color: 0xe8392a, ...dblSide })));
@@ -646,7 +648,7 @@ function build3DScene() {
           for (let r = 0; r <= radSegs; r++) {
             const t = r / radSegs;
             const latOff = lo + t * W * s;
-            const archY = Math.sin(Math.PI * t) * peakH + ROAD_Y + 0.01;
+            const archY = Math.sin(Math.PI * t) * peakH + P3D_ROAD_Y + 0.01;
             pos.push(pi.x + nm.px*latOff, archY, pi.z + nm.pz*latOff);
           }
         }
@@ -663,11 +665,11 @@ function build3DScene() {
   }
 
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH - 0.08, TH + 0.08, ROAD_Y + 0.12),
+    p3dRibbon(spPts, TH - 0.08, TH + 0.08, P3D_ROAD_Y + 0.12),
     new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })
   ));
   preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH - 0.08, -TH + 0.08, ROAD_Y + 0.12),
+    p3dRibbon(spPts, -TH - 0.08, -TH + 0.08, P3D_ROAD_Y + 0.12),
     new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })
   ));
 
@@ -680,11 +682,11 @@ function build3DScene() {
     const colorA = c % 2 === 0 ? 0xffffff : 0x111111;
     const colorB = c % 2 === 0 ? 0x111111 : 0xffffff;
     preview3dScene.add(new THREE.Mesh(
-      p3dRibbon(sfSeg, inner, outer, ROAD_Y + 0.02),
+      p3dRibbon(sfSeg, inner, outer, P3D_ROAD_Y + 0.02),
       new THREE.MeshLambertMaterial({ color: colorA, ...dblSide })
     ));
     preview3dScene.add(new THREE.Mesh(
-      p3dRibbon(sfSeg, -inner, -outer, ROAD_Y + 0.02),
+      p3dRibbon(sfSeg, -inner, -outer, P3D_ROAD_Y + 0.02),
       new THREE.MeshLambertMaterial({ color: colorB, ...dblSide })
     ));
   }
@@ -727,7 +729,7 @@ function build3DScene() {
   }
 
   p3dCarGroup.scale.setScalar(carScale);
-  p3dCarGroup.position.set(sfPt.x, ROAD_Y + 0.36 * carScale, sfPt.z);
+  p3dCarGroup.position.set(sfPt.x, P3D_ROAD_Y + 0.36 * carScale, sfPt.z);
   p3dCarGroup.rotation.y = sfYaw;
   preview3dScene.add(p3dCarGroup);
 
@@ -778,11 +780,11 @@ function build3DScene() {
   const csh = Math.cos(sfYaw), snh = Math.sin(sfYaw);
   _p3dChasePos = {
     x:   sfPt.x - snh * CHASE_D,
-    y:   ROAD_Y + CHASE_H,
+    y:   P3D_ROAD_Y + CHASE_H,
     z:   sfPt.z - csh * CHASE_D,
     yaw: sfYaw,
     tx:  sfPt.x,
-    ty:  ROAD_Y + 0.65,
+    ty:  P3D_ROAD_Y + 0.65,
     tz:  sfPt.z
   };
 
