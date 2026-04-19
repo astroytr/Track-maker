@@ -746,14 +746,117 @@ function build3DScene() {
   p3dCarGroup.rotation.y = sfYaw;
   preview3dScene.add(p3dCarGroup);
 
+  // ── Auto-detect corners and fill gravel/sand runoff where user hasn't painted ──
+  // Real tracks have runoff at every corner. We compute curvature per spline point,
+  // find corner zones (sustained high curvature), then place gravel on the outside
+  // and sand on the inside of each corner, only where barrierSegments has no runoff.
+  {
+    const spl = spPts.length;
+    const fullNormals = p3dComputeNormals(spPts);
+
+    // Compute curvature at each spline point
+    const curvature = new Float32Array(spl);
+    for (let i = 0; i < spl; i++) {
+      const p0 = spPts[(i - 1 + spl) % spl];
+      const p1 = spPts[i];
+      const p2 = spPts[(i + 1) % spl];
+      const v1x = p1.x - p0.x, v1z = p1.z - p0.z;
+      const v2x = p2.x - p1.x, v2z = p2.z - p1.z;
+      const cross = Math.abs(v1x * v2z - v1z * v2x);
+      const len = (Math.sqrt(v1x*v1x+v1z*v1z) * Math.sqrt(v2x*v2x+v2z*v2z)) || 1;
+      curvature[i] = cross / len;
+    }
+
+    // Build set of spline-point ranges already covered by user runoff surfaces
+    const runoffSurfaces = new Set(['gravel','sand','grass']);
+    const userRunoffPts = new Set();
+    p3dMergeBarrierSegments(barrierSegments.filter(s => runoffSurfaces.has(s.surface)), n)
+      .forEach(seg => {
+        const fi = Math.round(seg.from / n * spl) % spl;
+        const ti = Math.round(seg.to   / n * spl) % spl;
+        const end = (ti <= fi) ? fi + spl : ti;
+        for (let i = fi; i <= end; i++) userRunoffPts.add(i % spl);
+      });
+
+    // Find corner zones: spline pts where curvature > threshold, dilate by margin
+    const CURV_THRESH = 0.018;
+    const MARGIN = 12; // extra pts either side of corner peak
+    const inCorner = new Uint8Array(spl);
+    for (let i = 0; i < spl; i++) {
+      if (curvature[i] > CURV_THRESH) {
+        for (let d = -MARGIN; d <= MARGIN; d++) inCorner[(i + d + spl) % spl] = 1;
+      }
+    }
+
+    // Determine corner exit side from curvature sign (cross product sign)
+    // Positive cross = turning left → outside = right (s=+1), inside = left (s=-1)
+    // Negative cross = turning right → outside = left (s=-1), inside = right (s=+1)
+    // We place gravel on OUTSIDE of corner, grass/sand on inside
+    const cornerSign = new Float32Array(spl);
+    for (let i = 0; i < spl; i++) {
+      const p0 = spPts[(i - 1 + spl) % spl];
+      const p1 = spPts[i];
+      const p2 = spPts[(i + 1) % spl];
+      const v1x = p1.x - p0.x, v1z = p1.z - p0.z;
+      const v2x = p2.x - p1.x, v2z = p2.z - p1.z;
+      cornerSign[i] = Math.sign(v1x * v2z - v1z * v2x); // +1 = left turn, -1 = right turn
+    }
+
+    // Collect corner segments — runs of consecutive inCorner points not user-covered
+    let segStart = -1;
+    const autoCorners = [];
+    for (let i = 0; i <= spl; i++) {
+      const ii = i % spl;
+      const active = inCorner[ii] && !userRunoffPts.has(ii);
+      if (active && segStart === -1) { segStart = i; }
+      else if (!active && segStart !== -1) {
+        autoCorners.push({ from: segStart, to: i - 1 });
+        segStart = -1;
+      }
+    }
+
+    // Place gravel on outside, grass on inside for each auto corner
+    const gravelMat = new THREE.MeshLambertMaterial({ color: 0xc8b89a, side: THREE.DoubleSide });
+    const grassMat2 = new THREE.MeshLambertMaterial({ color: 0x2d5a1b, side: THREE.DoubleSide });
+    const gravelLane = P3D_SURFACE_LANES.gravel;
+    const grassLane  = P3D_SURFACE_LANES.grass;
+
+    autoCorners.forEach(({ from, to }) => {
+      const pts = [];
+      for (let i = from; i <= to; i++) pts.push(spPts[i % spl]);
+      if (pts.length < 2) return;
+
+      // Dominant turn direction for this corner
+      let signSum = 0;
+      for (let i = from; i <= to; i++) signSum += cornerSign[i % spl];
+      const outsideS = signSum > 0 ? 1 : -1; // outside = right if left-hand turn
+      const insideS  = -outsideS;
+
+      // Outside: gravel runoff (11.2u to 20.5u from centre)
+      const gOuter = gravelLane.outer, gInner = gravelLane.inner;
+      preview3dScene.add(new THREE.Mesh(
+        p3dRibbon(pts, outsideS * gInner, outsideS * gOuter, P3D_ROAD_Y + 0.001, true),
+        gravelMat
+      ));
+
+      // Inside: grass patch (9.2u to 16u) — tighter, no run-off needed
+      preview3dScene.add(new THREE.Mesh(
+        p3dRibbon(pts, insideS * 9.2, insideS * 16.0, P3D_ROAD_Y + 0.001, true),
+        grassMat2
+      ));
+    });
+  }
+
+  // ── User-placed barrier segments ──
   p3dMergeBarrierSegments(barrierSegments, n).forEach(seg => {
     const spl = spPts.length;
     const fromIdx = Math.round(seg.from / n * spl) % spl;
-    let   toIdx   = Math.round(seg.to   / n * spl) % spl;
-    // Handle wrap-around (segment crosses lap start point)
+    const toIdx   = Math.round(seg.to   / n * spl) % spl;
     let segPts;
-    if (toIdx <= fromIdx) {
+    if (seg.to < seg.from) {
       segPts = [...spPts.slice(fromIdx), ...spPts.slice(0, toIdx + 1)];
+    } else if (toIdx < fromIdx) {
+      segPts = spPts.slice(fromIdx);
     } else {
       segPts = spPts.slice(fromIdx, toIdx + 1);
     }
