@@ -461,10 +461,17 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
 
     // ── GRAVEL — wide tan/brown trap with coarse stipple ────────────
     case 'gravel': {
+      // Soft blended edge — wider semi-transparent halo so gravel fades into grass
+      ctx.lineWidth = w * 1.28;
+      ctx.strokeStyle = 'rgba(145,128,95,0.32)';
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineWidth = w * 1.12;
+      ctx.strokeStyle = 'rgba(155,138,105,0.55)';
+      _polyPath(ctx, poly); ctx.stroke();
       // Wide base — full runoff width, solid fill
       ctx.lineWidth = w;
       ctx.strokeStyle = 'rgba(168,152,118,1.0)'; // greyer-brown = gravel
-      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       _polyPath(ctx, poly); ctx.stroke();
       // Coarse stipple dots scattered across full width
       const arcs = _arcLengths(poly);
@@ -491,9 +498,16 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
 
     // ── SAND — wide warm-yellow trap with fine grain stipple ────────
     case 'sand': {
+      // Soft blended edge — halo that fades sand into surrounding grass
+      ctx.lineWidth = w * 1.28;
+      ctx.strokeStyle = 'rgba(195,175,100,0.30)';
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineWidth = w * 1.12;
+      ctx.strokeStyle = 'rgba(210,188,115,0.52)';
+      _polyPath(ctx, poly); ctx.stroke();
       ctx.lineWidth = w;
       ctx.strokeStyle = 'rgba(235,215,145,1.0)'; // warm yellow = sand
-      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       _polyPath(ctx, poly); ctx.stroke();
       // Fine grain — smaller dots, lighter colour than gravel
       const arcs = _arcLengths(poly);
@@ -744,10 +758,12 @@ function drawAutoSurfaces() {
     return s >= 0 ? 1 : -1; // +1=left turn (outside=right), -1=right turn
   }
 
-  // ── 1. STRAIGHTS: TecPro at perimeter ──
+  // ── 1. STRAIGHTS: TecPro at perimeter — extend into corners so no gap at transitions ──
+  const STRAIGHT_EXTEND = Math.max(8, Math.round(MARGIN * 0.7));
   const tecproLane = getSurfaceLane('tecpro', 0);
   collectRuns(i => !inCorner[i]).forEach(run => {
-    const pts = runPts(run);
+    const extRun = { from: run.from - STRAIGHT_EXTEND, to: run.to + STRAIGHT_EXTEND };
+    const pts = runPts(extRun);
     if (pts.length < 2) return;
     [-1, 1].forEach(s => {
       const poly = buildOffsetScreenPolyline(pts, s, tecproLane.center);
@@ -755,10 +771,12 @@ function drawAutoSurfaces() {
     });
   });
 
-  // ── 2. CORNERS: gravel on outside ──
+  // ── 2. CORNERS: gravel on outside — extend slightly so it tapers into straight ──
+  const GRAVEL_EXTEND = Math.max(4, Math.round(MARGIN * 0.35));
   const gravelLane = getSurfaceLane('gravel', 0);
   collectRuns(i => inCorner[i] && !userRunoffPts.has(i)).forEach(run => {
-    const pts = runPts(run);
+    const extRun = { from: run.from - GRAVEL_EXTEND, to: run.to + GRAVEL_EXTEND };
+    const pts = runPts(extRun);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
     const poly = buildOffsetScreenPolyline(pts, ds, gravelLane.center);
@@ -787,9 +805,14 @@ function drawAutoSurfaces() {
   });
 
   // ── 5. BEHIND GRAVEL AT CORNERS: tyre wall ──
+  // Extend runs by the same margin as TecPro so they overlap at corner transitions.
+  const TYRE_EXTEND = STRAIGHT_EXTEND;
   const tyreLane = getSurfaceLane('tyrewall', 0);
   collectRuns(i => inCorner[i]).forEach(run => {
-    const pts = runPts(run);
+    const extFrom = run.from - TYRE_EXTEND;
+    const extTo   = run.to   + TYRE_EXTEND;
+    const extRun  = { from: extFrom, to: extTo };
+    const pts = runPts(extRun);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
     const poly = buildOffsetScreenPolyline(pts, ds, tyreLane.center);
