@@ -958,8 +958,8 @@ function build3DScene() {
       const stepEvery = 4;
       const count  = Math.ceil(pts.length / stepEvery) + 1;
       for (const [yOff, geo, mat] of [
-        [P3D_ROAD_Y + 0.24, tyrGeo, tyrMat],
-        [P3D_ROAD_Y + 0.72, tyrGeo, tyrMat],
+        [P3D_ROAD_Y + 0.24, tyrGeo, tyreMat],
+        [P3D_ROAD_Y + 0.72, tyrGeo, tyreMat],
         [P3D_ROAD_Y + 0.24, swGeo,  tyrSwMat],
         [P3D_ROAD_Y + 0.72, swGeo,  tyrSwMat],
       ]) {

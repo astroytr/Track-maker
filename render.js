@@ -463,23 +463,23 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
     case 'gravel': {
       // Wide base — full runoff width, solid fill
       ctx.lineWidth = w;
-      ctx.strokeStyle = 'rgba(195,172,130,1.0)';
+      ctx.strokeStyle = 'rgba(168,152,118,1.0)'; // greyer-brown = gravel
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       _polyPath(ctx, poly); ctx.stroke();
       // Coarse stipple dots scattered across full width
       const arcs = _arcLengths(poly);
       const total = arcs[arcs.length - 1];
-      const spacing = Math.max(2.5, 4 * zoom);
+      const spacing = Math.max(4, 7 * zoom);
       const halfW = w * 0.44;
       for (let d = spacing * 0.5; d < total; d += spacing) {
         const p = _polyAtDist(poly, arcs, d);
         const perp = { x: -p.ty, y: p.tx };
         // Scatter dots across the full width using multiple offsets
-        for (let row = -2; row <= 2; row++) {
-          const off = (row / 2.5) * halfW + (Math.sin(d * 1.7 + row) * 0.3) * halfW;
-          const r = Math.max(1.2, (1.5 + Math.sin(d * 3.3 + row) * 0.5) * zoom);
-          const alpha = 0.45 + Math.sin(d * 2.1 + row * 1.3) * 0.2;
-          ctx.fillStyle = 'rgba(145,122,88,' + alpha + ')';
+        for (let row = -1; row <= 1; row++) {
+          const off = row * halfW * 0.6 + (Math.sin(d * 1.7 + row) * 0.25) * halfW;
+          const r = Math.max(1.2, (1.4 + Math.sin(d * 3.3 + row) * 0.4) * zoom);
+          const alpha = 0.5 + Math.sin(d * 2.1 + row * 1.3) * 0.2;
+          ctx.fillStyle = 'rgba(118,100,72,' + alpha + ')';
           ctx.beginPath();
           ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
           ctx.fill();
@@ -492,22 +492,22 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
     // ── SAND — wide warm-yellow trap with fine grain stipple ────────
     case 'sand': {
       ctx.lineWidth = w;
-      ctx.strokeStyle = 'rgba(224,202,138,1.0)';
+      ctx.strokeStyle = 'rgba(235,215,145,1.0)'; // warm yellow = sand
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       _polyPath(ctx, poly); ctx.stroke();
       // Fine grain — smaller dots, lighter colour than gravel
       const arcs = _arcLengths(poly);
       const total = arcs[arcs.length - 1];
-      const spacing = Math.max(2, 3.5 * zoom);
+      const spacing = Math.max(3.5, 6 * zoom);
       const halfW = w * 0.44;
       for (let d = spacing * 0.5; d < total; d += spacing) {
         const p = _polyAtDist(poly, arcs, d);
         const perp = { x: -p.ty, y: p.tx };
-        for (let row = -2; row <= 2; row++) {
-          const off = (row / 2.5) * halfW + (Math.cos(d * 2.3 + row) * 0.25) * halfW;
-          const r = Math.max(0.9, (1.1 + Math.cos(d * 4.1 + row) * 0.4) * zoom);
-          const alpha = 0.38 + Math.cos(d * 1.9 + row * 1.1) * 0.18;
-          ctx.fillStyle = 'rgba(185,158,90,' + alpha + ')';
+        for (let row = -1; row <= 1; row++) {
+          const off = row * halfW * 0.6 + (Math.cos(d * 2.3 + row) * 0.2) * halfW;
+          const r = Math.max(0.9, (1.0 + Math.cos(d * 4.1 + row) * 0.35) * zoom);
+          const alpha = 0.42 + Math.cos(d * 1.9 + row * 1.1) * 0.18;
+          ctx.fillStyle = 'rgba(178,150,82,' + alpha + ')';
           ctx.beginPath();
           ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
           ctx.fill();
@@ -524,8 +524,9 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       ctx.strokeStyle = 'rgba(42,100,25,1.0)';
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       _polyPath(ctx, poly); ctx.stroke();
-      ctx.lineWidth = Math.max(1.5, w * 0.28);
-      ctx.strokeStyle = 'rgba(25,65,12,0.5)';
+      // Lighter highlight stripe for grass texture
+      ctx.lineWidth = Math.max(1.5, w * 0.22);
+      ctx.strokeStyle = 'rgba(80,140,30,0.40)';
       _polyPath(ctx, poly); ctx.stroke();
       ctx.lineCap = 'butt';
       break;
@@ -541,7 +542,7 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       ctx.strokeStyle = 'rgba(20,20,20,0.55)';
       _polyPath(ctx, poly); ctx.stroke();
       // Two W-beam rail bodies (draw as two parallel thick stripes)
-      for (const [col, lw] of [['rgba(190,200,210,1.0)', w], ['rgba(240,245,250,0.85)', Math.max(1.5, w*0.38)]]) {
+      for (const [col, lw] of [['rgba(160,180,200,1.0)', w], ['rgba(235,245,255,0.90)', Math.max(2, w*0.42)]]) {
         ctx.lineWidth = lw;
         ctx.strokeStyle = col;
         _polyPath(ctx, poly); ctx.stroke();
@@ -549,8 +550,8 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       // Corrugation ticks — denser and taller than before to suggest W-profile
       const tickSpacing = Math.max(3, 5 * zoom);
       const tickH = Math.max(2.5, w * 0.75);
-      ctx.strokeStyle = 'rgba(90,100,110,0.80)';
-      ctx.lineWidth = Math.max(1, zoom * 0.9);
+      ctx.strokeStyle = 'rgba(60,80,100,0.90)';
+      ctx.lineWidth = Math.max(1.5, zoom * 1.2);
       ctx.lineCap = 'butt';
       for (let d = 0; d < total; d += tickSpacing) {
         const p = _polyAtDist(poly, arcs, d);
@@ -585,7 +586,7 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
         ctx.stroke();
         // Main blue body
         ctx.lineWidth = w;
-        ctx.strokeStyle = 'rgba(30,80,200,1.0)';
+        ctx.strokeStyle = 'rgba(20,70,220,1.0)';
         ctx.beginPath();
         for (let s = 0; s <= steps; s++) {
           const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
@@ -594,7 +595,7 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
         ctx.stroke();
         // Light face highlight
         ctx.lineWidth = Math.max(1.5, w * 0.35);
-        ctx.strokeStyle = 'rgba(120,170,255,0.70)';
+        ctx.strokeStyle = 'rgba(140,200,255,0.85)';
         ctx.beginPath();
         for (let s = 0; s <= steps; s++) {
           const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
@@ -618,9 +619,13 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       ctx.lineWidth = w;
       ctx.strokeStyle = 'rgba(22,22,22,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
-      // White sidewall stripe
-      ctx.lineWidth = Math.max(2, w * 0.28);
-      ctx.strokeStyle = 'rgba(230,230,230,0.80)';
+      // Red safety stripe (standard tyre wall marking)
+      ctx.lineWidth = Math.max(2, w * 0.32);
+      ctx.strokeStyle = 'rgba(220,30,30,0.90)';
+      _polyPath(ctx, poly); ctx.stroke();
+      // White band on red stripe
+      ctx.lineWidth = Math.max(1, w * 0.12);
+      ctx.strokeStyle = 'rgba(255,255,255,0.70)';
       _polyPath(ctx, poly); ctx.stroke();
       // Individual tyre outlines
       const arcs = _arcLengths(poly);
@@ -666,7 +671,7 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
 // ═══════════════════════════════════════════════════
 function drawAutoSurfaces() {
   if (waypoints.length < 3) return;
-  const splinePts = buildSplinePoints(20);
+  const splinePts = buildSplinePoints(12);
   const spl = splinePts.length;
   if (spl < 4) return;
 
@@ -685,9 +690,9 @@ function drawAutoSurfaces() {
     cornerSign[i] = Math.sign(cross); // +1=left turn, -1=right turn
   }
 
-  const CORNER_THRESH = 0.018;
-  const SLOW_THRESH   = 0.045;
-  const MARGIN        = 14; // dilate corner zone
+  const CORNER_THRESH = 0.015;
+  const SLOW_THRESH   = 0.040;
+  const MARGIN        = 24; // dilate — wide enough to close transition gaps
 
   const inCorner = new Uint8Array(spl);
   const isSlow   = new Uint8Array(spl);
@@ -709,21 +714,27 @@ function drawAutoSurfaces() {
     for (let i = sStart; i <= sEnd; i++) userRunoffPts.add(i);
   });
 
-  // Helper: collect runs of consecutive spline indices matching predicate
+  // Helper: collect runs — wrap-around safe so first+last zones merge into one run
   function collectRuns(predFn) {
     const runs = [];
     let start = -1;
-    for (let i = 0; i <= spl; i++) {
-      const active = predFn(i % spl);
+    for (let i = 0; i < spl; i++) {
+      const active = predFn(i);
       if (active && start === -1) start = i;
       else if (!active && start !== -1) { runs.push({ from: start, to: i - 1 }); start = -1; }
+    }
+    if (start !== -1) runs.push({ from: start, to: spl - 1 });
+    // Merge wrap: if last run ends at spl-1 AND first run starts at 0 → one continuous zone
+    if (runs.length >= 2 && runs[0].from === 0 && runs[runs.length - 1].to === spl - 1) {
+      const tail = runs.pop();
+      runs[0] = { from: tail.from - spl, to: runs[0].to }; // negative from = wrapped
     }
     return runs;
   }
 
   function runPts(run) {
     const pts = [];
-    for (let i = run.from; i <= run.to; i++) pts.push(splinePts[i % spl]);
+    for (let i = run.from; i <= run.to; i++) pts.push(splinePts[((i % spl) + spl) % spl]);
     return pts;
   }
 
@@ -949,7 +960,7 @@ function expandBarrierDrawItems(segments) {
 
 function mergeExpandedBarrierItems(items) {
   if (!items.length || !waypoints.length) return items;
-  const gapTolerance = Math.max(2, Math.floor(waypoints.length * 0.018));
+  const gapTolerance = Math.max(4, Math.floor(waypoints.length * 0.04)); // wider gap bridge
   const sorted = items.slice().sort((a,b) =>
     String(a.surface).localeCompare(String(b.surface)) ||
     a.sideNum - b.sideNum ||
