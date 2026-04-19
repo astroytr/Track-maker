@@ -33,21 +33,22 @@ const SURF_COLOR_3D = {
 };
 
 const P3D_SURFACE_LANES = {
-  // Offsets match render.js SURFACE_LANES exactly (world units from centreline)
+  // Offsets EXACTLY match render.js SURFACE_LANES (world units from centreline)
+  // Track half-width = 7u. Layout: road → kerb → sausage → grass/runoff → barrier
   flat_kerb: { inner:  7.0, outer:  8.1, y: 0.05  },
-  rumble:    { inner:  7.0, outer:  8.1, y: 0.06  },
+  rumble:    { inner:  7.0, outer:  8.1, y: 0.10  },
   sausage:   { inner:  8.1, outer:  9.2, y: 0.18  },
   grass:     { inner:  9.2, outer: 25.5, y: 0.005 },
   gravel:    { inner: 11.2, outer: 20.5, y: 0.01  },
   sand:      { inner: 11.2, outer: 20.5, y: 0.01  },
-  tecpro:    { inner: 20.5, outer: 22.8, y: 0.50  },
-  armco:     { inner: 22.5, outer: 23.5, y: 0.45  },
-  tyrewall:  { inner: 21.5, outer: 23.8, y: 0.24  },
+  tecpro:    { inner: 20.5, outer: 22.8, y: 0.90  },
+  armco:     { inner: 22.5, outer: 23.5, y: 0.40  },
+  tyrewall:  { inner: 21.5, outer: 23.8, y: 0.25  },
 };
 
 function p3dLane(surface, lane = 0) {
   const cfg = P3D_SURFACE_LANES[surface] || P3D_SURFACE_LANES.flat_kerb;
-  const extra = Math.max(0, lane || 0) * 4.5;
+  const extra = Math.max(0, lane || 0) * 5.5;  // matches render.js LANE_STEP
   return {
     inner:  cfg.inner + extra,
     outer:  cfg.outer + extra,
@@ -316,33 +317,34 @@ function p3dSausageRibbon(spPts, sideOff, normals) {
   return new THREE.TubeGeometry(curve, pts3.length * 2, 0.18, 6, false);
 }
 
-// ─── Vertical barrier ribbon (miter-corrected) ────────────────────
-function p3dBarrierRibbon(pts, sideOff, yBase, height) {
+// ─── Thick rail ribbon — front+back+top faces, real depth ─────────
+// sideOff: signed lateral offset. depth: thickness toward centreline.
+function p3dBarrierRibbon(pts, sideOff, yBase, height, depth=0.08) {
   const n = pts.length;
   if (n < 2) return new THREE.BufferGeometry();
   const normals = p3dComputeNormalsOpen(pts);
   const pos=[], nor=[], idx=[];
-  // Always open path — barrier segments are never full loops
+  const backOff = sideOff - depth * Math.sign(sideOff || 1);
   for (let i=0; i<n; i++) {
     let px, pz;
-    if (i === 0 || i === n - 1) {
-      px = normals[i].px; pz = normals[i].pz;
-    } else {
-      const m = p3dMiterNormal(normals, i);
-      px = m.px; pz = m.pz;
-    }
-    const c = pts[i];
-    const ox = c.x + px*sideOff, oz = c.z + pz*sideOff;
-    pos.push(ox, yBase, oz, ox, yBase+height, oz);
-    nor.push(normals[i].px, 0, normals[i].pz, normals[i].px, 0, normals[i].pz);
+    if (i===0||i===n-1) { px=normals[i].px; pz=normals[i].pz; }
+    else { const m=p3dMiterNormal(normals,i); px=m.px; pz=m.pz; }
+    const c=pts[i];
+    const fx=c.x+px*sideOff, fz=c.z+pz*sideOff;
+    const bx=c.x+px*backOff,  bz=c.z+pz*backOff;
+    const nx=normals[i].px, nz=normals[i].pz;
+    pos.push(fx,yBase,fz, fx,yBase+height,fz, bx,yBase,bz, bx,yBase+height,bz);
+    nor.push(nx,0,nz, nx,0,nz, -nx,0,-nz, -nx,0,-nz);
   }
   for (let i=0; i<n-1; i++) {
-    const b = i*2;
-    idx.push(b,b+1,b+2, b+1,b+3,b+2);
+    const b=i*4;
+    idx.push(b,b+1,b+4, b+1,b+5,b+4);       // front
+    idx.push(b+2,b+6,b+3, b+3,b+6,b+7);     // back
+    idx.push(b+1,b+3,b+5, b+3,b+7,b+5);     // top
   }
-  const g = new THREE.BufferGeometry();
-  g.setAttribute('position', new THREE.Float32BufferAttribute(pos,3));
-  g.setAttribute('normal',   new THREE.Float32BufferAttribute(nor,3));
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));
+  g.setAttribute('normal',  new THREE.Float32BufferAttribute(nor,3));
   g.setIndex(idx);
   return g;
 }
@@ -379,104 +381,164 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
   const sides = (side==='both'||!side) ? [-1,1] : [(side==='left'||side===-1) ? -1 : 1];
   const normals = p3dComputeNormalsOpen(spPts);
   const dblSide = THREE.DoubleSide;
+  const n = spPts.length;
 
   sides.forEach(s => {
     const lane  = p3dLane(surface, laneIndex || 0);
-    const color = SURF_COLOR_3D[surface] || 0xaaaaaa;
-    const mat   = new THREE.MeshLambertMaterial({ color, side: dblSide });
 
     if (surface === 'armco') {
-      // W-beam steel barrier: 3 horizontal rails + posts every ~6 pts
+      const railMat = new THREE.MeshLambertMaterial({ color: 0xc0c8d0, side: dblSide });
+      const postMat = new THREE.MeshLambertMaterial({ color: 0x778088, side: dblSide });
       const sideOff = lane.center * s;
-      const railMat = new THREE.MeshLambertMaterial({ color: 0xc8c8c8, side: dblSide });
-      const postMat = new THREE.MeshLambertMaterial({ color: 0x888888, side: dblSide });
-      // Three rails: bottom, mid, top (real armco is ~0.9m tall, 3 rails)
-      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, 0.00, 0.30), railMat));
-      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, 0.28, 0.06), railMat));
-      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, 0.56, 0.06), railMat));
-      scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, 0.84, 0.06), railMat));
-      // Posts every 6 spline points
-      const postGeo = new THREE.BoxGeometry(0.12, 0.95, 0.08);
-      const posts = p3dBuildInstanced(spPts, normals, sideOff, 6, postGeo, postMat, 0.475);
-      if (posts) scene.add(posts);
+      const H = 0.80;
+      // 3 W-beam rails: yBase at 0.10, 0.37, 0.64 each 0.13 tall with 0.08 depth
+      for (const yb of [0.10, 0.37, 0.64]) {
+        scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, yb, 0.13, 0.08), railMat));
+      }
+      // Posts every 5 pts — no hairpin skip so continuous
+      const postGeo = new THREE.BoxGeometry(0.10, H, 0.12);
+      const dummy = new THREE.Object3D();
+      const stepEvery = 5;
+      const postMesh = new THREE.InstancedMesh(postGeo, postMat, Math.ceil(n / stepEvery) + 1);
+      let pi = 0;
+      for (let i = 0; i < n; i += stepEvery) {
+        const p = spPts[i], nm = normals[i];
+        dummy.position.set(p.x + nm.px*(sideOff - 0.06*s), H/2, p.z + nm.pz*(sideOff - 0.06*s));
+        dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
+        dummy.updateMatrix();
+        postMesh.setMatrixAt(pi++, dummy.matrix);
+      }
+      postMesh.count = pi;
+      postMesh.instanceMatrix.needsUpdate = true;
+      scene.add(postMesh);
 
     } else if (surface === 'tecpro') {
-      // TecPro: stacked blue foam blocks, 1.1m wide × 1.0m tall × 1.1m deep, white stripe mid
-      const blockGeo = new THREE.BoxGeometry(1.1, 1.0, 1.1);
-      const blockMat = new THREE.MeshLambertMaterial({ color: 0x3a5fa8, side: dblSide });
-      const sideOff = lane.center * s;
-      const mesh = p3dBuildInstanced(spPts, normals, sideOff, 3, blockGeo, blockMat, 0.50);
-      if (mesh) scene.add(mesh);
-      // White horizontal stripe at mid-height
-      const stripeGeo = new THREE.BoxGeometry(1.12, 0.10, 1.12);
+      const BH = 0.90;
+      const blockMat  = new THREE.MeshLambertMaterial({ color: 0x3a5fa8, side: dblSide });
       const stripeMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const stripes = p3dBuildInstanced(spPts, normals, sideOff, 3, stripeGeo, stripeMat, 0.50);
-      if (stripes) scene.add(stripes);
+      const sideOff   = lane.center * s;
+      const blockGeo  = new THREE.BoxGeometry(1.0, BH, 1.0);
+      const stripeGeo = new THREE.BoxGeometry(1.02, 0.09, 1.02);
+      const dummy = new THREE.Object3D();
+      const stepEvery = 3;
+      const count = Math.ceil(n / stepEvery);
+      for (const [yOff, geo, mat] of [
+        [BH*0.5, blockGeo, blockMat], [BH*1.5, blockGeo, blockMat],
+        [BH*0.5, stripeGeo, stripeMat], [BH*1.5, stripeGeo, stripeMat],
+      ]) {
+        const mesh = new THREE.InstancedMesh(geo, mat, count);
+        let idx = 0;
+        for (let i = 0; i < n; i += stepEvery) {
+          const p = spPts[i], nm = normals[i];
+          dummy.position.set(p.x + nm.px*sideOff, yOff, p.z + nm.pz*sideOff);
+          dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(idx++, dummy.matrix);
+        }
+        mesh.count = idx; mesh.instanceMatrix.needsUpdate = true;
+        scene.add(mesh);
+      }
 
     } else if (surface === 'tyrewall') {
-      // Two rows of stacked tyres, white sidewalls visible
-      const tyrGeo = new THREE.CylinderGeometry(0.55, 0.55, 0.50, 12, 1);
-      const tyrMat = new THREE.MeshLambertMaterial({ color: 0x111111, side: dblSide });
+      const tyrMat  = new THREE.MeshLambertMaterial({ color: 0x111111, side: dblSide });
+      const swMat   = new THREE.MeshLambertMaterial({ color: 0xdddddd });
+      const tyrGeo  = new THREE.CylinderGeometry(0.46, 0.46, 0.48, 12, 1);
+      const swGeo   = new THREE.CylinderGeometry(0.47, 0.47, 0.05, 12, 1);
       const sideOff = lane.center * s;
-      const lower = p3dBuildInstanced(spPts, normals, sideOff, 4, tyrGeo, tyrMat, 0.25);
-      if (lower) scene.add(lower);
-      const upper = p3dBuildInstanced(spPts, normals, sideOff, 4, tyrGeo, tyrMat, 0.75);
-      if (upper) scene.add(upper);
-      // White sidewall rings (flat discs on each face)
-      const swGeo = new THREE.CylinderGeometry(0.56, 0.56, 0.05, 12, 1);
-      const swMat = new THREE.MeshLambertMaterial({ color: 0xffffff });
-      const sw1 = p3dBuildInstanced(spPts, normals, sideOff, 4, swGeo, swMat, 0.25);
-      const sw2 = p3dBuildInstanced(spPts, normals, sideOff, 4, swGeo, swMat, 0.75);
-      if (sw1) scene.add(sw1);
-      if (sw2) scene.add(sw2);
+      const dummy   = new THREE.Object3D();
+      const stepEvery = 4;
+      const count = Math.ceil(n / stepEvery);
+      for (const [yOff, geo, mat] of [
+        [0.24, tyrGeo, tyrMat], [0.72, tyrGeo, tyrMat],
+        [0.24, swGeo, swMat],   [0.72, swGeo, swMat],
+      ]) {
+        const mesh = new THREE.InstancedMesh(geo, mat, count);
+        let idx = 0;
+        for (let i = 0; i < n; i += stepEvery) {
+          const p = spPts[i], nm = normals[i];
+          dummy.position.set(p.x + nm.px*sideOff, yOff, p.z + nm.pz*sideOff);
+          dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(idx++, dummy.matrix);
+        }
+        mesh.count = idx; mesh.instanceMatrix.needsUpdate = true;
+        scene.add(mesh);
+      }
 
     } else if (surface === 'sausage') {
-      // Yellow sausage kerb: white flat base plate + yellow rounded tube on top
       const whiteMat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: dblSide });
       const off = lane.center * s;
-      const halfW = 0.55;
-      // White base plate (flat_kerb width under sausage)
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, off - halfW * s, off + halfW * s, 0.02, true), whiteMat));
-      // Yellow tube on top — the actual sausage
-      const tubeGeo = p3dSausageRibbon(spPts, off, normals);
-      scene.add(new THREE.Mesh(tubeGeo, mat));
+      const halfW = 0.60;
+      scene.add(new THREE.Mesh(
+        p3dRibbon(spPts, off - halfW, off + halfW, 0.02, true), whiteMat));
+      const pts3 = spPts.map((p, i) => {
+        const { px, pz } = normals[i];
+        return new THREE.Vector3(p.x + px*off, 0.18, p.z + pz*off);
+      });
+      scene.add(new THREE.Mesh(
+        new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts3, false, 'catmullrom', 0.5), pts3.length*2, 0.18, 8, false),
+        new THREE.MeshLambertMaterial({ color: 0xf5c518 })
+      ));
 
     } else if (surface === 'flat_kerb') {
-      // Alternating red/white flat kerb strips
-      const band = p3dSignedBand(lane, s);
-      const segLen = 6;
-      const [geoA, geoB] = p3dKerbRibbon(spPts, band[0], band[1], lane.y, segLen);
-      scene.add(new THREE.Mesh(geoA, mat));
+      const inner = lane.inner * s, outer = lane.outer * s;
+      const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
+      const [geoA, geoB] = p3dKerbRibbon(spPts, lo, hi, lane.y, 6);
+      scene.add(new THREE.Mesh(geoA, new THREE.MeshLambertMaterial({ color: 0xe8392a, side: dblSide })));
       scene.add(new THREE.Mesh(geoB, new THREE.MeshLambertMaterial({ color: 0xffffff, side: dblSide })));
 
     } else if (surface === 'rumble') {
-      // Alternating red/white wider rumble strips
-      const band = p3dSignedBand(lane, s);
-      const segLen = 5;
-      const [geoA, geoB] = p3dKerbRibbon(spPts, band[0], band[1], lane.y, segLen);
-      scene.add(new THREE.Mesh(geoA, mat));
-      scene.add(new THREE.Mesh(geoB, new THREE.MeshLambertMaterial({ color: 0xffffff, side: dblSide })));
+      // Arched corrugated humps — semicircular cross-section, alternating red/white
+      const redMat   = new THREE.MeshLambertMaterial({ color: 0xdd3333, side: dblSide });
+      const whiteMat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: dblSide });
+      const inner = lane.inner * s, outer = lane.outer * s;
+      const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
+      const W = Math.abs(hi - lo), peakH = 0.12, radSegs = 8, humpEvery = 5;
+      const totalHumps = Math.floor(n / humpEvery);
+      for (let h = 0; h < totalHumps; h++) {
+        const i0 = h * humpEvery;
+        const i1 = Math.min(i0 + humpEvery, n - 1);
+        const mat = h % 2 === 0 ? redMat : whiteMat;
+        const p0 = spPts[i0], p1 = spPts[i1];
+        const nm0 = normals[i0], nm1 = normals[i1];
+        const pos = [], idx = [];
+        const rowSize = radSegs + 1;
+        for (const [pi, nm] of [[p0, nm0], [p1, nm1]]) {
+          for (let r = 0; r <= radSegs; r++) {
+            const t = r / radSegs;
+            const lateralOff = lo + t * W;
+            const archY = Math.sin(Math.PI * t) * peakH + 0.02;
+            pos.push(pi.x + nm.px*lateralOff, archY, pi.z + nm.pz*lateralOff);
+          }
+        }
+        for (let r = 0; r < radSegs; r++) {
+          const a=r, b=r+1, c=rowSize+r, d=rowSize+r+1;
+          idx.push(a,c,b, b,c,d);
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.setIndex(idx);
+        geo.computeVertexNormals();
+        scene.add(new THREE.Mesh(geo, mat));
+      }
 
     } else if (surface === 'gravel') {
-      // Gravel trap — flat ribbon, always positive offsets from centreline
-      const inner = lane.inner * s;
-      const outer = lane.outer * s;
+      const inner = lane.inner * s, outer = lane.outer * s;
       const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, lo, hi, lane.y, true), mat));
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, lo, hi, lane.y, true),
+        new THREE.MeshLambertMaterial({ color: 0x9a8a78, side: dblSide })));
 
     } else if (surface === 'sand') {
-      // Sand trap — slightly raised, golden colour
-      const inner = lane.inner * s;
-      const outer = lane.outer * s;
+      const inner = lane.inner * s, outer = lane.outer * s;
       const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, lo, hi, lane.y + 0.02, true), mat));
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, lo, hi, lane.y + 0.02, true),
+        new THREE.MeshLambertMaterial({ color: 0xe8c87a, side: dblSide })));
 
     } else if (surface === 'grass') {
-      // Grass verge — flat ribbon
-      const inner = lane.inner * s;
-      const outer = lane.outer * s;
+      const inner = lane.inner * s, outer = lane.outer * s;
       const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, lo, hi, lane.y, true), mat));
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, lo, hi, lane.y, true),
+        new THREE.MeshLambertMaterial({ color: 0x3a7a3a, side: dblSide })));
     }
   });
 }
@@ -510,7 +572,7 @@ function build3DScene() {
 
   preview3dScene = new THREE.Scene();
   preview3dScene.background = new THREE.Color(0x87ceeb);
-  preview3dScene.fog = new THREE.Fog(0x87ceeb, 8000, 20000);
+  preview3dScene.fog = new THREE.Fog(0x87ceeb, 800, 3000);
 
   preview3dCamera = new THREE.PerspectiveCamera(60, ol.clientWidth/ol.clientHeight, 2.0, 80000);
 
@@ -531,7 +593,7 @@ function build3DScene() {
   gnd.receiveShadow = false;
   preview3dScene.add(gnd);
 
-  const { wps } = p3dGetScaledData();
+  const { wps, cx, cy } = p3dGetScaledData();
   if (wps.length < 2) return;
   const n = wps.length;
   const SPP = 14;
@@ -550,14 +612,53 @@ function build3DScene() {
     new THREE.MeshLambertMaterial({ color: 0x333338, ...dblSide })
   ));
 
-  preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, TH, TH + 0.7, ROAD_Y + 0.05),
-    new THREE.MeshLambertMaterial({ color: 0xff4444, ...dblSide })
-  ));
-  preview3dScene.add(new THREE.Mesh(
-    p3dRibbon(spPts, -TH - 0.7, -TH, ROAD_Y + 0.05),
-    new THREE.MeshLambertMaterial({ color: 0xff4444, ...dblSide })
-  ));
+  // Flat kerb — alternating red/white at track edge, always present
+  {
+    const kerbInner = TH, kerbOuter = TH + 1.2;
+    const [gKA, gKB] = p3dKerbRibbon(spPts, kerbInner, kerbOuter, ROAD_Y + 0.05, 6);
+    const [gKC, gKD] = p3dKerbRibbon(spPts, -kerbOuter, -kerbInner, ROAD_Y + 0.05, 6);
+    preview3dScene.add(new THREE.Mesh(gKA, new THREE.MeshLambertMaterial({ color: 0xe8392a, ...dblSide })));
+    preview3dScene.add(new THREE.Mesh(gKB, new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })));
+    preview3dScene.add(new THREE.Mesh(gKC, new THREE.MeshLambertMaterial({ color: 0xe8392a, ...dblSide })));
+    preview3dScene.add(new THREE.Mesh(gKD, new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })));
+  }
+  // Rumble strip — arched humps just outside flat kerb, always present
+  {
+    const rumbleInner = TH + 1.2, rumbleOuter = TH + 2.6;
+    const peakH = 0.12, radSegs = 8, humpEvery = 5;
+    const fullNormals = p3dComputeNormals(spPts);
+    const totalHumps = Math.floor(spPts.length / humpEvery);
+    const redMat   = new THREE.MeshLambertMaterial({ color: 0xdd3333, ...dblSide });
+    const whiteMat2= new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide });
+    for (const s of [1, -1]) {
+      const lo = s > 0 ? rumbleInner : -rumbleOuter;
+      const hi = s > 0 ? rumbleOuter : -rumbleInner;
+      const W = rumbleOuter - rumbleInner;
+      for (let h = 0; h < totalHumps; h++) {
+        const i0 = h * humpEvery, i1 = Math.min(i0 + humpEvery, spPts.length - 1);
+        const mat = h % 2 === 0 ? redMat : whiteMat2;
+        const p0 = spPts[i0], p1 = spPts[i1];
+        const nm0 = fullNormals[i0], nm1 = fullNormals[i1];
+        const pos = [], idx = [], rowSize = radSegs + 1;
+        for (const [pi, nm] of [[p0, nm0], [p1, nm1]]) {
+          for (let r = 0; r <= radSegs; r++) {
+            const t = r / radSegs;
+            const latOff = lo + t * W * s;
+            const archY = Math.sin(Math.PI * t) * peakH + ROAD_Y + 0.01;
+            pos.push(pi.x + nm.px*latOff, archY, pi.z + nm.pz*latOff);
+          }
+        }
+        for (let r = 0; r < radSegs; r++) {
+          const a=r, b=r+1, c=rowSize+r, d=rowSize+r+1;
+          if (s > 0) idx.push(a,c,b, b,c,d); else idx.push(a,b,c, b,d,c);
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.setIndex(idx); geo.computeVertexNormals();
+        preview3dScene.add(new THREE.Mesh(geo, mat));
+      }
+    }
+  }
 
   preview3dScene.add(new THREE.Mesh(
     p3dRibbon(spPts, TH - 0.08, TH + 0.08, ROAD_Y + 0.12),
@@ -629,9 +730,16 @@ function build3DScene() {
   preview3dScene.add(p3dCarGroup);
 
   p3dMergeBarrierSegments(barrierSegments, n).forEach(seg => {
-    const fromIdx = Math.round(seg.from / n * spPts.length);
-    const toIdx   = Math.min(Math.round(seg.to / n * spPts.length), spPts.length - 1);
-    const segPts  = spPts.slice(fromIdx, toIdx + 1);
+    const spl = spPts.length;
+    const fromIdx = Math.round(seg.from / n * spl) % spl;
+    let   toIdx   = Math.round(seg.to   / n * spl) % spl;
+    // Handle wrap-around (segment crosses lap start point)
+    let segPts;
+    if (toIdx <= fromIdx) {
+      segPts = [...spPts.slice(fromIdx), ...spPts.slice(0, toIdx + 1)];
+    } else {
+      segPts = spPts.slice(fromIdx, toIdx + 1);
+    }
     if (segPts.length < 2) return;
     p3dPlaceBarrier(preview3dScene, seg.surface, segPts, TH, seg.side, seg.lane || 0);
   });
