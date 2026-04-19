@@ -81,16 +81,25 @@ const TRACK_HALF_WIDTH = 7;
 //   11.2–20.5: gravel OR sand trap       (~9 m runoff)
 //   9.2–25.5 : outer grass (full width, rendered UNDER runoff)
 //   barrier  : sits at outer edge of runoff
+// ── FIA-based cross-section (matches 3D exactly) ────────────────────────
+// Centreline outward:
+//   0–7     : track road
+//   7–8.1   : flat kerb / rumble strip
+//   8.1–9.2 : sausage kerb (slow-corner apexes only)
+//   8.1–26  : grass base band (always present)
+//   9.2–23  : gravel or sand runoff (corner outsides, auto+manual)
+//   23–23.9 : tyre wall (behind gravel at corners)
+//   23.9–26 : armco (corners) / TecPro (straights) perimeter wall
 const SURFACE_LANES = {
-  rumble:    { inner:  7.0, outer:  8.1, labelOffset: 12 },
+  rumble:    { inner:  8.1, outer:  8.6, labelOffset: 12 },
   flat_kerb: { inner:  7.0, outer:  8.1, labelOffset: 12 },
-  sausage:   { inner:  8.1, outer:  9.2, labelOffset: 14 },
-  grass:     { inner:  9.2, outer: 25.5, labelOffset: 22 },
-  gravel:    { inner: 11.2, outer: 20.5, labelOffset: 20 },
-  sand:      { inner: 11.2, outer: 20.5, labelOffset: 20 },
-  tecpro:    { inner: 20.5, outer: 22.8, labelOffset: 26 },
-  armco:     { inner: 22.5, outer: 23.5, labelOffset: 28 },
-  tyrewall:  { inner: 21.5, outer: 23.8, labelOffset: 27 },
+  sausage:   { inner:  7.0, outer:  8.1, labelOffset: 14 },  // apex of flat kerb zone
+  grass:     { inner:  8.1, outer: 26.0, labelOffset: 22 },
+  gravel:    { inner:  9.2, outer: 23.0, labelOffset: 20 },
+  sand:      { inner:  9.2, outer: 23.0, labelOffset: 20 },
+  tyrewall:  { inner: 23.0, outer: 23.9, labelOffset: 25 },
+  armco:     { inner: 23.9, outer: 24.9, labelOffset: 28 },
+  tecpro:    { inner: 23.9, outer: 25.8, labelOffset: 27 },
 };
 
 const LANE_STEP = 5.5;
@@ -208,7 +217,8 @@ function render() {
   // 4. Centreline dashes
   if (waypoints.length >= 2) {
     drawPermanentGrassBand();
-    drawBarrierSegments();
+    drawAutoSurfaces();      // auto: TecPro straights, gravel corners, rumble, sausage, tyrewall
+    drawBarrierSegments();   // user-placed segments paint on top of auto surfaces
     drawTrackRoad();
     drawCentreline();
   }
@@ -521,28 +531,26 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       break;
     }
 
-    // ── ARMCO — prominent silver guardrail with bold corrugations ───
+    // ── ARMCO — W-beam guardrail, two rails with corrugation ticks ──
     case 'armco': {
-      // Dark shadow for depth
-      ctx.lineWidth = w + 3;
-      ctx.strokeStyle = 'rgba(40,40,40,0.6)';
-      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      _polyPath(ctx, poly); ctx.stroke();
-      // Main silver body
-      ctx.lineWidth = w;
-      ctx.strokeStyle = 'rgba(210,210,210,1.0)';
-      _polyPath(ctx, poly); ctx.stroke();
-      // Bright highlight strip
-      ctx.lineWidth = Math.max(1.5, w * 0.35);
-      ctx.strokeStyle = 'rgba(255,255,255,0.80)';
-      _polyPath(ctx, poly); ctx.stroke();
-      // Bold corrugation ticks
       const arcs = _arcLengths(poly);
       const total = arcs[arcs.length - 1];
-      const tickSpacing = Math.max(4, 8 * zoom);
-      const tickH = Math.max(2, w * 0.65);
-      ctx.strokeStyle = 'rgba(80,80,80,0.75)';
-      ctx.lineWidth = Math.max(1.2, 1.2 * zoom);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      // Shadow
+      ctx.lineWidth = w + 4;
+      ctx.strokeStyle = 'rgba(20,20,20,0.55)';
+      _polyPath(ctx, poly); ctx.stroke();
+      // Two W-beam rail bodies (draw as two parallel thick stripes)
+      for (const [col, lw] of [['rgba(190,200,210,1.0)', w], ['rgba(240,245,250,0.85)', Math.max(1.5, w*0.38)]]) {
+        ctx.lineWidth = lw;
+        ctx.strokeStyle = col;
+        _polyPath(ctx, poly); ctx.stroke();
+      }
+      // Corrugation ticks — denser and taller than before to suggest W-profile
+      const tickSpacing = Math.max(3, 5 * zoom);
+      const tickH = Math.max(2.5, w * 0.75);
+      ctx.strokeStyle = 'rgba(90,100,110,0.80)';
+      ctx.lineWidth = Math.max(1, zoom * 0.9);
       ctx.lineCap = 'butt';
       for (let d = 0; d < total; d += tickSpacing) {
         const p = _polyAtDist(poly, arcs, d);
@@ -648,6 +656,136 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
 // Draws a wide grass strip (verge + runoff zone) the full circuit length.
 // Specific surfaces (gravel, sand etc.) are painted on top by drawBarrierSegments.
 // ═══════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════
+// AUTO SURFACES — matches 3D preview exactly
+// Straights → TecPro perimeter
+// Corners   → gravel runoff (outside) + rumble both sides
+// Slow/tight → sausage kerb at apex (outside)
+// Behind gravel → tyre wall
+// Only fills where user hasn't manually placed that surface type
+// ═══════════════════════════════════════════════════
+function drawAutoSurfaces() {
+  if (waypoints.length < 3) return;
+  const splinePts = buildSplinePoints(20);
+  const spl = splinePts.length;
+  if (spl < 4) return;
+
+  // ── Curvature per spline point ──
+  const curvature  = new Float32Array(spl);
+  const cornerSign = new Float32Array(spl);
+  for (let i = 0; i < spl; i++) {
+    const p0 = splinePts[(i - 1 + spl) % spl].pt;
+    const p1 = splinePts[i].pt;
+    const p2 = splinePts[(i + 1) % spl].pt;
+    const v1x = p1.x - p0.x, v1y = p1.y - p0.y;
+    const v2x = p2.x - p1.x, v2y = p2.y - p1.y;
+    const cross = v1x * v2y - v1y * v2x;
+    const len = (Math.sqrt(v1x*v1x+v1y*v1y) * Math.sqrt(v2x*v2x+v2y*v2y)) || 1;
+    curvature[i]  = Math.abs(cross) / len;
+    cornerSign[i] = Math.sign(cross); // +1=left turn, -1=right turn
+  }
+
+  const CORNER_THRESH = 0.018;
+  const SLOW_THRESH   = 0.045;
+  const MARGIN        = 14; // dilate corner zone
+
+  const inCorner = new Uint8Array(spl);
+  const isSlow   = new Uint8Array(spl);
+  for (let i = 0; i < spl; i++) {
+    if (curvature[i] > CORNER_THRESH) {
+      for (let d = -MARGIN; d <= MARGIN; d++) inCorner[(i + d + spl) % spl] = 1;
+    }
+    if (curvature[i] > SLOW_THRESH) {
+      for (let d = -MARGIN; d <= MARGIN; d++) isSlow[(i + d + spl) % spl] = 1;
+    }
+  }
+
+  // Already user-painted runoff — skip those spline pts
+  const userRunoffPts = new Set();
+  const runoffSurfs = new Set(['gravel','sand','grass']);
+  barrierSegments.filter(s => runoffSurfs.has(s.surface)).forEach(seg => {
+    const sStart = Math.min(seg.from, seg.to) * 20;
+    const sEnd   = Math.max(seg.from, seg.to) * 20;
+    for (let i = sStart; i <= sEnd; i++) userRunoffPts.add(i);
+  });
+
+  // Helper: collect runs of consecutive spline indices matching predicate
+  function collectRuns(predFn) {
+    const runs = [];
+    let start = -1;
+    for (let i = 0; i <= spl; i++) {
+      const active = predFn(i % spl);
+      if (active && start === -1) start = i;
+      else if (!active && start !== -1) { runs.push({ from: start, to: i - 1 }); start = -1; }
+    }
+    return runs;
+  }
+
+  function runPts(run) {
+    const pts = [];
+    for (let i = run.from; i <= run.to; i++) pts.push(splinePts[i % spl]);
+    return pts;
+  }
+
+  function dominantSign(run) {
+    let s = 0;
+    for (let i = run.from; i <= run.to; i++) s += cornerSign[i % spl];
+    return s >= 0 ? 1 : -1; // +1=left turn (outside=right), -1=right turn
+  }
+
+  // ── 1. STRAIGHTS: TecPro at perimeter ──
+  const tecproLane = getSurfaceLane('tecpro', 0);
+  collectRuns(i => !inCorner[i]).forEach(run => {
+    const pts = runPts(run);
+    if (pts.length < 2) return;
+    [-1, 1].forEach(s => {
+      const poly = buildOffsetScreenPolyline(pts, s, tecproLane.center);
+      drawSurfacePattern(ctx, 'tecpro', poly, tecproLane, s, cam.zoom);
+    });
+  });
+
+  // ── 2. CORNERS: gravel on outside ──
+  const gravelLane = getSurfaceLane('gravel', 0);
+  collectRuns(i => inCorner[i] && !userRunoffPts.has(i)).forEach(run => {
+    const pts = runPts(run);
+    if (pts.length < 2) return;
+    const ds = dominantSign(run);
+    const poly = buildOffsetScreenPolyline(pts, ds, gravelLane.center);
+    drawSurfacePattern(ctx, 'gravel', poly, gravelLane, ds, cam.zoom);
+  });
+
+  // ── 3. CORNERS: rumble strip both sides ──
+  const rumbleLane = getSurfaceLane('rumble', 0);
+  collectRuns(i => inCorner[i]).forEach(run => {
+    const pts = runPts(run);
+    if (pts.length < 2) return;
+    [-1, 1].forEach(s => {
+      const poly = buildOffsetScreenPolyline(pts, s, rumbleLane.center);
+      drawSurfacePattern(ctx, 'rumble', poly, rumbleLane, s, cam.zoom);
+    });
+  });
+
+  // ── 4. SLOW CORNERS: sausage kerb at apex (outside only) ──
+  const sausageLane = getSurfaceLane('sausage', 0);
+  collectRuns(i => isSlow[i]).forEach(run => {
+    const pts = runPts(run);
+    if (pts.length < 2) return;
+    const ds = dominantSign(run);
+    const poly = buildOffsetScreenPolyline(pts, ds, sausageLane.center);
+    drawSurfacePattern(ctx, 'sausage', poly, sausageLane, ds, cam.zoom);
+  });
+
+  // ── 5. BEHIND GRAVEL AT CORNERS: tyre wall ──
+  const tyreLane = getSurfaceLane('tyrewall', 0);
+  collectRuns(i => inCorner[i]).forEach(run => {
+    const pts = runPts(run);
+    if (pts.length < 2) return;
+    const ds = dominantSign(run);
+    const poly = buildOffsetScreenPolyline(pts, ds, tyreLane.center);
+    drawSurfacePattern(ctx, 'tyrewall', poly, tyreLane, ds, cam.zoom);
+  });
+}
+
 function drawPermanentGrassBand() {
   const splinePts = buildSplinePoints(20);
   if (splinePts.length < 2) return;
@@ -837,9 +975,16 @@ function mergeExpandedBarrierItems(items) {
 }
 
 function getSplineSegmentPoints(splinePts, from, to) {
-  const pts = splinePts.filter(p => p.seg >= from && p.seg <= to);
-  if (pts.length < 3) return pts;
-  return pts;
+  // Support wrap-around segments (from > to means segment crosses start/finish)
+  if (from <= to) {
+    return splinePts.filter(p => p.seg >= from && p.seg <= to);
+  } else {
+    // Wrap: take from→end then start→to
+    return [
+      ...splinePts.filter(p => p.seg >= from),
+      ...splinePts.filter(p => p.seg <= to),
+    ];
+  }
 }
 
 // Stable offset polyline — normals use sign propagation so they never
