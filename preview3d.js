@@ -38,7 +38,7 @@ const P3D_SURFACE_LANES = {
   // Offsets EXACTLY match render.js SURFACE_LANES (world units from centreline)
   // Track half-width = 7u. Layout: road → kerb → sausage → grass/runoff → barrier
   flat_kerb: { inner:  7.0, outer:  8.1, y: 0.05  },
-  rumble:    { inner:  7.0, outer:  8.1, y: 0.10  },
+  rumble:    { inner:  8.1, outer:  8.6, y: 0.10  },
   sausage:   { inner:  8.1, outer:  9.2, y: 0.18  },
   grass:     { inner:  9.2, outer: 25.5, y: 0.005 },
   gravel:    { inner: 11.2, outer: 20.5, y: 0.01  },
@@ -321,10 +321,10 @@ function p3dSausageRibbon(spPts, sideOff, normals) {
 
 // ─── Thick rail ribbon — front+back+top faces, real depth ─────────
 // sideOff: signed lateral offset. depth: thickness toward centreline.
-function p3dBarrierRibbon(pts, sideOff, yBase, height, depth=0.08) {
+function p3dBarrierRibbon(pts, sideOff, yBase, height, depth=0.08, isOpen=true) {
   const n = pts.length;
   if (n < 2) return new THREE.BufferGeometry();
-  const normals = p3dComputeNormalsOpen(pts);
+  const normals = isOpen ? p3dComputeNormalsOpen(pts) : p3dComputeNormals(pts);
   const pos=[], nor=[], idx=[];
   const backOff = sideOff - depth * Math.sign(sideOff || 1);
   for (let i=0; i<n; i++) {
@@ -497,7 +497,7 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       const whiteMat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: dblSide });
       const inner = lane.inner * s, outer = lane.outer * s;
       const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
-      const W = Math.abs(hi - lo), peakH = 0.12, radSegs = 8, humpEvery = 5;
+      const W = Math.abs(hi - lo), peakH = 0.04, radSegs = 6, humpEvery = 4;
       const totalHumps = Math.floor(n / humpEvery);
       for (let h = 0; h < totalHumps; h++) {
         const i0 = h * humpEvery;
@@ -626,41 +626,54 @@ function build3DScene() {
     preview3dScene.add(new THREE.Mesh(gKC, new THREE.MeshLambertMaterial({ color: 0xe8392a, ...dblSide })));
     preview3dScene.add(new THREE.Mesh(gKD, new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })));
   }
-  // Rumble strip — arched humps just outside flat kerb, always present
+
+  // ── Full-track grass band (always present, both sides) ──
+  // Mirrors render.js drawPermanentGrassBand: inner=9.2, outer=26u
   {
-    const rumbleInner = TH + 1.2, rumbleOuter = TH + 2.6;
-    const peakH = 0.12, radSegs = 8, humpEvery = 5;
-    const fullNormals = p3dComputeNormals(spPts);
-    const totalHumps = Math.floor(spPts.length / humpEvery);
-    const redMat   = new THREE.MeshLambertMaterial({ color: 0xdd3333, ...dblSide });
-    const whiteMat2= new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide });
+    const grassMat = new THREE.MeshLambertMaterial({ color: 0x2d5a1b, side: THREE.DoubleSide });
     for (const s of [1, -1]) {
-      const lo = s > 0 ? rumbleInner : -rumbleOuter;
-      const hi = s > 0 ? rumbleOuter : -rumbleInner;
-      const W = rumbleOuter - rumbleInner;
-      for (let h = 0; h < totalHumps; h++) {
-        const i0 = h * humpEvery, i1 = Math.min(i0 + humpEvery, spPts.length - 1);
-        const mat = h % 2 === 0 ? redMat : whiteMat2;
-        const p0 = spPts[i0], p1 = spPts[i1];
-        const nm0 = fullNormals[i0], nm1 = fullNormals[i1];
-        const pos = [], idx = [], rowSize = radSegs + 1;
-        for (const [pi, nm] of [[p0, nm0], [p1, nm1]]) {
-          for (let r = 0; r <= radSegs; r++) {
-            const t = r / radSegs;
-            const latOff = lo + t * W * s;
-            const archY = Math.sin(Math.PI * t) * peakH + P3D_ROAD_Y + 0.01;
-            pos.push(pi.x + nm.px*latOff, archY, pi.z + nm.pz*latOff);
-          }
-        }
-        for (let r = 0; r < radSegs; r++) {
-          const a=r, b=r+1, c=rowSize+r, d=rowSize+r+1;
-          if (s > 0) idx.push(a,c,b, b,c,d); else idx.push(a,b,c, b,d,c);
-        }
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-        geo.setIndex(idx); geo.computeVertexNormals();
-        preview3dScene.add(new THREE.Mesh(geo, mat));
+      preview3dScene.add(new THREE.Mesh(
+        p3dRibbon(spPts, s * 8.1, s * 26.0, 0.001),
+        grassMat
+      ));
+    }
+  }
+
+  // ── Full-track armco perimeter (always present, like every real circuit) ──
+  // Sits at 24u from centreline — outside any user-placed surface.
+  // User armco/tecpro/tyrewall segments paint over specific sections.
+  {
+    const armcoRailMat = new THREE.MeshLambertMaterial({ color: 0xc0c8d0, side: THREE.DoubleSide });
+    const armcoPostMat = new THREE.MeshLambertMaterial({ color: 0x778088, side: THREE.DoubleSide });
+    const defaultArmcoOff = 24.0;
+    const postGeo = new THREE.BoxGeometry(0.10, 0.82, 0.12);
+    const fullNormalsArmco = p3dComputeNormals(spPts);
+    const dummy = new THREE.Object3D();
+    for (const s of [1, -1]) {
+      const sideOff = defaultArmcoOff * s;
+      for (const yb of [0.12, 0.39, 0.66]) {
+        preview3dScene.add(new THREE.Mesh(
+          p3dBarrierRibbon(spPts, sideOff, yb, 0.13, 0.08, false),
+          armcoRailMat
+        ));
       }
+      const postCount = Math.ceil(spPts.length / 5) + 1;
+      const postMesh = new THREE.InstancedMesh(postGeo, armcoPostMat, postCount);
+      let pi = 0;
+      for (let i = 0; i < spPts.length; i += 5) {
+        const p = spPts[i], nm = fullNormalsArmco[i];
+        dummy.position.set(
+          p.x + nm.px * (sideOff - 0.06 * s),
+          P3D_ROAD_Y + 0.41,
+          p.z + nm.pz * (sideOff - 0.06 * s)
+        );
+        dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
+        dummy.updateMatrix();
+        postMesh.setMatrixAt(pi++, dummy.matrix);
+      }
+      postMesh.count = pi;
+      postMesh.instanceMatrix.needsUpdate = true;
+      preview3dScene.add(postMesh);
     }
   }
 
