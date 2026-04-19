@@ -41,9 +41,9 @@ const P3D_SURFACE_LANES = {
   grass:     { inner:  9.2, outer: 25.5, y: 0.005 },
   gravel:    { inner: 11.2, outer: 20.5, y: 0.01  },
   sand:      { inner: 11.2, outer: 20.5, y: 0.01  },
-  tecpro:    { inner: 20.5, outer: 22.8, y: 0.90  },
+  tecpro:    { inner: 20.5, outer: 22.5, y: 0.90  },
   armco:     { inner: 22.5, outer: 23.5, y: 0.40  },
-  tyrewall:  { inner: 21.5, outer: 23.8, y: 0.25  },
+  tyrewall:  { inner: 20.5, outer: 22.9, y: 0.25  },
 };
 
 function p3dLane(surface, lane = 0) {
@@ -391,8 +391,8 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       const postMat = new THREE.MeshLambertMaterial({ color: 0x778088, side: dblSide });
       const sideOff = lane.center * s;
       const H = 0.80;
-      // 3 W-beam rails: yBase at 0.10, 0.37, 0.64 each 0.13 tall with 0.08 depth
-      for (const yb of [0.10, 0.37, 0.64]) {
+      // 3 W-beam rails: yBase at 0.12, 0.39, 0.66 each 0.13 tall with 0.08 depth
+      for (const yb of [0.12, 0.39, 0.66]) {
         scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, yb, 0.13, 0.08), railMat));
       }
       // Posts every 5 pts — no hairpin skip so continuous
@@ -403,7 +403,7 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       let pi = 0;
       for (let i = 0; i < n; i += stepEvery) {
         const p = spPts[i], nm = normals[i];
-        dummy.position.set(p.x + nm.px*(sideOff - 0.06*s), H/2, p.z + nm.pz*(sideOff - 0.06*s));
+        dummy.position.set(p.x + nm.px*(sideOff - 0.06*s), ROAD_Y + H/2, p.z + nm.pz*(sideOff - 0.06*s));
         dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
         dummy.updateMatrix();
         postMesh.setMatrixAt(pi++, dummy.matrix);
@@ -423,12 +423,13 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       const stepEvery = 3;
       const count = Math.ceil(n / stepEvery);
       for (const [yOff, geo, mat] of [
-        [BH*0.5, blockGeo, blockMat], [BH*1.5, blockGeo, blockMat],
-        [BH*0.5, stripeGeo, stripeMat], [BH*1.5, stripeGeo, stripeMat],
+        [ROAD_Y + BH*0.5, blockGeo, blockMat], [ROAD_Y + BH*1.5, blockGeo, blockMat],
+        [ROAD_Y + BH*0.5, stripeGeo, stripeMat], [ROAD_Y + BH*1.5, stripeGeo, stripeMat],
       ]) {
         const mesh = new THREE.InstancedMesh(geo, mat, count);
         let idx = 0;
         for (let i = 0; i < n; i += stepEvery) {
+          if (p3dIsHairpin(normals, i)) continue;
           const p = spPts[i], nm = normals[i];
           dummy.position.set(p.x + nm.px*sideOff, yOff, p.z + nm.pz*sideOff);
           dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
@@ -449,12 +450,13 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       const stepEvery = 4;
       const count = Math.ceil(n / stepEvery);
       for (const [yOff, geo, mat] of [
-        [0.24, tyrGeo, tyrMat], [0.72, tyrGeo, tyrMat],
-        [0.24, swGeo, swMat],   [0.72, swGeo, swMat],
+        [ROAD_Y + 0.24, tyrGeo, tyrMat], [ROAD_Y + 0.72, tyrGeo, tyrMat],
+        [ROAD_Y + 0.24, swGeo, swMat],   [ROAD_Y + 0.72, swGeo, swMat],
       ]) {
         const mesh = new THREE.InstancedMesh(geo, mat, count);
         let idx = 0;
         for (let i = 0; i < n; i += stepEvery) {
+          if (p3dIsHairpin(normals, i)) continue;
           const p = spPts[i], nm = normals[i];
           dummy.position.set(p.x + nm.px*sideOff, yOff, p.z + nm.pz*sideOff);
           dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
@@ -473,7 +475,7 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
         p3dRibbon(spPts, off - halfW, off + halfW, 0.02, true), whiteMat));
       const pts3 = spPts.map((p, i) => {
         const { px, pz } = normals[i];
-        return new THREE.Vector3(p.x + px*off, 0.18, p.z + pz*off);
+        return new THREE.Vector3(p.x + px*off, ROAD_Y + 0.18, p.z + pz*off);
       });
       scene.add(new THREE.Mesh(
         new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts3, false, 'catmullrom', 0.5), pts3.length*2, 0.18, 8, false),
