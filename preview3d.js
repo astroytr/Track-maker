@@ -41,8 +41,8 @@ const P3D_SURFACE_LANES = {
   rumble:    { inner:  8.1, outer:  8.6, y: 0.10  },
   sausage:   { inner:  8.1, outer:  9.2, y: 0.18  },
   grass:     { inner:  9.2, outer: 25.5, y: 0.005 },
-  gravel:    { inner: 11.2, outer: 20.5, y: 0.01  },
-  sand:      { inner: 11.2, outer: 20.5, y: 0.01  },
+  gravel:    { inner:  9.2, outer: 23.0, y: 0.01  },
+  sand:      { inner:  9.2, outer: 23.0, y: 0.01  },
   tecpro:    { inner: 20.5, outer: 22.5, y: 0.90  },
   armco:     { inner: 22.5, outer: 23.5, y: 0.40  },
   tyrewall:  { inner: 20.5, outer: 22.9, y: 0.25  },
@@ -389,23 +389,32 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
     const lane  = p3dLane(surface, laneIndex || 0);
 
     if (surface === 'armco') {
-      const railMat = new THREE.MeshLambertMaterial({ color: 0xc0c8d0, side: dblSide });
-      const postMat = new THREE.MeshLambertMaterial({ color: 0x778088, side: dblSide });
-      const sideOff = lane.center * s;
-      const H = 0.80;
-      // 3 W-beam rails: yBase at 0.12, 0.39, 0.66 each 0.13 tall with 0.08 depth
-      for (const yb of [0.12, 0.39, 0.66]) {
-        scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, yb, 0.13, 0.08), railMat));
+      // W-beam armco: wide corrugated face (depth 0.22u) + galvanised colour
+      const railMat  = new THREE.MeshLambertMaterial({ color: 0xd4dce6, side: dblSide });
+      const railDark = new THREE.MeshLambertMaterial({ color: 0x9aaabb, side: dblSide });
+      const postMat  = new THREE.MeshLambertMaterial({ color: 0x6a7a88, side: dblSide });
+      const sideOff  = lane.center * s;
+      const H = 0.82;
+      // Two wide W-beam rails — each 0.28 tall, deep profile (0.22u depth)
+      // Top rail: 0.48–0.76, Bottom rail: 0.08–0.36 — realistic armco proportions
+      for (const [yb, mat] of [[0.08, railMat],[0.48, railDark]]) {
+        scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, yb, 0.28, 0.22), mat));
+        // Front face highlight strip (thin, bright) to suggest W corrugation
+        scene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, yb + 0.10, 0.08, 0.02), railMat));
       }
-      // Posts every 5 pts — no hairpin skip so continuous
-      const postGeo = new THREE.BoxGeometry(0.10, H, 0.12);
-      const dummy = new THREE.Object3D();
-      const stepEvery = 5;
-      const postMesh = new THREE.InstancedMesh(postGeo, postMat, Math.ceil(n / stepEvery) + 1);
+      // Posts: thinner, more frequent (every 3 pts), set back from face
+      const postGeo = new THREE.BoxGeometry(0.08, H, 0.08);
+      const dummy   = new THREE.Object3D();
+      const stepEvery = 3;
+      const postMesh  = new THREE.InstancedMesh(postGeo, postMat, Math.ceil(n / stepEvery) + 1);
       let pi = 0;
       for (let i = 0; i < n; i += stepEvery) {
         const p = spPts[i], nm = normals[i];
-        dummy.position.set(p.x + nm.px*(sideOff - 0.06*s), P3D_ROAD_Y + H/2, p.z + nm.pz*(sideOff - 0.06*s));
+        dummy.position.set(
+          p.x + nm.px * (sideOff - 0.24 * s),
+          P3D_ROAD_Y + H / 2,
+          p.z + nm.pz * (sideOff - 0.24 * s)
+        );
         dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
         dummy.updateMatrix();
         postMesh.setMatrixAt(pi++, dummy.matrix);
@@ -646,26 +655,25 @@ function build3DScene() {
     const armcoRailMat = new THREE.MeshLambertMaterial({ color: 0xc0c8d0, side: THREE.DoubleSide });
     const armcoPostMat = new THREE.MeshLambertMaterial({ color: 0x778088, side: THREE.DoubleSide });
     const defaultArmcoOff = 24.0;
-    const postGeo = new THREE.BoxGeometry(0.10, 0.82, 0.12);
+    const postGeo = new THREE.BoxGeometry(0.08, 0.82, 0.08);
     const fullNormalsArmco = p3dComputeNormals(spPts);
     const dummy = new THREE.Object3D();
     for (const s of [1, -1]) {
       const sideOff = defaultArmcoOff * s;
-      for (const yb of [0.12, 0.39, 0.66]) {
-        preview3dScene.add(new THREE.Mesh(
-          p3dBarrierRibbon(spPts, sideOff, yb, 0.13, 0.08, false),
-          armcoRailMat
-        ));
+      for (const [yb, col] of [[0.06, 0xd4dce6],[0.52, 0x9aaabb]]) {
+        const railM = new THREE.MeshLambertMaterial({ color: col, side: THREE.DoubleSide });
+        preview3dScene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, yb, 0.32, 0.22, false), railM));
+        preview3dScene.add(new THREE.Mesh(p3dBarrierRibbon(spPts, sideOff, yb + 0.12, 0.08, 0.02, false), railM));
       }
-      const postCount = Math.ceil(spPts.length / 5) + 1;
+      const postCount = Math.ceil(spPts.length / 3) + 1;
       const postMesh = new THREE.InstancedMesh(postGeo, armcoPostMat, postCount);
       let pi = 0;
-      for (let i = 0; i < spPts.length; i += 5) {
+      for (let i = 0; i < spPts.length; i += 3) {
         const p = spPts[i], nm = fullNormalsArmco[i];
         dummy.position.set(
-          p.x + nm.px * (sideOff - 0.06 * s),
+          p.x + nm.px * (sideOff - 0.24 * s),
           P3D_ROAD_Y + 0.41,
-          p.z + nm.pz * (sideOff - 0.06 * s)
+          p.z + nm.pz * (sideOff - 0.24 * s)
         );
         dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
         dummy.updateMatrix();
@@ -746,104 +754,231 @@ function build3DScene() {
   p3dCarGroup.rotation.y = sfYaw;
   preview3dScene.add(p3dCarGroup);
 
-  // ── Auto-detect corners and fill gravel/sand runoff where user hasn't painted ──
-  // Real tracks have runoff at every corner. We compute curvature per spline point,
-  // find corner zones (sustained high curvature), then place gravel on the outside
-  // and sand on the inside of each corner, only where barrierSegments has no runoff.
+  // ── Auto-surface placement based on curvature ──
+  // Straights → TecPro perimeter wall
+  // Corners  → gravel runoff (outside) + rumble strip + sausage kerb (slow apexes)
+  // Behind gravel/sand → tyre wall
   {
     const spl = spPts.length;
-    const fullNormals = p3dComputeNormals(spPts);
+    const autoNormals = p3dComputeNormals(spPts);
 
-    // Compute curvature at each spline point
-    const curvature = new Float32Array(spl);
-    for (let i = 0; i < spl; i++) {
-      const p0 = spPts[(i - 1 + spl) % spl];
-      const p1 = spPts[i];
-      const p2 = spPts[(i + 1) % spl];
-      const v1x = p1.x - p0.x, v1z = p1.z - p0.z;
-      const v2x = p2.x - p1.x, v2z = p2.z - p1.z;
-      const cross = Math.abs(v1x * v2z - v1z * v2x);
-      const len = (Math.sqrt(v1x*v1x+v1z*v1z) * Math.sqrt(v2x*v2x+v2z*v2z)) || 1;
-      curvature[i] = cross / len;
-    }
-
-    // Build set of spline-point ranges already covered by user runoff surfaces
-    const runoffSurfaces = new Set(['gravel','sand','grass']);
-    const userRunoffPts = new Set();
-    p3dMergeBarrierSegments(barrierSegments.filter(s => runoffSurfaces.has(s.surface)), n)
-      .forEach(seg => {
-        const fi = Math.round(seg.from / n * spl) % spl;
-        const ti = Math.round(seg.to   / n * spl) % spl;
-        const end = (ti <= fi) ? fi + spl : ti;
-        for (let i = fi; i <= end; i++) userRunoffPts.add(i % spl);
-      });
-
-    // Find corner zones: spline pts where curvature > threshold, dilate by margin
-    const CURV_THRESH = 0.018;
-    const MARGIN = 12; // extra pts either side of corner peak
-    const inCorner = new Uint8Array(spl);
-    for (let i = 0; i < spl; i++) {
-      if (curvature[i] > CURV_THRESH) {
-        for (let d = -MARGIN; d <= MARGIN; d++) inCorner[(i + d + spl) % spl] = 1;
-      }
-    }
-
-    // Determine corner exit side from curvature sign (cross product sign)
-    // Positive cross = turning left → outside = right (s=+1), inside = left (s=-1)
-    // Negative cross = turning right → outside = left (s=-1), inside = right (s=+1)
-    // We place gravel on OUTSIDE of corner, grass/sand on inside
+    // Curvature and signed turn direction per spline point
+    const curvature  = new Float32Array(spl);
     const cornerSign = new Float32Array(spl);
     for (let i = 0; i < spl; i++) {
-      const p0 = spPts[(i - 1 + spl) % spl];
-      const p1 = spPts[i];
-      const p2 = spPts[(i + 1) % spl];
+      const p0 = spPts[(i - 1 + spl) % spl], p1 = spPts[i], p2 = spPts[(i + 1) % spl];
       const v1x = p1.x - p0.x, v1z = p1.z - p0.z;
       const v2x = p2.x - p1.x, v2z = p2.z - p1.z;
-      cornerSign[i] = Math.sign(v1x * v2z - v1z * v2x); // +1 = left turn, -1 = right turn
+      const cross = v1x * v2z - v1z * v2x;
+      const len = (Math.sqrt(v1x*v1x+v1z*v1z) * Math.sqrt(v2x*v2x+v2z*v2z)) || 1;
+      curvature[i]  = Math.abs(cross) / len;
+      cornerSign[i] = Math.sign(cross); // +1 = left turn, -1 = right turn
     }
 
-    // Collect corner segments — runs of consecutive inCorner points not user-covered
-    let segStart = -1;
-    const autoCorners = [];
-    for (let i = 0; i <= spl; i++) {
-      const ii = i % spl;
-      const active = inCorner[ii] && !userRunoffPts.has(ii);
-      if (active && segStart === -1) { segStart = i; }
-      else if (!active && segStart !== -1) {
-        autoCorners.push({ from: segStart, to: i - 1 });
-        segStart = -1;
+    const CORNER_THRESH = 0.018;  // curvature above this = corner
+    const SLOW_THRESH   = 0.045;  // curvature above this = slow/tight corner (sausage kerb)
+    const MARGIN        = 14;     // dilate corner zones by this many spline pts
+
+    // Mark corner and straight zones
+    const inCorner = new Uint8Array(spl);
+    const isSlow   = new Uint8Array(spl);
+    for (let i = 0; i < spl; i++) {
+      if (curvature[i] > CORNER_THRESH) {
+        for (let d = -MARGIN; d <= MARGIN; d++) inCorner[(i + d + spl) % spl] = 1;
+      }
+      if (curvature[i] > SLOW_THRESH) {
+        for (let d = -MARGIN; d <= MARGIN; d++) isSlow[(i + d + spl) % spl] = 1;
       }
     }
 
-    // Place gravel on outside, grass on inside for each auto corner
-    const gravelMat = new THREE.MeshLambertMaterial({ color: 0xc8b89a, side: THREE.DoubleSide });
-    const grassMat2 = new THREE.MeshLambertMaterial({ color: 0x2d5a1b, side: THREE.DoubleSide });
-    const gravelLane = P3D_SURFACE_LANES.gravel;
-    const grassLane  = P3D_SURFACE_LANES.grass;
+    // Already user-painted runoff — don't double up
+    const userRunoffPts = new Set();
+    p3dMergeBarrierSegments(
+      barrierSegments.filter(s => ['gravel','sand','grass'].includes(s.surface)), n
+    ).forEach(seg => {
+      const fi = Math.round(seg.from / n * spl) % spl;
+      const ti = Math.round(seg.to   / n * spl) % spl;
+      const end = (ti <= fi) ? fi + spl : ti;
+      for (let i = fi; i <= end; i++) userRunoffPts.add(i % spl);
+    });
 
-    autoCorners.forEach(({ from, to }) => {
+    // Helper: collect run of consecutive spline points matching predicate
+    function collectRuns(predFn) {
+      const runs = [];
+      let start = -1;
+      for (let i = 0; i <= spl; i++) {
+        const ii = i % spl;
+        if (predFn(ii) && start === -1) { start = i; }
+        else if (!predFn(ii) && start !== -1) { runs.push({ from: start, to: i - 1 }); start = -1; }
+      }
+      return runs;
+    }
+
+    function runPts(run) {
       const pts = [];
-      for (let i = from; i <= to; i++) pts.push(spPts[i % spl]);
+      for (let i = run.from; i <= run.to; i++) pts.push(spPts[i % spl]);
+      return pts;
+    }
+
+    function dominantSign(run) {
+      let s = 0;
+      for (let i = run.from; i <= run.to; i++) s += cornerSign[i % spl];
+      return s > 0 ? 1 : -1; // +1 = left turn (outside = right), -1 = right turn
+    }
+
+    // ── Materials ──
+    const gravelMat  = new THREE.MeshLambertMaterial({ color: 0xc8b89a, side: THREE.DoubleSide });
+    const tyreMat    = new THREE.MeshLambertMaterial({ color: 0x111111, side: THREE.DoubleSide });
+    const tyrSwMat   = new THREE.MeshLambertMaterial({ color: 0xdddddd, side: THREE.DoubleSide });
+    const tecBlueMat = new THREE.MeshLambertMaterial({ color: 0x3a5fa8, side: THREE.DoubleSide });
+    const tecWhtMat  = new THREE.MeshLambertMaterial({ color: 0xffffff });
+    const sausageMat = new THREE.MeshLambertMaterial({ color: 0xffd700, side: THREE.DoubleSide });
+    const rumRedMat  = new THREE.MeshLambertMaterial({ color: 0xdd3333, side: THREE.DoubleSide });
+    const rumWhtMat  = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+
+    // ── 1. STRAIGHTS: TecPro wall at perimeter (replaces default armco on straights) ──
+    const straightRuns = collectRuns(i => !inCorner[i]);
+    straightRuns.forEach(run => {
+      const pts = runPts(run);
       if (pts.length < 2) return;
+      const BH = 0.90, stepEvery = 3;
+      const blockGeo  = new THREE.BoxGeometry(1.0, BH, 1.0);
+      const stripeGeo = new THREE.BoxGeometry(1.02, 0.09, 1.02);
+      const dummy = new THREE.Object3D();
+      for (const s of [1, -1]) {
+        const sideOff = 24.0 * s; // perimeter position
+        const count = Math.ceil(pts.length / stepEvery) + 1;
+        for (const [yOff, geo, mat] of [
+          [P3D_ROAD_Y + BH*0.5, blockGeo, tecBlueMat],
+          [P3D_ROAD_Y + BH*1.5, blockGeo, tecBlueMat],
+          [P3D_ROAD_Y + BH*0.5, stripeGeo, tecWhtMat],
+          [P3D_ROAD_Y + BH*1.5, stripeGeo, tecWhtMat],
+        ]) {
+          const mesh = new THREE.InstancedMesh(geo, mat, count);
+          let idx = 0;
+          for (let j = 0; j < pts.length; j += stepEvery) {
+            if (p3dIsHairpin(autoNormals, j)) continue;
+            const p = pts[j];
+            // Use index into spPts for normals
+            const ni = run.from + j < spl ? run.from + j : (run.from + j) % spl;
+            const nm = autoNormals[ni % spl];
+            dummy.position.set(p.x + nm.px * sideOff, yOff, p.z + nm.pz * sideOff);
+            dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
+            dummy.updateMatrix();
+            mesh.setMatrixAt(idx++, dummy.matrix);
+          }
+          mesh.count = idx;
+          mesh.instanceMatrix.needsUpdate = true;
+          preview3dScene.add(mesh);
+        }
+      }
+    });
 
-      // Dominant turn direction for this corner
-      let signSum = 0;
-      for (let i = from; i <= to; i++) signSum += cornerSign[i % spl];
-      const outsideS = signSum > 0 ? 1 : -1; // outside = right if left-hand turn
-      const insideS  = -outsideS;
-
-      // Outside: gravel runoff (11.2u to 20.5u from centre)
-      const gOuter = gravelLane.outer, gInner = gravelLane.inner;
+    // ── 2. CORNERS: gravel runoff on outside ──
+    const cornerRuns = collectRuns(i => inCorner[i] && !userRunoffPts.has(i));
+    cornerRuns.forEach(run => {
+      const pts = runPts(run);
+      if (pts.length < 2) return;
+      const ds = dominantSign(run);
+      const gLane = P3D_SURFACE_LANES.gravel;
       preview3dScene.add(new THREE.Mesh(
-        p3dRibbon(pts, outsideS * gInner, outsideS * gOuter, P3D_ROAD_Y + 0.001, true),
+        p3dRibbon(pts, ds * gLane.inner, ds * gLane.outer, P3D_ROAD_Y + 0.001, true),
         gravelMat
       ));
+    });
 
-      // Inside: grass patch (9.2u to 16u) — tighter, no run-off needed
-      preview3dScene.add(new THREE.Mesh(
-        p3dRibbon(pts, insideS * 9.2, insideS * 16.0, P3D_ROAD_Y + 0.001, true),
-        grassMat2
-      ));
+    // ── 3. CORNERS: rumble strip on BOTH sides outside flat kerb ──
+    // Real tracks: rumble at every corner entry/exit on both sides
+    const rumbleRuns = collectRuns(i => inCorner[i]);
+    rumbleRuns.forEach(run => {
+      const pts = runPts(run);
+      if (pts.length < 2) return;
+      const n2 = pts.length;
+      const rInner = TH + 1.2, rOuter = TH + 1.7; // 0.5u wide just outside flat kerb
+      const W = rOuter - rInner, peakH = 0.04, radSegs = 6, humpEvery = 4;
+      const totalHumps = Math.floor(n2 / humpEvery);
+      for (const s of [1, -1]) {
+        const lo = s * rInner, hi = s * rOuter;
+        for (let h = 0; h < totalHumps; h++) {
+          const i0 = h * humpEvery, i1 = Math.min(i0 + humpEvery, n2 - 1);
+          const mat = h % 2 === 0 ? rumRedMat : rumWhtMat;
+          const p0 = pts[i0], p1 = pts[i1];
+          // Use spPts-relative index for normals
+          const ni0 = (run.from + i0) % spl, ni1 = (run.from + i1) % spl;
+          const nm0 = autoNormals[ni0], nm1 = autoNormals[ni1];
+          const pos = [], idx2 = [], rowSize = radSegs + 1;
+          for (const [pi, nm] of [[p0, nm0], [p1, nm1]]) {
+            for (let r = 0; r <= radSegs; r++) {
+              const t = r / radSegs;
+              const latOff = lo + t * W * s;
+              const archY  = Math.sin(Math.PI * t) * peakH + P3D_ROAD_Y + 0.01;
+              pos.push(pi.x + nm.px * latOff, archY, pi.z + nm.pz * latOff);
+            }
+          }
+          for (let r = 0; r < radSegs; r++) {
+            const a=r, b=r+1, c=rowSize+r, d=rowSize+r+1;
+            if (s > 0) idx2.push(a,c,b, b,c,d); else idx2.push(a,b,c, b,d,c);
+          }
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+          geo.setIndex(idx2); geo.computeVertexNormals();
+          preview3dScene.add(new THREE.Mesh(geo, mat));
+        }
+      }
+    });
+
+    // ── 4. SLOW CORNERS: sausage kerb (yellow tube) on outside apex ──
+    // Sausage kerb sits on top of flat kerb at the apex of tight turns
+    const slowRuns = collectRuns(i => isSlow[i]);
+    slowRuns.forEach(run => {
+      const pts = runPts(run);
+      if (pts.length < 2) return;
+      const ds = dominantSign(run);
+      const sausageOff = (TH + 0.6) * ds; // middle of flat kerb
+      const curve3 = new THREE.CatmullRomCurve3(
+        pts.map((p, j) => {
+          const nm = autoNormals[(run.from + j) % spl];
+          return new THREE.Vector3(p.x + nm.px * sausageOff, P3D_ROAD_Y + 0.18, p.z + nm.pz * sausageOff);
+        })
+      );
+      const tubeGeo = new THREE.TubeGeometry(curve3, pts.length * 2, 0.18, 8, false);
+      preview3dScene.add(new THREE.Mesh(tubeGeo, sausageMat));
+    });
+
+    // ── 5. BEHIND GRAVEL AT CORNERS: tyre wall ──
+    // Sits at 23u–23.9u (just inside perimeter armco)
+    const tyreRuns = collectRuns(i => inCorner[i]);
+    tyreRuns.forEach(run => {
+      const pts = runPts(run);
+      if (pts.length < 2) return;
+      const ds = dominantSign(run); // only outside of corner
+      const tyrGeo = new THREE.CylinderGeometry(0.46, 0.46, 0.48, 10, 1);
+      const swGeo  = new THREE.CylinderGeometry(0.47, 0.47, 0.05, 10, 1);
+      const dummy  = new THREE.Object3D();
+      const stepEvery = 4;
+      const count  = Math.ceil(pts.length / stepEvery) + 1;
+      for (const [yOff, geo, mat] of [
+        [P3D_ROAD_Y + 0.24, tyrGeo, tyrMat],
+        [P3D_ROAD_Y + 0.72, tyrGeo, tyrMat],
+        [P3D_ROAD_Y + 0.24, swGeo,  tyrSwMat],
+        [P3D_ROAD_Y + 0.72, swGeo,  tyrSwMat],
+      ]) {
+        const mesh = new THREE.InstancedMesh(geo, mat, count);
+        let idx = 0;
+        for (let j = 0; j < pts.length; j += stepEvery) {
+          if (p3dIsHairpin(autoNormals, (run.from + j) % spl)) continue;
+          const p  = pts[j];
+          const nm = autoNormals[(run.from + j) % spl];
+          const sideOff = 23.0 * ds;
+          dummy.position.set(p.x + nm.px * sideOff, yOff, p.z + nm.pz * sideOff);
+          dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
+          dummy.updateMatrix();
+          mesh.setMatrixAt(idx++, dummy.matrix);
+        }
+        mesh.count = idx;
+        mesh.instanceMatrix.needsUpdate = true;
+        preview3dScene.add(mesh);
+      }
     });
   }
 
