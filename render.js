@@ -99,7 +99,7 @@ const SURFACE_LANES = {
   sand:      { inner:  9.2, outer: 23.0, labelOffset: 20 },
   tyrewall:  { inner: 23.0, outer: 23.9, labelOffset: 25 },
   armco:     { inner: 23.9, outer: 24.9, labelOffset: 28 },
-  tecpro:    { inner: 23.9, outer: 25.8, labelOffset: 27 },
+  tecpro:    { inner: 24.9, outer: 25.8, labelOffset: 27 },
 };
 
 const LANE_STEP = 5.5;
@@ -293,216 +293,6 @@ function buildSplinePoints(segs) {
   return pts;
 }
 
-// ═══════════════════════════════════════════════════
-// TRACK ROAD
-// ═══════════════════════════════════════════════════
-function drawTrackRoad_REMOVED_COMPACT_DUPLICATE() {
-  const splinePts = buildSplinePoints(16);
-  if (splinePts.length < 2) return;
-  const n = waypoints.length;
-  const screenPts = splinePts.map(p => ({ s: worldToScreen(p.pt.x, p.pt.y), seg: p.seg }));
-  const trackW = Math.max(6, 14 * cam.zoom);
-  const kerbW  = Math.max(2, 3.5 * cam.zoom);
-  const spl = splinePts.length;
-
-  // ── Curvature per spline point ──
-  const curvature  = new Float32Array(spl);
-  const cornerSign = new Float32Array(spl);
-  for (let i = 0; i < spl; i++) {
-    const p0 = splinePts[(i-1+spl)%spl].pt, p1 = splinePts[i].pt, p2 = splinePts[(i+1)%spl].pt;
-    const v1x=p1.x-p0.x, v1y=p1.y-p0.y, v2x=p2.x-p1.x, v2y=p2.y-p1.y;
-    const cross=v1x*v2y-v1y*v2x;
-    const len=(Math.sqrt(v1x*v1x+v1y*v1y)*Math.sqrt(v2x*v2x+v2y*v2y))||1;
-    curvature[i]=Math.abs(cross)/len;
-    cornerSign[i]=Math.sign(cross);
-  }
-  const CORNER_T = 0.010, SLOW_T = 0.028, MARG = 10;
-  const inCornerRoad = new Uint8Array(spl);
-  const isSlowRoad   = new Uint8Array(spl);
-  for (let i=0; i<spl; i++) {
-    if (curvature[i]>CORNER_T) for(let d=-MARG;d<=MARG;d++) inCornerRoad[(i+d+spl)%spl]=1;
-    if (curvature[i]>SLOW_T)   for(let d=-MARG;d<=MARG;d++) isSlowRoad[(i+d+spl)%spl]=1;
-  }
-
-  // ── 1. OUTER FLAT KERB — full circuit, both sides, under asphalt ──
-  // Real tracks: red/white alternating kerb runs the entire circuit length.
-  // Width is consistent — asphalt paints over the centre leaving only the kerb band.
-  let dist = 0;
-  for (let i=1; i<screenPts.length; i++) {
-    const a=screenPts[i-1].s, b=screenPts[i].s;
-    dist += Math.hypot(b.x-a.x, b.y-a.y);
-    const phase = Math.floor(dist / 16);
-    ctx.strokeStyle = phase%2===0 ? 'rgba(215,25,25,0.90)' : 'rgba(245,245,245,0.90)';
-    ctx.lineWidth = trackW*2 + kerbW*2;
-    ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
-    ctx.beginPath(); ctx.moveTo(a.x,a.y); ctx.lineTo(b.x,b.y); ctx.stroke();
-  }
-
-  // ── 2. ASPHALT — dark grey ──
-  ctx.strokeStyle = 'rgba(48,50,54,0.97)';
-  ctx.lineWidth = trackW*2;
-  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  ctx.beginPath();
-  screenPts.forEach((p,i) => i===0 ? ctx.moveTo(p.s.x,p.s.y) : ctx.lineTo(p.s.x,p.s.y));
-  ctx.closePath(); ctx.stroke();
-
-  // Aggregate texture overlay
-  ctx.strokeStyle = 'rgba(72,74,80,0.28)';
-  ctx.lineWidth = trackW*2 - 2;
-  ctx.setLineDash([3,8]); ctx.lineDashOffset = 4;
-  ctx.beginPath();
-  screenPts.forEach((p,i) => i===0 ? ctx.moveTo(p.s.x,p.s.y) : ctx.lineTo(p.s.x,p.s.y));
-  ctx.closePath(); ctx.stroke();
-  ctx.setLineDash([]);
-
-  // Rubber marbling before corners
-  ctx.save(); ctx.lineCap = 'round';
-  for (let i=1; i<spl; i++) {
-    if (!inCornerRoad[i] && inCornerRoad[(i+1)%spl]) {
-      for (let k=Math.max(0,i-8); k<=i; k++) {
-        const fade=(k-(i-8))/8;
-        ctx.globalAlpha=0.07*fade;
-        ctx.strokeStyle='rgba(20,20,20,1)';
-        ctx.lineWidth=trackW*2*0.7;
-        if (k>0) { ctx.beginPath(); ctx.moveTo(screenPts[k-1].s.x,screenPts[k-1].s.y); ctx.lineTo(screenPts[k].s.x,screenPts[k].s.y); ctx.stroke(); }
-      }
-    }
-  }
-  ctx.globalAlpha=1; ctx.restore();
-
-  // ── 3. WHITE TRACK LIMIT LINES — very thin, straights only, suppressed at corners ──
-  const edgeW = Math.max(0.8, 1.2 * cam.zoom);
-  ctx.lineWidth = edgeW;
-  ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
-  [-1, 1].forEach(side => {
-    for (let i = 0; i < spl - 1; i++) {
-      if (inCornerRoad[i] || inCornerRoad[i+1]) continue; // skip corners entirely
-      const pa = buildOffsetScreenPolyline([splinePts[i], splinePts[i+1]], side, TRACK_HALF_WIDTH);
-      if (pa.length < 2) continue;
-      ctx.strokeStyle = 'rgba(255,255,255,0.90)';
-      ctx.beginPath(); ctx.moveTo(pa[0].x,pa[0].y); ctx.lineTo(pa[1].x,pa[1].y); ctx.stroke();
-    }
-  });
-
-  // ── 4. RAISED SAUSAGE KERB — outside of slow corners, clean lifted look ──
-  for (let i = 1; i < spl; i++) {
-    if (!isSlowRoad[i]) continue;
-    const ds = cornerSign[i] >= 0 ? 1 : -1;
-    const prev = splinePts[(i-1+spl)%spl], curr = splinePts[i];
-    const pa = buildOffsetScreenPolyline([prev, curr], ds, TRACK_HALF_WIDTH + 0.6);
-    if (pa.length < 2) continue;
-    // Shadow
-    ctx.strokeStyle = 'rgba(40,0,0,0.55)';
-    ctx.lineWidth = Math.max(2.5, kerbW * 1.4);
-    ctx.lineCap = 'round';
-    ctx.beginPath(); ctx.moveTo(pa[0].x+0.8,pa[0].y+0.8); ctx.lineTo(pa[1].x+0.8,pa[1].y+0.8); ctx.stroke();
-    // Main dark red body
-    ctx.strokeStyle = 'rgba(165,8,8,1.0)';
-    ctx.lineWidth = Math.max(2, kerbW * 1.2);
-    ctx.beginPath(); ctx.moveTo(pa[0].x,pa[0].y); ctx.lineTo(pa[1].x,pa[1].y); ctx.stroke();
-    // Top highlight
-    ctx.strokeStyle = 'rgba(240,60,60,0.45)';
-    ctx.lineWidth = Math.max(0.8, kerbW * 0.35);
-    ctx.beginPath(); ctx.moveTo(pa[0].x,pa[0].y); ctx.lineTo(pa[1].x,pa[1].y); ctx.stroke();
-  }
-
-  // ── 5. INSIDE KERBS — red/white flat painted, inside of corners ──
-  const insideKerbW = Math.max(1.5, kerbW * 0.65);
-  const insideOffset = TRACK_HALF_WIDTH - 1.0;
-  let dist2 = 0;
-  for (let i = 1; i < spl; i++) {
-    if (!inCornerRoad[i]) { dist2 += 2; continue; }
-    const side = cornerSign[i] >= 0 ? -1 : 1; // inside = opposite to outside
-    const prev = splinePts[(i-1+spl)%spl], curr = splinePts[i];
-    const pa = buildOffsetScreenPolyline([prev, curr], side, insideOffset);
-    if (pa.length < 2) continue;
-    dist2 += Math.hypot(pa[1].x-pa[0].x, pa[1].y-pa[0].y);
-    const phase = Math.floor(dist2 / 10);
-    ctx.strokeStyle = phase%2===0 ? 'rgba(200,18,18,0.88)' : 'rgba(238,238,238,0.88)';
-    ctx.lineWidth = insideKerbW;
-    ctx.lineCap = 'butt';
-    ctx.beginPath(); ctx.moveTo(pa[0].x,pa[0].y); ctx.lineTo(pa[1].x,pa[1].y); ctx.stroke();
-  }
-
-  // ── 6. BRAKING MARKERS ──
-  if (cam.zoom > 0.4) {
-    const markerColors = ['#ff2222','#ffdd00','#ffffff'];
-    const markerDists  = [24, 16, 8];
-    for (let i = 1; i < spl; i++) {
-      if (!inCornerRoad[i] || inCornerRoad[(i-1+spl)%spl]) continue;
-      const ds2 = dominantSignAt(i, cornerSign, spl);
-      markerDists.forEach((offset, mi) => {
-        const idx = ((i - offset) + spl) % spl;
-        const pt  = splinePts[idx];
-        const side = -ds2;
-        const mPoly = buildOffsetScreenPolyline(
-          [splinePts[(idx-1+spl)%spl], pt, splinePts[(idx+1)%spl]], side, TRACK_HALF_WIDTH + 2.5
-        );
-        if (mPoly.length < 2) return;
-        const mp = mPoly[1];
-        const mw = Math.max(2, 3*cam.zoom), mh = Math.max(4, 7*cam.zoom);
-        ctx.save();
-        ctx.fillStyle = markerColors[mi]; ctx.strokeStyle = '#000'; ctx.lineWidth = 0.5;
-        ctx.beginPath(); ctx.rect(mp.x-mw/2, mp.y-mh/2, mw, mh);
-        ctx.fill(); ctx.stroke();
-        ctx.restore();
-      });
-    }
-  }
-
-  // ── 7. PIT LANE STUB ──
-  if (startingPointIdx < waypoints.length && n >= 4) {
-    const sfIdx = startingPointIdx * 16;
-    const sfPt  = splinePts[Math.min(sfIdx, spl-1)];
-    const nxt = splinePts[Math.min(sfIdx+4, spl-1)].pt;
-    const prv = splinePts[Math.max(sfIdx-4, 0)].pt;
-    const tdx = nxt.x-prv.x, tdy = nxt.y-prv.y;
-    const tlen = Math.sqrt(tdx*tdx+tdy*tdy)||1;
-    const pitSide = 1, pitOffset = TRACK_HALF_WIDTH + 4.5, pitLen = 22;
-    const pitPts = [];
-    for (let k=-2; k<=2; k++) {
-      const frac=k/2;
-      pitPts.push(worldToScreen(
-        sfPt.pt.x + tdx/tlen*frac*pitLen/2 - tdy/tlen*pitSide*pitOffset,
-        sfPt.pt.y + tdy/tlen*frac*pitLen/2 + tdx/tlen*pitSide*pitOffset
-      ));
-    }
-    ctx.save();
-    ctx.strokeStyle='rgba(55,57,62,0.92)'; ctx.lineWidth=Math.max(4,trackW*0.55);
-    ctx.lineCap='round'; ctx.lineJoin='round';
-    ctx.beginPath(); pitPts.forEach((p,i) => i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y)); ctx.stroke();
-    ctx.strokeStyle='rgba(255,255,255,0.75)'; ctx.lineWidth=Math.max(1,edgeW*0.8);
-    ctx.beginPath(); pitPts.forEach((p,i) => i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y)); ctx.stroke();
-    const pitEntry=pitPts[0], pitExit=pitPts[pitPts.length-1];
-    const te1=buildOffsetScreenPolyline([splinePts[Math.max(sfIdx-2,0)],sfPt],pitSide,TRACK_HALF_WIDTH);
-    const te2=buildOffsetScreenPolyline([sfPt,splinePts[Math.min(sfIdx+2,spl-1)]],pitSide,TRACK_HALF_WIDTH);
-    ctx.strokeStyle='rgba(55,57,62,0.75)'; ctx.lineWidth=Math.max(2,trackW*0.3); ctx.setLineDash([3,3]);
-    if(te1.length){ctx.beginPath();ctx.moveTo(te1[0].x,te1[0].y);ctx.lineTo(pitEntry.x,pitEntry.y);ctx.stroke();}
-    if(te2.length){ctx.beginPath();ctx.moveTo(te2[te2.length-1].x,te2[te2.length-1].y);ctx.lineTo(pitExit.x,pitExit.y);ctx.stroke();}
-    ctx.setLineDash([]); ctx.restore();
-  }
-
-  // ── 8. START/FINISH LINE — chequered ──
-  if (startingPointIdx < waypoints.length) {
-    const i1=Math.min(startingPointIdx*16,screenPts.length-1);
-    const i2=Math.min(i1+1,screenPts.length-1);
-    if (i2>i1) {
-      const sfPt=worldToScreen(waypoints[startingPointIdx].x,waypoints[startingPointIdx].y);
-      const dx=screenPts[i2].s.x-screenPts[i1].s.x, dy=screenPts[i2].s.y-screenPts[i1].s.y;
-      const len=Math.hypot(dx,dy)||1;
-      const px=-dy/len*(trackW+4), py=dx/len*(trackW+4);
-      const sq=(trackW+4)/2;
-      ctx.save();
-      for(let row=0;row<2;row++) for(let col=0;col<4;col++) {
-        const t=(col/4-0.5)*2;
-        const cx2=sfPt.x+px*t+dx/len*row*sq*0.6, cy2=sfPt.y+py*t+dy/len*row*sq*0.6;
-        ctx.fillStyle=(row+col)%2===0?'#fff':'#111';
-        ctx.beginPath(); ctx.rect(cx2-sq*0.48,cy2-sq*0.48,sq*0.9,sq*0.9); ctx.fill();
-      }
-      ctx.restore();
-    }
-  }
-}
 
 function drawTrackRoad() {
   const splinePts = buildSplinePoints(16);
@@ -577,19 +367,22 @@ function drawTrackRoad() {
   }
   ctx.globalAlpha=1; ctx.restore();
 
-  // ── White track edge lines — continuous both sides ──
-  // The most visually defining feature of any real circuit aerial view
-  const edgeW = Math.max(1.5, 2.2 * cam.zoom);
-  ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+  // ── White track limit lines — straights only, at true asphalt edge ──
+  // Per-segment draw so corners are excluded. Offset is TRACK_HALF_WIDTH in world
+  // space which maps exactly to the painted asphalt edge at any zoom level.
+  const edgeW = Math.max(1.2, 1.8 * cam.zoom);
   ctx.lineWidth = edgeW;
-  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-  // Build offset polylines for both edges
-  const leftEdge  = buildOffsetScreenPolyline(splinePts, -1, TRACK_HALF_WIDTH);
-  const rightEdge = buildOffsetScreenPolyline(splinePts,  1, TRACK_HALF_WIDTH);
-  [leftEdge, rightEdge].forEach(edge => {
-    ctx.beginPath();
-    edge.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-    ctx.closePath(); ctx.stroke();
+  ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+  [-1, 1].forEach(side => {
+    for (let i = 0; i < spl - 1; i++) {
+      if (inCornerRoad[i] || inCornerRoad[i + 1]) continue;
+      const pa = buildOffsetScreenPolyline(
+        [splinePts[i], splinePts[i + 1]], side, TRACK_HALF_WIDTH
+      );
+      if (pa.length < 2) continue;
+      ctx.strokeStyle = 'rgba(255,255,255,0.92)';
+      ctx.beginPath(); ctx.moveTo(pa[0].x, pa[0].y); ctx.lineTo(pa[1].x, pa[1].y); ctx.stroke();
+    }
   });
 
   // ── Inside kerbs — small red/white painted kerb on inside of corners ──
@@ -820,18 +613,18 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
 
     // ── SAUSAGE KERB — fat yellow ridge with white highlight ────────
     case 'sausage': {
-      // Dark outline for definition against grass
-      ctx.lineWidth = w * 1.4;
-      ctx.strokeStyle = 'rgba(160,120,0,0.7)';
+      // Dark outline for definition against grass — kept proportional, not overblown
+      ctx.lineWidth = w * 1.05;
+      ctx.strokeStyle = 'rgba(140,100,0,0.65)';
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       _polyPath(ctx, poly); ctx.stroke();
       // Main yellow body
-      ctx.lineWidth = w * 1.2;
+      ctx.lineWidth = w;
       ctx.strokeStyle = 'rgba(248,200,20,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
       // White specular ridge on top
-      ctx.lineWidth = Math.max(1.5, w * 0.4);
-      ctx.strokeStyle = 'rgba(255,255,255,0.85)';
+      ctx.lineWidth = Math.max(1, w * 0.32);
+      ctx.strokeStyle = 'rgba(255,255,255,0.80)';
       _polyPath(ctx, poly); ctx.stroke();
       ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
       break;
@@ -1151,37 +944,49 @@ function drawAutoSurfaces() {
   const gravelLane = getSurfaceLane('gravel', 0);
   const sandLane   = getSurfaceLane('sand', 0);
 
-  // ── 1. PERIMETER ARMCO — two separate passes: inside always tight, outside fans at corners ──
-  const closeBarrierOffset = 10.8;
-  const closeBarrierLane   = { width: 2.0, center: closeBarrierOffset, inner: 9.8, outer: 11.8 };
+  // ── Build a smooth per-point offset array for armco (FIX 4, 10) ──
+  // Armco sits at the perimeter (~24.4wu) everywhere. On corner outsides it fans
+  // slightly to match the gravel/sand outer edge. Smoothed with a wide kernel so
+  // there are NO hard jumps between zones (fixes transition smoothness).
+  const ARMCO_STRAIGHT  = 24.4;   // perimeter distance on straights & corner insides
+  const ARMCO_CORNER_MD = gravelLane.outer + 0.5;  // just outside gravel (~23.5)
+  const ARMCO_CORNER_SL = sandLane.outer   + 0.5;  // just outside sand   (~23.5)
+  const armcoLane = getSurfaceLane('armco', 0);
 
-  // Compute dominant sign per spline point (which side is outside for each point)
+  // Compute dominant side per point (smoothed over 8 pts ahead)
   const ptDominantSide = new Int8Array(spl);
   for (let i = 0; i < spl; i++) {
-    // look ahead 6 pts to determine corner direction
     let s = 0;
-    for (let d = 0; d < 6; d++) s += cornerSign[(i + d) % spl];
+    for (let d = 0; d < 8; d++) s += cornerSign[(i + d) % spl];
     ptDominantSide[i] = s >= 0 ? 1 : -1;
   }
 
   [-1, 1].forEach(side => {
-    const armcoOffsets = Array.from({ length: spl }, (_, i) => {
-      const isOutside = (ptDominantSide[i] === side);
-      if (!inCorner[i]) return closeBarrierOffset; // straight: always tight
-      if (!isOutside)   return closeBarrierOffset; // inside of corner: always tight
-      // Outside of corner: fan out based on severity
-      if (isMedium[i]) return gravelLane.outer;
-      return tarmacLane.outer * 0.75; // fast corner outside: moderate fan
+    // Raw offset per point
+    const raw = Array.from({ length: spl }, (_, i) => {
+      const isOutside = ptDominantSide[i] === side;
+      if (!inCorner[i])           return ARMCO_STRAIGHT;   // straight: perimeter
+      if (!isOutside)             return ARMCO_STRAIGHT;   // inside of corner: perimeter
+      if (isSlow[i])              return ARMCO_CORNER_SL;  // slow corner outside: behind sand
+      if (isMedium[i])            return ARMCO_CORNER_MD;  // medium corner outside: behind gravel
+      return (ARMCO_STRAIGHT + ARMCO_CORNER_MD) * 0.5;    // fast corner outside: blend
     });
-    // Smooth
-    const smoothed = armcoOffsets.slice();
+
+    // Wide Gaussian-style smooth (kernel = TRANS*2+1) so transitions are gradual
+    const SMOOTH_K = TRANS * 2;
+    const smoothed = new Float32Array(spl);
     for (let i = 0; i < spl; i++) {
-      let sum = 0, cnt = 0;
-      for (let d = -TRANS; d <= TRANS; d++) { sum += armcoOffsets[(i+d+spl)%spl]; cnt++; }
-      smoothed[i] = sum / cnt;
+      let sum = 0, wt = 0;
+      for (let d = -SMOOTH_K; d <= SMOOTH_K; d++) {
+        const w = SMOOTH_K + 1 - Math.abs(d); // triangular weight
+        sum += raw[(i + d + spl) % spl] * w;
+        wt  += w;
+      }
+      smoothed[i] = sum / wt;
     }
+
     const poly = buildOffsetScreenPolylineVarying(splinePts, side, smoothed);
-    drawSurfacePattern(ctx, 'armco', poly, closeBarrierLane, side, cam.zoom);
+    drawSurfacePattern(ctx, 'armco', poly, armcoLane, side, cam.zoom);
   });
 
   // ── 2. FAST CORNERS: tarmac runoff ──
@@ -1189,13 +994,13 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = buildTransitionOffsets(pts.length, closeBarrierOffset, tarmacLane.center, TRANS);
+    const offsets = buildTransitionOffsets(pts.length, ARMCO_STRAIGHT, tarmacLane.center, TRANS);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     const w = Math.max(4, tarmacLane.width * cam.zoom);
     ctx.lineWidth = w; ctx.strokeStyle = 'rgba(90,92,95,0.88)';
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     _polyPath(ctx, poly); ctx.stroke();
-    ctx.lineWidth = Math.max(1, w*0.15); ctx.strokeStyle = 'rgba(60,62,65,0.45)';
+    ctx.lineWidth = Math.max(1, w * 0.15); ctx.strokeStyle = 'rgba(60,62,65,0.45)';
     _polyPath(ctx, poly); ctx.stroke();
   });
 
@@ -1204,7 +1009,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = buildTransitionOffsets(pts.length, closeBarrierOffset, gravelLane.center, TRANS);
+    const offsets = buildTransitionOffsets(pts.length, ARMCO_STRAIGHT, gravelLane.center, TRANS);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'gravel', poly, gravelLane, ds, cam.zoom);
   });
@@ -1214,12 +1019,12 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = buildTransitionOffsets(pts.length, closeBarrierOffset, sandLane.center, TRANS);
+    const offsets = buildTransitionOffsets(pts.length, ARMCO_STRAIGHT, sandLane.center, TRANS);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'sand', poly, sandLane, ds, cam.zoom);
   });
 
-  // ── 5. CORNERS: rumble strip both sides (fixed offset, no transition needed) ──
+  // ── 5. CORNERS: rumble strip both sides ──
   const rumbleLane = getSurfaceLane('rumble', 0);
   collectRuns(i => inCorner[i]).forEach(run => {
     const pts = runPts(run);
@@ -1240,19 +1045,20 @@ function drawAutoSurfaces() {
     drawSurfacePattern(ctx, 'sausage', poly, sausageLane, ds, cam.zoom);
   });
 
-  // ── 7. OUTER TecPro — fixed offset, behind medium/slow runoff ──
-  // Use fixed offset (not varying) so it always renders at the correct position.
+  // ── 7. TecPro — STRAIGHTS ONLY, both sides (FIX 1) ──
+  // FIA rules: TecPro on straights; armco/tyrewall on corners.
   const tecproLane = getSurfaceLane('tecpro', 0);
   const tecproMinW = { ...tecproLane, width: Math.max(tecproLane.width, 3.0) };
-  collectRuns(i => isMedium[i]).forEach(run => {
+  collectRuns(i => !inCorner[i]).forEach(run => {
     const pts = runPts(run);
     if (pts.length < 2) return;
-    const ds = dominantSign(run);
-    const poly = buildOffsetScreenPolyline(pts, ds, tecproLane.center);
-    drawSurfacePattern(ctx, 'tecpro', poly, tecproMinW, ds, cam.zoom);
+    [-1, 1].forEach(side => {
+      const poly = buildOffsetScreenPolyline(pts, side, tecproLane.center);
+      drawSurfacePattern(ctx, 'tecpro', poly, tecproMinW, side, cam.zoom);
+    });
   });
 
-  // ── 8. TYRE WALL — fixed offset, behind sand at slow corners ──
+  // ── 8. TYRE WALL — behind sand at slow corners ──
   const tyreLane = getSurfaceLane('tyrewall', 0);
   const tyreMinW = { ...tyreLane, width: Math.max(tyreLane.width, 2.5) };
   collectRuns(i => isSlow[i]).forEach(run => {
@@ -1427,7 +1233,7 @@ function expandBarrierDrawItems(segments) {
 
 function mergeExpandedBarrierItems(items) {
   if (!items.length || !waypoints.length) return items;
-  const gapTolerance = Math.max(4, Math.floor(waypoints.length * 0.04)); // wider gap bridge
+  const gapTolerance = Math.max(1, Math.floor(waypoints.length * 0.01)); // tight: only merge truly adjacent segments
   const sorted = items.slice().sort((a,b) =>
     String(a.surface).localeCompare(String(b.surface)) ||
     a.sideNum - b.sideNum ||
