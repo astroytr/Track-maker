@@ -339,14 +339,13 @@ function drawTrackRoad() {
   screenPts.forEach((p,i) => i===0 ? ctx.moveTo(p.s.x,p.s.y) : ctx.lineTo(p.s.x,p.s.y));
   ctx.closePath(); ctx.stroke();
 
-  // Aggregate texture — very faint lighter overlay
-  ctx.strokeStyle = 'rgba(72,74,80,0.30)';
-  ctx.lineWidth = trackW*2 - 2;
-  ctx.setLineDash([3, 7]); ctx.lineDashOffset = 4;
+  // Aggregate texture — subtle lighter solid overlay (no dashes to avoid seam artefacts)
+  ctx.strokeStyle = 'rgba(68,70,76,0.18)';
+  ctx.lineWidth = trackW*2 - 3;
+  ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.beginPath();
   screenPts.forEach((p,i) => i===0 ? ctx.moveTo(p.s.x,p.s.y) : ctx.lineTo(p.s.x,p.s.y));
   ctx.closePath(); ctx.stroke();
-  ctx.setLineDash([]);
 
   // Rubber marbling — dark streaks in braking zones before corners
   ctx.save();
@@ -517,19 +516,28 @@ function drawTrackRoad() {
       const sfPt = worldToScreen(waypoints[startingPointIdx].x, waypoints[startingPointIdx].y);
       const dx=screenPts[i2].s.x-screenPts[i1].s.x, dy=screenPts[i2].s.y-screenPts[i1].s.y;
       const len=Math.hypot(dx,dy)||1;
-      const px=-dy/len*(trackW+4), py=dx/len*(trackW+4);
-      // Chequered pattern — 4 squares across
-      const sq = (trackW+4) / 2;
+      // Perpendicular unit vector (across track width)
+      const ux = -dy/len, uy = dx/len;
+      // Along-track unit vector
+      const tx2 = dx/len, ty2 = dy/len;
+      // Chequered pattern — 4 cols across full track width, 2 rows along track
+      const COLS = 4, ROWS = 2;
+      const sq = (trackW * 2) / COLS;   // square size = full track width / columns
+      const totalAlong = sq * ROWS;
       ctx.save();
-      for (let row=0; row<2; row++) {
-        for (let col=0; col<4; col++) {
-          const t = (col/4 - 0.5) * 2;
-          const cx2 = sfPt.x + px*t + dx/len*row*sq*0.6;
-          const cy2 = sfPt.y + py*t + dy/len*row*sq*0.6;
-          ctx.fillStyle = (row+col)%2===0 ? '#fff' : '#111';
-          ctx.beginPath();
-          ctx.rect(cx2 - sq*0.48, cy2 - sq*0.48, sq*0.9, sq*0.9);
-          ctx.fill();
+      for (let row = 0; row < ROWS; row++) {
+        for (let col = 0; col < COLS; col++) {
+          // Centre each square: columns span -trackW to +trackW, rows along track
+          const across = (col + 0.5 - COLS / 2) * sq;
+          const along  = (row + 0.5 - ROWS / 2) * sq;
+          const cx2 = sfPt.x + ux * across + tx2 * along;
+          const cy2 = sfPt.y + uy * across + ty2 * along;
+          ctx.fillStyle = (row + col) % 2 === 0 ? '#ffffff' : '#111111';
+          ctx.save();
+          ctx.translate(cx2, cy2);
+          ctx.rotate(Math.atan2(dy, dx));
+          ctx.fillRect(-sq * 0.5, -sq * 0.5, sq, sq);
+          ctx.restore();
         }
       }
       ctx.restore();
@@ -988,29 +996,6 @@ function drawAutoSurfaces() {
     ptDom[i] = s >= 0 ? 1 : -1;
   }
 
-  // ── Proximity cap — for every spline point, find the closest OTHER spline
-  //    point that is far away in index (different road section).  The barrier
-  //    on each side must never exceed half that world-space distance, otherwise
-  //    barriers from two adjacent parallel road sections would overlap.
-  //    We only check points that are at least MIN_SEP indices apart so that
-  //    nearby points on the *same* curve don't falsely cap the offset.
-  const MIN_SEP = Math.max(8, Math.floor(spl * 0.04)); // ~4 % of circuit
-  const proxCap = new Float32Array(spl);               // world units
-  for (let i = 0; i < spl; i++) {
-    const px = splinePts[i].pt.x, py = splinePts[i].pt.y;
-    let minD2 = Infinity;
-    // Stride by 3 to keep O(n) manageable on large circuits
-    for (let j = 0; j < spl; j += 3) {
-      const gap = Math.min(Math.abs(j - i), spl - Math.abs(j - i));
-      if (gap < MIN_SEP) continue;
-      const dx = splinePts[j].pt.x - px, dy = splinePts[j].pt.y - py;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < minD2) minD2 = d2;
-    }
-    // Half of closest distance → maximum safe barrier reach (floor at 4 wu)
-    proxCap[i] = Math.max(4, Math.sqrt(minD2) * 0.5);
-  }
-
   // ── 1. ARMCO — full circuit, smooth per-point offset, no hard jumps ──
   [-1, 1].forEach(side => {
     const raw = Array.from({ length: spl }, (_, i) => {
@@ -1029,8 +1014,7 @@ function drawAutoSurfaces() {
         const w = SK + 1 - Math.abs(d);
         sum += raw[(i + d + spl) % spl] * w; wt += w;
       }
-      // Clamp to proximity cap so barriers never cross into adjacent road section
-      sm[i] = Math.min(sum / wt, proxCap[i]);
+      sm[i] = sum / wt;
     }
     const poly = buildOffsetScreenPolylineVarying(splinePts, side, sm);
     drawSurfacePattern(ctx, 'armco', poly, armcoLane, side, cam.zoom);
@@ -1056,11 +1040,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const rawOffsets = buildTransitionOffsets(pts.length, PERIM, gravelLane.center, TRANS);
-    const offsets = rawOffsets.map((o, k) => {
-      const idx = ((run.from + k) % spl + spl) % spl;
-      return Math.min(o, proxCap[idx]);
-    });
+    const offsets = buildTransitionOffsets(pts.length, PERIM, gravelLane.center, TRANS);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'gravel', poly, gravelLane, ds, cam.zoom);
   });
@@ -1070,11 +1050,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const rawOffsets = buildTransitionOffsets(pts.length, PERIM, sandLane.center, TRANS);
-    const offsets = rawOffsets.map((o, k) => {
-      const idx = ((run.from + k) % spl + spl) % spl;
-      return Math.min(o, proxCap[idx]);
-    });
+    const offsets = buildTransitionOffsets(pts.length, PERIM, sandLane.center, TRANS);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'sand', poly, sandLane, ds, cam.zoom);
   });
@@ -1107,12 +1083,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     [-1, 1].forEach(side => {
-      // Build per-point offsets clamped to proximity cap
-      const offsets = pts.map((p, k) => {
-        const idx = ((run.from + k) % spl + spl) % spl;
-        return Math.min(tecproLane.center, proxCap[idx]);
-      });
-      const poly = buildOffsetScreenPolylineVarying(pts, side, offsets);
+      const poly = buildOffsetScreenPolyline(pts, side, tecproLane.center);
       drawSurfacePattern(ctx, 'tecpro', poly, tecproMinW, side, cam.zoom);
     });
   });
@@ -1124,11 +1095,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = pts.map((p, k) => {
-      const idx = ((run.from + k) % spl + spl) % spl;
-      return Math.min(tyreLane.center, proxCap[idx]);
-    });
-    const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
+    const poly = buildOffsetScreenPolyline(pts, ds, tyreLane.center);
     drawSurfacePattern(ctx, 'tyrewall', poly, tyreMinW, ds, cam.zoom);
   });
 }
