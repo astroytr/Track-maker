@@ -996,20 +996,16 @@ function drawAutoSurfaces() {
     ptDom[i] = s >= 0 ? 1 : -1;
   }
 
-  // ── World-space normals (sign-propagated, consistent winding) ──────────
-  // Used to compute where a barrier endpoint actually lands in world space
-  // so we can test if it physically crosses into another road section.
+  // ── World-space normals (sign-propagated) ───────────────────────────────
   const _wpN = new Array(spl);
   {
     const _rn = splinePts.map((p, i) => {
       const pv = splinePts[Math.max(0, i-1)].pt;
       const nx = splinePts[Math.min(spl-1, i+1)].pt;
       const ax = i===0 ? splinePts[1].pt.x-splinePts[0].pt.x
-               : i===spl-1 ? splinePts[spl-1].pt.x-splinePts[spl-2].pt.x
-               : nx.x-pv.x;
+               : i===spl-1 ? splinePts[spl-1].pt.x-splinePts[spl-2].pt.x : nx.x-pv.x;
       const ay = i===0 ? splinePts[1].pt.y-splinePts[0].pt.y
-               : i===spl-1 ? splinePts[spl-1].pt.y-splinePts[spl-2].pt.y
-               : nx.y-pv.y;
+               : i===spl-1 ? splinePts[spl-1].pt.y-splinePts[spl-2].pt.y : nx.y-pv.y;
       const sl = Math.sqrt(ax*ax+ay*ay)||1;
       return { px: -ay/sl, py: ax/sl };
     });
@@ -1019,44 +1015,59 @@ function drawAutoSurfaces() {
     const _ws = _area >= 0 ? -1 : 1;
     _wpN[0] = { px: _rn[0].px*_ws, py: _rn[0].py*_ws };
     for (let i=1; i<spl; i++) {
-      const _dot = _rn[i].px*_wpN[i-1].px + _rn[i].py*_wpN[i-1].py;
-      _wpN[i] = { px: _rn[i].px*(_dot>=0?1:-1), py: _rn[i].py*(_dot>=0?1:-1) };
+      const _d = _rn[i].px*_wpN[i-1].px + _rn[i].py*_wpN[i-1].py;
+      _wpN[i] = { px: _rn[i].px*(_d>=0?1:-1), py: _rn[i].py*(_d>=0?1:-1) };
     }
   }
 
-  // ── Safe-offset function ──────────────────────────────────────────────────
-  // Given a proposed barrier offset at spline index i on a given side,
-  // compute where the barrier endpoint would land in world space and check
-  // if it is closer than TRACK_HALF_WIDTH to ANY other centreline point that
-  // is index-far away (different road section).  If so, it would physically
-  // enter the other road — clamp the offset so the endpoint just touches the
-  // other road's edge (other_centreline_dist - TRACK_HALF_WIDTH).
-  // Points that don't reach the other road are returned completely unchanged.
-  const _MIN_SEP = Math.max(8, Math.floor(spl * 0.04));
-  const _ROAD_HALF = TRACK_HALF_WIDTH; // = 7 world units
+  // ── Grass-only barrier rule + merge-zone TecPro ──────────────────────────
+  // Road + kerb occupies 0..9.2 wu from any centreline.
+  // Grass starts at 9.2 wu — barriers must never land inside another road/kerb.
+  // Strategy: for each proposed barrier endpoint (in world space), find the
+  // closest OTHER centreline point (index-gap > MIN_SEP = different road).
+  // If the endpoint is within ROAD_KERB_EDGE of that centreline it's on a road/kerb
+  // → clamp the offset so the endpoint sits exactly at ROAD_KERB_EDGE from it.
+  // Track every spline index where a clamp fires (per side) → draw TecPro there.
+  const _MIN_SEP     = Math.max(8, Math.floor(spl * 0.04));
+  const _ROAD_KERB   = 9.2;   // road (7) + flat kerb (1.1) + sausage (1.1)
 
-  function _safeOffset(offset, sideNum, splIdx) {
-    const i = ((splIdx % spl) + spl) % spl;
+  // Pre-build a coarse grid of centreline points for fast nearest-other lookup
+  // (stride 2 — good enough, exact result not needed)
+  function _closestOtherCL(bx, by, selfIdx) {
+    let minD = Infinity;
+    for (let j = 0; j < spl; j += 2) {
+      const gap = Math.min(Math.abs(j - selfIdx), spl - Math.abs(j - selfIdx));
+      if (gap < _MIN_SEP) continue;
+      const dx = splinePts[j].pt.x - bx, dy = splinePts[j].pt.y - by;
+      const d = Math.sqrt(dx*dx + dy*dy);
+      if (d < minD) minD = d;
+    }
+    return minD;
+  }
+
+  // Returns { offset, clamped } — offset is safe, clamped=true if it was pulled back
+  function _grassOnlyOffset(proposedOffset, sideNum, splIdx) {
+    const i  = ((splIdx % spl) + spl) % spl;
     const cx = splinePts[i].pt.x, cy = splinePts[i].pt.y;
     const nx = _wpN[i].px * sideNum, ny = _wpN[i].py * sideNum;
-    // World position of the barrier endpoint at the proposed offset
-    const bx = cx + nx * offset, by = cy + ny * offset;
-    // Find if bx,by is inside any other road section
-    let minCLDist = Infinity;
-    for (let j = 0; j < spl; j += 2) {
-      const gap = Math.min(Math.abs(j-i), spl-Math.abs(j-i));
-      if (gap < _MIN_SEP) continue;
-      const dx = splinePts[j].pt.x - bx, dy2 = splinePts[j].pt.y - by;
-      const d = Math.sqrt(dx*dx + dy2*dy2);
-      if (d < minCLDist) minCLDist = d;
-    }
-    // If the barrier endpoint is within TRACK_HALF_WIDTH of another centreline
-    // it has entered the other road — pull it back to just that road's edge.
-    if (minCLDist >= _ROAD_HALF) return offset;  // no collision — untouched
-    // How far back do we need to pull? The endpoint needs to be exactly
-    // _ROAD_HALF away from the nearest centreline point.
-    // New offset = offset - (ROAD_HALF - minCLDist)
-    return Math.max(4, offset - (_ROAD_HALF - minCLDist));
+    const bx = cx + nx * proposedOffset, by = cy + ny * proposedOffset;
+    const d  = _closestOtherCL(bx, by, i);
+    if (d >= _ROAD_KERB) return { offset: proposedOffset, clamped: false };
+    // Pull back so endpoint is exactly _ROAD_KERB from the other centreline
+    const safeOffset = Math.max(4, proposedOffset - (_ROAD_KERB - d));
+    return { offset: safeOffset, clamped: true };
+  }
+
+  // mergeZone[side+1][i] = true where a barrier was clamped (merge zone)
+  const _mergeZone = [new Uint8Array(spl), new Uint8Array(spl)]; // [0]=side-1, [1]=side+1
+
+  function _applyGrassOnly(rawOffsets, sideNum, fromIdx) {
+    return rawOffsets.map((o, k) => {
+      const splIdx = fromIdx + k;
+      const { offset, clamped } = _grassOnlyOffset(o, sideNum, splIdx);
+      if (clamped) _mergeZone[sideNum > 0 ? 1 : 0][((splIdx % spl) + spl) % spl] = 1;
+      return offset;
+    });
   }
 
   // ── 1. ARMCO — full circuit, smooth per-point offset, no hard jumps ──
@@ -1068,7 +1079,6 @@ function drawAutoSurfaces() {
       if (isMedium[i]) return PERIM_MD;
       return (PERIM + PERIM_MD) * 0.5;
     });
-    // Triangular-weighted smooth over wide kernel — eliminates hard jumps
     const SK = TRANS * 2;
     const sm = new Float32Array(spl);
     for (let i = 0; i < spl; i++) {
@@ -1077,9 +1087,10 @@ function drawAutoSurfaces() {
         const w = SK + 1 - Math.abs(d);
         sum += raw[(i + d + spl) % spl] * w; wt += w;
       }
-      sm[i] = _safeOffset(sum / wt, side, i);
+      sm[i] = sum / wt;
     }
-    const poly = buildOffsetScreenPolylineVarying(splinePts, side, sm);
+    const safeOffsets = _applyGrassOnly(Array.from(sm), side, 0);
+    const poly = buildOffsetScreenPolylineVarying(splinePts, side, safeOffsets);
     drawSurfacePattern(ctx, 'armco', poly, armcoLane, side, cam.zoom);
   });
 
@@ -1089,7 +1100,7 @@ function drawAutoSurfaces() {
     if (pts.length < 2) return;
     const ds = dominantSign(run);
     const rawOff = buildTransitionOffsets(pts.length, PERIM, tarmacLane.center, TRANS);
-    const offsets = rawOff.map((o, k) => _safeOffset(o, ds, run.from + k));
+    const offsets = _applyGrassOnly(rawOff, ds, run.from);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     const w = Math.max(4, tarmacLane.width * cam.zoom);
     ctx.lineWidth = w; ctx.strokeStyle = 'rgba(90,92,95,0.88)';
@@ -1105,7 +1116,7 @@ function drawAutoSurfaces() {
     if (pts.length < 2) return;
     const ds = dominantSign(run);
     const rawOff = buildTransitionOffsets(pts.length, PERIM, gravelLane.center, TRANS);
-    const offsets = rawOff.map((o, k) => _safeOffset(o, ds, run.from + k));
+    const offsets = _applyGrassOnly(rawOff, ds, run.from);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'gravel', poly, gravelLane, ds, cam.zoom);
   });
@@ -1116,7 +1127,7 @@ function drawAutoSurfaces() {
     if (pts.length < 2) return;
     const ds = dominantSign(run);
     const rawOff = buildTransitionOffsets(pts.length, PERIM, sandLane.center, TRANS);
-    const offsets = rawOff.map((o, k) => _safeOffset(o, ds, run.from + k));
+    const offsets = _applyGrassOnly(rawOff, ds, run.from);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'sand', poly, sandLane, ds, cam.zoom);
   });
@@ -1142,17 +1153,60 @@ function drawAutoSurfaces() {
     drawSurfacePattern(ctx, 'sausage', poly, sausageLane, ds, cam.zoom);
   });
 
-  // ── 7. TECPRO — STRAIGHTS ONLY, both sides ──
+  // ── 7. TECPRO — straights + merge zones ──────────────────────────────────
+  // Normal TecPro on straights (unchanged).
+  // Additionally, wherever _mergeZone fired on ANY side, draw TecPro at the
+  // grass edge of the merge (offset = distance to other road's kerb edge).
   const tecproLane = getSurfaceLane('tecpro', 0);
   const tecproMinW = { ...tecproLane, width: Math.max(tecproLane.width, 3.0) };
+
+  // Normal straights TecPro
   collectRuns(i => !inCorner[i]).forEach(run => {
     const pts = runPts(run);
     if (pts.length < 2) return;
     [-1, 1].forEach(side => {
-      const offsets = pts.map((_, k) => _safeOffset(tecproLane.center, side, run.from + k));
-      const poly = buildOffsetScreenPolylineVarying(pts, side, offsets);
+      const poly = buildOffsetScreenPolyline(pts, side, tecproLane.center);
       drawSurfacePattern(ctx, 'tecpro', poly, tecproMinW, side, cam.zoom);
     });
+  });
+
+  // Merge-zone TecPro — runs of clamped indices on each side
+  [-1, 1].forEach(side => {
+    const mz = _mergeZone[side > 0 ? 1 : 0];
+    // Collect contiguous runs of merge-zone indices
+    let mStart = -1;
+    const flushMerge = (mEnd) => {
+      if (mStart < 0 || mEnd < mStart) return;
+      const pts = [];
+      for (let i = mStart; i <= mEnd; i++) pts.push(splinePts[i % spl]);
+      if (pts.length < 2) return;
+      // At each point in the merge zone, find the offset that places the barrier
+      // exactly at the grass edge of the other road (_ROAD_KERB from its CL).
+      const offsets = pts.map((p, k) => {
+        const i = (mStart + k) % spl;
+        const cx = p.pt.x, cy = p.pt.y;
+        const nx = _wpN[i].px * side, ny = _wpN[i].py * side;
+        // Binary search: find largest offset where endpoint is still >= _ROAD_KERB from other CL
+        let lo = 4, hi = PERIM;
+        for (let iter = 0; iter < 12; iter++) {
+          const mid = (lo + hi) * 0.5;
+          const bx = cx + nx * mid, by2 = cy + ny * mid;
+          const d = _closestOtherCL(bx, by2, i);
+          if (d >= _ROAD_KERB) lo = mid; else hi = mid;
+        }
+        return lo;
+      });
+      const poly = buildOffsetScreenPolylineVarying(pts, side, offsets);
+      drawSurfacePattern(ctx, 'tecpro', poly, tecproMinW, side, cam.zoom);
+    };
+    for (let i = 0; i < spl; i++) {
+      if (mz[i]) {
+        if (mStart < 0) mStart = i;
+      } else {
+        if (mStart >= 0) { flushMerge(i - 1); mStart = -1; }
+      }
+    }
+    if (mStart >= 0) flushMerge(spl - 1);
   });
 
   // ── 8. TYRE WALL — behind sand at slow corners ──
@@ -1162,8 +1216,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = pts.map((_, k) => _safeOffset(tyreLane.center, ds, run.from + k));
-    const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
+    const poly = buildOffsetScreenPolyline(pts, ds, tyreLane.center);
     drawSurfacePattern(ctx, 'tyrewall', poly, tyreMinW, ds, cam.zoom);
   });
 }
