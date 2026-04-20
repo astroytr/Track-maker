@@ -216,7 +216,6 @@ function render() {
   // 3. Track road (asphalt + kerb chevrons) — always on top of runoff
   // 4. Centreline dashes
   if (waypoints.length >= 2) {
-    drawPermanentGrassBand();
     drawAutoSurfaces();      // auto: TecPro straights, gravel corners, rumble, sausage, tyrewall
     drawBarrierSegments();   // user-placed segments paint on top of auto surfaces
     drawTrackRoad();
@@ -293,7 +292,6 @@ function buildSplinePoints(segs) {
   return pts;
 }
 
-
 function drawTrackRoad() {
   const splinePts = buildSplinePoints(16);
   if (splinePts.length < 2) return;
@@ -367,23 +365,50 @@ function drawTrackRoad() {
   }
   ctx.globalAlpha=1; ctx.restore();
 
-  // ── White track limit lines — straights only, at true asphalt edge ──
-  // Per-segment draw so corners are excluded. Offset is TRACK_HALF_WIDTH in world
-  // space which maps exactly to the painted asphalt edge at any zoom level.
-  const edgeW = Math.max(1.2, 1.8 * cam.zoom);
+  // ── White track limit lines — at true asphalt edge, straights only ──
+  // Drawn segment-by-segment so corners can be excluded.
+  // trackW is already in screen pixels (Math.max(6, 14*cam.zoom)) so we offset
+  // screen-space centreline points by trackW to land exactly at the painted edge.
+  const edgeW = Math.max(1.5, 2.0 * cam.zoom);
   ctx.lineWidth = edgeW;
   ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
   [-1, 1].forEach(side => {
-    for (let i = 0; i < spl - 1; i++) {
+    for (let i = 0; i < screenPts.length - 1; i++) {
       if (inCornerRoad[i] || inCornerRoad[i + 1]) continue;
-      const pa = buildOffsetScreenPolyline(
-        [splinePts[i], splinePts[i + 1]], side, TRACK_HALF_WIDTH
-      );
-      if (pa.length < 2) continue;
+      const a = screenPts[i].s, b = screenPts[i + 1].s;
+      const dx = b.x - a.x, dy = b.y - a.y;
+      const len = Math.hypot(dx, dy) || 1;
+      // Perpendicular in screen space, scaled by trackW pixels
+      const px = -dy / len * trackW * side;
+      const py =  dx / len * trackW * side;
       ctx.strokeStyle = 'rgba(255,255,255,0.92)';
-      ctx.beginPath(); ctx.moveTo(pa[0].x, pa[0].y); ctx.lineTo(pa[1].x, pa[1].y); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(a.x + px, a.y + py);
+      ctx.lineTo(b.x + px, b.y + py);
+      ctx.stroke();
     }
   });
+
+  // ── Flat kerb — full circuit, both sides, at track edge (FIX 4) ──
+  // Red/white alternating band running the entire circuit on both sides.
+  // Drawn AFTER asphalt so it sits just outside the asphalt edge.
+  {
+    const flatKerbLane = getSurfaceLane('flat_kerb', 0);
+    let fkDist = 0;
+    for (let i = 0; i < spl - 1; i++) {
+      [-1, 1].forEach(side => {
+        const pa = buildOffsetScreenPolyline([splinePts[i], splinePts[i + 1]], side, flatKerbLane.center);
+        if (pa.length < 2) return;
+        const segLen = Math.hypot(pa[1].x - pa[0].x, pa[1].y - pa[0].y);
+        fkDist += segLen;
+        const phase = Math.floor(fkDist / Math.max(8, 14 * cam.zoom));
+        ctx.strokeStyle = phase % 2 === 0 ? 'rgba(215,25,25,0.92)' : 'rgba(245,245,245,0.92)';
+        ctx.lineWidth = Math.max(2, flatKerbLane.width * cam.zoom);
+        ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+        ctx.beginPath(); ctx.moveTo(pa[0].x, pa[0].y); ctx.lineTo(pa[1].x, pa[1].y); ctx.stroke();
+      });
+    }
+  }
 
   // ── Inside kerbs — small red/white painted kerb on inside of corners ──
   // Real circuits have kerbs on BOTH sides; inside kerb is narrower/flatter
@@ -611,53 +636,53 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       break;
     }
 
-    // ── SAUSAGE KERB — fat yellow ridge with white highlight ────────
+    // ── SAUSAGE KERB — raised yellow ridge, proportional width ────────
     case 'sausage': {
-      // Dark outline for definition against grass — kept proportional, not overblown
+      // Dark shadow outline — NOT inflated, just slightly round-capped
       ctx.lineWidth = w * 1.05;
-      ctx.strokeStyle = 'rgba(140,100,0,0.65)';
+      ctx.strokeStyle = 'rgba(130,95,0,0.60)';
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       _polyPath(ctx, poly); ctx.stroke();
-      // Main yellow body
+      // Main yellow body — exactly lane width
       ctx.lineWidth = w;
       ctx.strokeStyle = 'rgba(248,200,20,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
-      // White specular ridge on top
-      ctx.lineWidth = Math.max(1, w * 0.32);
+      // White specular highlight — thin
+      ctx.lineWidth = Math.max(1, w * 0.28);
       ctx.strokeStyle = 'rgba(255,255,255,0.80)';
       _polyPath(ctx, poly); ctx.stroke();
       ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
       break;
     }
 
-    // ── GRAVEL — wide tan/brown trap with coarse stipple ────────────
+    // ── GRAVEL — wide tan/brown filled trap with stipple ──────────
     case 'gravel': {
-      // Soft blended edge — wider semi-transparent halo so gravel fades into grass
-      ctx.lineWidth = w * 1.28;
-      ctx.strokeStyle = 'rgba(145,128,95,0.32)';
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      // Soft outer halo
+      ctx.lineWidth = w + 6 * zoom;
+      ctx.strokeStyle = 'rgba(145,128,95,0.25)';
       _polyPath(ctx, poly); ctx.stroke();
-      ctx.lineWidth = w * 1.12;
-      ctx.strokeStyle = 'rgba(155,138,105,0.55)';
-      _polyPath(ctx, poly); ctx.stroke();
-      // Wide base — full runoff width, solid fill
+      // Solid filled base
       ctx.lineWidth = w;
-      ctx.strokeStyle = 'rgba(168,152,118,1.0)'; // greyer-brown = gravel
+      ctx.strokeStyle = 'rgba(168,152,118,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
-      // Coarse stipple dots scattered across full width
+      // Inner depth band
+      ctx.lineWidth = Math.max(2, w * 0.55);
+      ctx.strokeStyle = 'rgba(140,124,92,0.70)';
+      _polyPath(ctx, poly); ctx.stroke();
+      // Stipple across full width
       const arcs = _arcLengths(poly);
       const total = arcs[arcs.length - 1];
-      const spacing = Math.max(4, 7 * zoom);
-      const halfW = w * 0.44;
-      for (let d = spacing * 0.5; d < total; d += spacing) {
+      const spacing = Math.max(3, 5 * zoom);
+      const halfW = w * 0.46;
+      for (let d = spacing * 0.3; d < total; d += spacing) {
         const p = _polyAtDist(poly, arcs, d);
         const perp = { x: -p.ty, y: p.tx };
-        // Scatter dots across the full width using multiple offsets
-        for (let row = -1; row <= 1; row++) {
-          const off = row * halfW * 0.6 + (Math.sin(d * 1.7 + row) * 0.25) * halfW;
-          const r = Math.max(1.2, (1.4 + Math.sin(d * 3.3 + row) * 0.4) * zoom);
-          const alpha = 0.5 + Math.sin(d * 2.1 + row * 1.3) * 0.2;
-          ctx.fillStyle = 'rgba(118,100,72,' + alpha + ')';
+        for (let row = -2; row <= 2; row++) {
+          const off = row * halfW * 0.44 + Math.sin(d * 2.1 + row) * halfW * 0.15;
+          const r = Math.max(1, (1.3 + Math.sin(d * 3.7 + row) * 0.4) * zoom);
+          const alpha = 0.45 + Math.sin(d * 1.9 + row * 1.3) * 0.20;
+          ctx.fillStyle = 'rgba(110,92,65,' + alpha + ')';
           ctx.beginPath();
           ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
           ctx.fill();
@@ -667,32 +692,34 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       break;
     }
 
-    // ── SAND — wide warm-yellow trap with fine grain stipple ────────
+    // ── SAND — wide warm-yellow filled trap with fine grain ────────
     case 'sand': {
-      // Soft blended edge — halo that fades sand into surrounding grass
-      ctx.lineWidth = w * 1.28;
-      ctx.strokeStyle = 'rgba(195,175,100,0.30)';
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      // Soft outer halo
+      ctx.lineWidth = w + 6 * zoom;
+      ctx.strokeStyle = 'rgba(195,175,100,0.22)';
       _polyPath(ctx, poly); ctx.stroke();
-      ctx.lineWidth = w * 1.12;
-      ctx.strokeStyle = 'rgba(210,188,115,0.52)';
-      _polyPath(ctx, poly); ctx.stroke();
+      // Solid filled base — full runoff width
       ctx.lineWidth = w;
-      ctx.strokeStyle = 'rgba(235,215,145,1.0)'; // warm yellow = sand
+      ctx.strokeStyle = 'rgba(232,210,138,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
-      // Fine grain — smaller dots, lighter colour than gravel
+      // Subtle inner shadow band
+      ctx.lineWidth = Math.max(2, w * 0.40);
+      ctx.strokeStyle = 'rgba(195,168,95,0.55)';
+      _polyPath(ctx, poly); ctx.stroke();
+      // Fine grain stipple spread across full width
       const arcs = _arcLengths(poly);
       const total = arcs[arcs.length - 1];
-      const spacing = Math.max(3.5, 6 * zoom);
-      const halfW = w * 0.44;
-      for (let d = spacing * 0.5; d < total; d += spacing) {
+      const spacing = Math.max(2.5, 4 * zoom);
+      const halfW = w * 0.46;
+      for (let d = spacing * 0.3; d < total; d += spacing) {
         const p = _polyAtDist(poly, arcs, d);
         const perp = { x: -p.ty, y: p.tx };
-        for (let row = -1; row <= 1; row++) {
-          const off = row * halfW * 0.6 + (Math.cos(d * 2.3 + row) * 0.2) * halfW;
-          const r = Math.max(0.9, (1.0 + Math.cos(d * 4.1 + row) * 0.35) * zoom);
-          const alpha = 0.42 + Math.cos(d * 1.9 + row * 1.1) * 0.18;
-          ctx.fillStyle = 'rgba(178,150,82,' + alpha + ')';
+        for (let row = -2; row <= 2; row++) {
+          const off = row * halfW * 0.44 + Math.cos(d * 2.5 + row) * halfW * 0.12;
+          const r = Math.max(0.8, (0.9 + Math.cos(d * 4.3 + row) * 0.3) * zoom);
+          const alpha = 0.35 + Math.cos(d * 2.1 + row * 1.1) * 0.15;
+          ctx.fillStyle = 'rgba(168,138,72,' + alpha + ')';
           ctx.beginPath();
           ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
           ctx.fill();
@@ -944,48 +971,44 @@ function drawAutoSurfaces() {
   const gravelLane = getSurfaceLane('gravel', 0);
   const sandLane   = getSurfaceLane('sand', 0);
 
-  // ── Build a smooth per-point offset array for armco (FIX 4, 10) ──
-  // Armco sits at the perimeter (~24.4wu) everywhere. On corner outsides it fans
-  // slightly to match the gravel/sand outer edge. Smoothed with a wide kernel so
-  // there are NO hard jumps between zones (fixes transition smoothness).
-  const ARMCO_STRAIGHT  = 24.4;   // perimeter distance on straights & corner insides
-  const ARMCO_CORNER_MD = gravelLane.outer + 0.5;  // just outside gravel (~23.5)
-  const ARMCO_CORNER_SL = sandLane.outer   + 0.5;  // just outside sand   (~23.5)
-  const armcoLane = getSurfaceLane('armco', 0);
+  // Perimeter distances (world units from centreline)
+  // Straight: TecPro at 24.9, Armco just inside at 24.4
+  // Corner outside: Armco fans to just outside gravel/sand outer edge
+  // Corner inside: Armco stays at 24.4 (same as straight)
+  const PERIM       = 24.4;   // armco on straights and corner insides
+  const PERIM_MD    = gravelLane.outer + 0.4;  // armco outside medium corner (~23.4)
+  const PERIM_SL    = sandLane.outer   + 0.4;  // armco outside slow corner   (~23.4)
+  const armcoLane   = getSurfaceLane('armco', 0);
 
-  // Compute dominant side per point (smoothed over 8 pts ahead)
-  const ptDominantSide = new Int8Array(spl);
+  // Per-point dominant side (look 8 pts ahead for stability)
+  const ptDom = new Int8Array(spl);
   for (let i = 0; i < spl; i++) {
     let s = 0;
     for (let d = 0; d < 8; d++) s += cornerSign[(i + d) % spl];
-    ptDominantSide[i] = s >= 0 ? 1 : -1;
+    ptDom[i] = s >= 0 ? 1 : -1;
   }
 
+  // ── 1. ARMCO — full circuit, smooth per-point offset, no hard jumps ──
   [-1, 1].forEach(side => {
-    // Raw offset per point
     const raw = Array.from({ length: spl }, (_, i) => {
-      const isOutside = ptDominantSide[i] === side;
-      if (!inCorner[i])           return ARMCO_STRAIGHT;   // straight: perimeter
-      if (!isOutside)             return ARMCO_STRAIGHT;   // inside of corner: perimeter
-      if (isSlow[i])              return ARMCO_CORNER_SL;  // slow corner outside: behind sand
-      if (isMedium[i])            return ARMCO_CORNER_MD;  // medium corner outside: behind gravel
-      return (ARMCO_STRAIGHT + ARMCO_CORNER_MD) * 0.5;    // fast corner outside: blend
+      const outside = ptDom[i] === side;
+      if (!inCorner[i] || !outside) return PERIM;
+      if (isSlow[i])   return PERIM_SL;
+      if (isMedium[i]) return PERIM_MD;
+      return (PERIM + PERIM_MD) * 0.5;
     });
-
-    // Wide Gaussian-style smooth (kernel = TRANS*2+1) so transitions are gradual
-    const SMOOTH_K = TRANS * 2;
-    const smoothed = new Float32Array(spl);
+    // Triangular-weighted smooth over wide kernel — eliminates hard jumps
+    const SK = TRANS * 2;
+    const sm = new Float32Array(spl);
     for (let i = 0; i < spl; i++) {
       let sum = 0, wt = 0;
-      for (let d = -SMOOTH_K; d <= SMOOTH_K; d++) {
-        const w = SMOOTH_K + 1 - Math.abs(d); // triangular weight
-        sum += raw[(i + d + spl) % spl] * w;
-        wt  += w;
+      for (let d = -SK; d <= SK; d++) {
+        const w = SK + 1 - Math.abs(d);
+        sum += raw[(i + d + spl) % spl] * w; wt += w;
       }
-      smoothed[i] = sum / wt;
+      sm[i] = sum / wt;
     }
-
-    const poly = buildOffsetScreenPolylineVarying(splinePts, side, smoothed);
+    const poly = buildOffsetScreenPolylineVarying(splinePts, side, sm);
     drawSurfacePattern(ctx, 'armco', poly, armcoLane, side, cam.zoom);
   });
 
@@ -994,7 +1017,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = buildTransitionOffsets(pts.length, ARMCO_STRAIGHT, tarmacLane.center, TRANS);
+    const offsets = buildTransitionOffsets(pts.length, PERIM, tarmacLane.center, TRANS);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     const w = Math.max(4, tarmacLane.width * cam.zoom);
     ctx.lineWidth = w; ctx.strokeStyle = 'rgba(90,92,95,0.88)';
@@ -1009,7 +1032,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = buildTransitionOffsets(pts.length, ARMCO_STRAIGHT, gravelLane.center, TRANS);
+    const offsets = buildTransitionOffsets(pts.length, PERIM, gravelLane.center, TRANS);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'gravel', poly, gravelLane, ds, cam.zoom);
   });
@@ -1019,12 +1042,12 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = buildTransitionOffsets(pts.length, ARMCO_STRAIGHT, sandLane.center, TRANS);
+    const offsets = buildTransitionOffsets(pts.length, PERIM, sandLane.center, TRANS);
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'sand', poly, sandLane, ds, cam.zoom);
   });
 
-  // ── 5. CORNERS: rumble strip both sides ──
+  // ── 5. RUMBLE STRIP — both sides on all corners ──
   const rumbleLane = getSurfaceLane('rumble', 0);
   collectRuns(i => inCorner[i]).forEach(run => {
     const pts = runPts(run);
@@ -1035,7 +1058,7 @@ function drawAutoSurfaces() {
     });
   });
 
-  // ── 6. SLOW CORNERS: sausage kerb ──
+  // ── 6. SAUSAGE KERB — outside of slow corners only ──
   const sausageLane = getSurfaceLane('sausage', 0);
   collectRuns(i => isSlow[i]).forEach(run => {
     const pts = runPts(run);
@@ -1045,8 +1068,7 @@ function drawAutoSurfaces() {
     drawSurfacePattern(ctx, 'sausage', poly, sausageLane, ds, cam.zoom);
   });
 
-  // ── 7. TecPro — STRAIGHTS ONLY, both sides (FIX 1) ──
-  // FIA rules: TecPro on straights; armco/tyrewall on corners.
+  // ── 7. TECPRO — STRAIGHTS ONLY, both sides (FIX: was wrongly on corners) ──
   const tecproLane = getSurfaceLane('tecpro', 0);
   const tecproMinW = { ...tecproLane, width: Math.max(tecproLane.width, 3.0) };
   collectRuns(i => !inCorner[i]).forEach(run => {
@@ -1070,40 +1092,8 @@ function drawAutoSurfaces() {
   });
 }
 
-function drawPermanentGrassBand() {
-  const splinePts = buildSplinePoints(20);
-  if (splinePts.length < 2) return;
+function drawPermanentGrassBand() { /* removed — background already grass */ };
 
-  const grassLane = getSurfaceLane('grass', 0);
-  // Width covers from just outside sausage kerb all the way to armco distance
-  const innerOffset = 8.1;   // start at kerb outer edge (flush with sausage inner)
-  const outerOffset = 26.0;  // wide enough to sit behind any barrier
-  const centerOffset = (innerOffset + outerOffset) * 0.5;
-  const bandWidth = outerOffset - innerOffset;
-
-  const fakeLane = { width: bandWidth, center: centerOffset, inner: innerOffset, outer: outerOffset };
-
-  ctx.save();
-  ctx.globalAlpha = 1.0;
-  [-1, 1].forEach(side => {
-    const poly = buildOffsetScreenPolyline(splinePts, side, centerOffset);
-    const w = Math.max(4, bandWidth * cam.zoom);
-    ctx.lineWidth = w;
-    ctx.strokeStyle = '#2a5916';
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    ctx.beginPath();
-    poly.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-    ctx.stroke();
-
-    // Darker stripe for depth / texture
-    ctx.lineWidth = Math.max(2, w * 0.25);
-    ctx.strokeStyle = 'rgba(20,50,10,0.35)';
-    ctx.beginPath();
-    poly.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-    ctx.stroke();
-  });
-  ctx.restore();
-}
 
 // ═══════════════════════════════════════════════════
 // BARRIER SEGMENTS
@@ -1233,7 +1223,7 @@ function expandBarrierDrawItems(segments) {
 
 function mergeExpandedBarrierItems(items) {
   if (!items.length || !waypoints.length) return items;
-  const gapTolerance = Math.max(1, Math.floor(waypoints.length * 0.01)); // tight: only merge truly adjacent segments
+  const gapTolerance = Math.max(1, Math.floor(waypoints.length * 0.01)); // tight: only truly adjacent
   const sorted = items.slice().sort((a,b) =>
     String(a.surface).localeCompare(String(b.surface)) ||
     a.sideNum - b.sideNum ||
