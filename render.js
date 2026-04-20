@@ -1154,57 +1154,64 @@ function drawBarrierSegments() {
     ctx.textBaseline = 'middle';
     const tw = ctx.measureText(labelTxt + sideLabel).width;
     const pad = 5;
-    const labelW = tw + pad * 2 + 12;
-    const labelH = fontSize * 1.4;
+    const dotR = Math.max(3, fontSize * 0.35);
+    const dotSpace = dotR * 2 + 4;                  // space reserved for the colour dot
+    const pillW = tw + pad * 2 + dotSpace;           // total pill width (dot + text)
+    const pillH = fontSize * 1.4;
 
-    // FIX: base Y — label above the midpoint offset by lane offset
-    let candidateY = ms.y - Math.max(22, lane.labelOffset * cam.zoom);
+    // Base Y — label above the midpoint, pushed out by the lane's label offset
+    const baseY = ms.y - Math.max(22, lane.labelOffset * cam.zoom);
 
-    // FIX: nudge candidate Y in 18px steps until no overlap (max 8 attempts)
-    const MAX_TRIES = 8;
-    const STEP = 18;
+    // Nudge candidateY in clean ±STEP increments until no overlap (max 10 tries)
+    const MAX_TRIES = 10;
+    const STEP = pillH + 4;                          // step by one label height + gap
+    let candidateY = baseY;
     let placed = false;
     for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
-      const rx = ms.x - labelW / 2;
-      const ry = candidateY - labelH / 2;
+      const rx = ms.x - pillW / 2;
+      const ry = candidateY - pillH / 2;
       let overlaps = false;
       for (const r of placedLabelRects) {
-        if (rx < r.x + r.w && rx + labelW > r.x && ry < r.y + r.h && ry + labelH > r.y) {
+        if (rx < r.x + r.w && rx + pillW > r.x && ry < r.y + r.h && ry + pillH > r.y) {
           overlaps = true; break;
         }
       }
       if (!overlaps) {
-        placedLabelRects.push({ x: rx, y: ry, w: labelW, h: labelH });
+        placedLabelRects.push({ x: rx, y: ry, w: pillW, h: pillH });
         placed = true;
         break;
       }
-      // Alternate nudging: up, up+step, down, etc.
-      candidateY += (attempt % 2 === 0 ? -STEP : STEP * (attempt + 1));
+      // Spiral outward: -STEP, +STEP, -2*STEP, +2*STEP, ...
+      const sign = attempt % 2 === 0 ? -1 : 1;
+      candidateY = baseY + sign * STEP * Math.ceil((attempt + 1) / 2);
     }
     if (!placed) { ctx.restore(); return; } // skip if can't fit
 
     const labelY = candidateY;
+    const pillX = ms.x - pillW / 2;
 
     // Pill background
     ctx.fillStyle = 'rgba(9,9,14,0.82)';
     ctx.beginPath();
     if (ctx.roundRect) {
-      ctx.roundRect(ms.x - tw/2 - pad, labelY - fontSize*0.7, tw + pad*2, fontSize*1.4, 4);
+      ctx.roundRect(pillX, labelY - pillH / 2, pillW, pillH, 4);
     } else {
-      ctx.rect(ms.x - tw/2 - pad, labelY - fontSize*0.7, tw + pad*2, fontSize*1.4);
+      ctx.rect(pillX, labelY - pillH / 2, pillW, pillH);
     }
     ctx.fill();
 
-    // Colour dot
+    // Colour dot (left side of pill)
+    const dotX = pillX + pad + dotR;
     ctx.fillStyle = cfg.dot;
     ctx.beginPath();
-    ctx.arc(ms.x - tw/2 - pad/2 - 5, labelY, Math.max(3, fontSize*0.35), 0, Math.PI*2);
+    ctx.arc(dotX, labelY, dotR, 0, Math.PI * 2);
     ctx.fill();
 
-    // Text
+    // Text (right of dot)
     ctx.fillStyle = '#f4f4f7';
     ctx.shadowColor = '#000'; ctx.shadowBlur = 3;
-    ctx.fillText(labelTxt + sideLabel, ms.x + 3, labelY);
+    ctx.textAlign = 'left';
+    ctx.fillText(labelTxt + sideLabel, dotX + dotR + 4, labelY);
     ctx.shadowBlur = 0;
     ctx.restore();
   });
