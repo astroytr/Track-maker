@@ -446,12 +446,6 @@ function drawTrackRoad() {
     ctx.beginPath();
     pitPts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
     ctx.stroke();
-    // Pit lane white edge lines
-    ctx.strokeStyle = 'rgba(255,255,255,0.75)';
-    ctx.lineWidth = Math.max(1, edgeW * 0.8);
-    ctx.beginPath();
-    pitPts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-    ctx.stroke();
     // Pit entry/exit blend lines
     const sfScreen = worldToScreen(sfPt.pt.x, sfPt.pt.y);
     const pitEntry = pitPts[0], pitExit = pitPts[pitPts.length-1];
