@@ -344,6 +344,26 @@ function drawTrackRoad() {
   screenPts.forEach((p,i) => i===0 ? ctx.moveTo(p.s.x,p.s.y) : ctx.lineTo(p.s.x,p.s.y));
   ctx.closePath(); ctx.stroke();
 
+  // ── Grass cover band — hides any asphalt overflow outside kerb edge ──
+  // Covers from track edge (7.0wu) to start of runoff zone (9.2wu) on both sides.
+  // Drawn on top of asphalt, below kerbs, so no bare asphalt is visible outside the kerbs.
+  {
+    const grassCoverInner = TRACK_HALF_WIDTH;       // 7.0 wu — flush with asphalt edge
+    const grassCoverOuter = SURFACE_LANES.grass.inner; // 8.1 wu
+    const grassCoverCenter = (grassCoverInner + grassCoverOuter) * 0.5; // 7.55 wu
+    const grassCoverWidth  = Math.max(3, (grassCoverOuter - grassCoverInner) * cam.zoom * 1.5);
+    [-1, 1].forEach(side => {
+      const poly = buildOffsetScreenPolyline(splinePts, side, grassCoverCenter);
+      if (poly.length < 2) return;
+      ctx.save();
+      ctx.lineWidth   = grassCoverWidth;
+      ctx.strokeStyle = 'rgba(42,100,25,1.0)';
+      ctx.lineCap     = 'round'; ctx.lineJoin = 'round';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.restore();
+    });
+  }
+
   // ── Flat kerb — full circuit, both sides, right at asphalt edge ──
   {
     const flatKerbLane = getSurfaceLane('flat_kerb', 0);
