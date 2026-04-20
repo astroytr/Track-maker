@@ -974,29 +974,93 @@ function drawAutoSurfaces() {
     return minD;
   }
 
-  // Returns { offset, clamped } — offset is safe, clamped=true if it was pulled back
+  // Returns { offset, clamped, otherDist } — offset is safe, clamped=true if pulled back,
+  // otherDist = distance from the barrier point to the nearest other centreline.
   function _grassOnlyOffset(proposedOffset, sideNum, splIdx) {
     const i  = ((splIdx % spl) + spl) % spl;
     const cx = splinePts[i].pt.x, cy = splinePts[i].pt.y;
     const nx = _wpN[i].px * sideNum, ny = _wpN[i].py * sideNum;
     const bx = cx + nx * proposedOffset, by = cy + ny * proposedOffset;
     const d  = _closestOtherCL(bx, by, i);
-    if (d >= _ROAD_KERB) return { offset: proposedOffset, clamped: false };
+    if (d >= _ROAD_KERB) return { offset: proposedOffset, clamped: false, otherDist: d };
     // Pull back so endpoint is exactly _ROAD_KERB from the other centreline
     const safeOffset = Math.max(4, proposedOffset - (_ROAD_KERB - d));
-    return { offset: safeOffset, clamped: true };
+    return { offset: safeOffset, clamped: true, otherDist: d };
   }
 
   // mergeZone[side+1][i] = true where a barrier was clamped (merge zone)
   const _mergeZone = [new Uint8Array(spl), new Uint8Array(spl)]; // [0]=side-1, [1]=side+1
 
+  // Per-point world-space barrier positions after clamping, for intersection detection.
+  // _barrierWorldPt[sideIdx][i] = {x,y} or null
+  const _barrierWorldPt = [new Array(spl).fill(null), new Array(spl).fill(null)];
+
   function _applyGrassOnly(rawOffsets, sideNum, fromIdx) {
+    const sideIdx = sideNum > 0 ? 1 : 0;
     return rawOffsets.map((o, k) => {
       const splIdx = fromIdx + k;
+      const i = ((splIdx % spl) + spl) % spl;
       const { offset, clamped } = _grassOnlyOffset(o, sideNum, splIdx);
-      if (clamped) _mergeZone[sideNum > 0 ? 1 : 0][((splIdx % spl) + spl) % spl] = 1;
+      if (clamped) _mergeZone[sideIdx][i] = 1;
+      // Store world-space barrier point for overlap detection
+      const cx = splinePts[i].pt.x, cy = splinePts[i].pt.y;
+      const nx = _wpN[i].px * sideNum, ny = _wpN[i].py * sideNum;
+      _barrierWorldPt[sideIdx][i] = { x: cx + nx * offset, y: cy + ny * offset };
       return offset;
     });
+  }
+
+  // ── Segment-segment intersection (2-D, returns param t on seg A or null) ──
+  function _segIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+    const ex = bx - ax, ey = by - ay;
+    const fx = dx - cx, fy = dy - cy;
+    const denom = ex * fy - ey * fx;
+    if (Math.abs(denom) < 1e-9) return null;
+    const t = ((cx - ax) * fy - (cy - ay) * fx) / denom;
+    const u = ((cx - ax) * ey - (cy - ay) * ex) / denom;
+    if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+    return { t, x: ax + t * ex, y: ay + t * ey };
+  }
+
+  // ── Find all world-space intersection points between left and right barriers ──
+  // Returns array of { x, y, iA (left side index), iB (right side index) }
+  function _findBarrierOverlaps() {
+    const result = [];
+    const L = _barrierWorldPt[0]; // side -1
+    const R = _barrierWorldPt[1]; // side +1
+    // Check every consecutive pair on left vs every consecutive pair on right
+    // To keep O(n) rather than O(n²), only check "nearby" pairs (index window ± MIN_SEP*2)
+    for (let i = 0; i < spl - 1; i++) {
+      if (!L[i] || !L[i + 1]) continue;
+      const window = Math.min(spl, _MIN_SEP * 3);
+      for (let dj = -window; dj <= window; dj++) {
+        const j = ((i + dj) + spl) % spl;
+        const j1 = (j + 1) % spl;
+        if (!R[j] || !R[j1]) continue;
+        const hit = _segIntersect(
+          L[i].x, L[i].y, L[i + 1].x, L[i + 1].y,
+          R[j].x, R[j].y, R[j1].x, R[j1].y
+        );
+        if (hit) result.push({ x: hit.x, y: hit.y, iA: i, iB: j });
+      }
+    }
+    return result;
+  }
+
+  // ── Given an overlap intersection point, find the halfway point between it
+  //    and the nearest other-road centreline point, for routing TecPro through. ──
+  function _overlapMidpoint(ix, iy, selfSplIdx) {
+    // Find the closest other-CL point (world space)
+    let minD = Infinity, nearX = ix, nearY = iy;
+    for (let j = 0; j < spl; j += 2) {
+      const gap = Math.min(Math.abs(j - selfSplIdx), spl - Math.abs(j - selfSplIdx));
+      if (gap < _MIN_SEP) continue;
+      const dx = splinePts[j].pt.x - ix, dy = splinePts[j].pt.y - iy;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < minD) { minD = d; nearX = splinePts[j].pt.x; nearY = splinePts[j].pt.y; }
+    }
+    // Halfway between intersection point and nearest other-road CL point
+    return { x: (ix + nearX) * 0.5, y: (iy + nearY) * 0.5, distToOther: minD };
   }
 
   // ── 1. ARMCO — full circuit, smooth per-point offset, no hard jumps ──
@@ -1084,8 +1148,10 @@ function drawAutoSurfaces() {
 
   // ── 7. TECPRO — straights + merge zones ──────────────────────────────────
   // Normal TecPro on straights (unchanged).
-  // Additionally, wherever _mergeZone fired on ANY side, draw TecPro at the
-  // grass edge of the merge (offset = distance to other road's kerb edge).
+  // Merge-zone TecPro: where barriers were clamped (they'd cross into another road),
+  // detect the actual intersection points between left/right barriers, find the
+  // midpoint between each intersection and the nearest other-road centreline point,
+  // and route the TecPro polyline through those midpoints.
   const tecproLane = getSurfaceLane('tecpro', 0);
   const tecproMinW = { ...tecproLane, width: Math.max(tecproLane.width, 3.0) };
 
@@ -1099,23 +1165,54 @@ function drawAutoSurfaces() {
     });
   });
 
+  // Detect all barrier overlaps (left vs right crossing) now that both sides are computed
+  const _overlapHits = _findBarrierOverlaps();
+
+  // Build a lookup: spline index → midpoint world pos, for indices near any overlap
+  // We do this for BOTH sides — any overlap affects both sides symmetrically.
+  const _overlapMidByIdx = new Map(); // splIdx → {x, y}
+  _overlapHits.forEach(hit => {
+    // iA = left side index, iB = right side index at the crossing
+    const midA = _overlapMidpoint(hit.x, hit.y, hit.iA);
+    const midB = _overlapMidpoint(hit.x, hit.y, hit.iB);
+    // Spread influence ±4 indices around the crossing so the reroute is smooth
+    const SPREAD = 4;
+    for (let d = -SPREAD; d <= SPREAD; d++) {
+      const ka = ((hit.iA + d) + spl) % spl;
+      const kb = ((hit.iB + d) + spl) % spl;
+      const wt = 1 - Math.abs(d) / (SPREAD + 1); // linear weight, max at centre
+      // Blend: if already stored, take weighted average
+      const blendMid = (existing, candidate) => {
+        if (!existing) return candidate;
+        return { x: existing.x * (1 - wt) + candidate.x * wt, y: existing.y * (1 - wt) + candidate.y * wt };
+      };
+      _overlapMidByIdx.set(ka, blendMid(_overlapMidByIdx.get(ka), midA));
+      _overlapMidByIdx.set(kb, blendMid(_overlapMidByIdx.get(kb), midB));
+    }
+  });
+
   // Merge-zone TecPro — runs of clamped indices on each side
   [-1, 1].forEach(side => {
     const mz = _mergeZone[side > 0 ? 1 : 0];
-    // Collect contiguous runs of merge-zone indices
     let mStart = -1;
     const flushMerge = (mEnd) => {
       if (mStart < 0 || mEnd < mStart) return;
       const pts = [];
       for (let i = mStart; i <= mEnd; i++) pts.push(splinePts[i % spl]);
       if (pts.length < 2) return;
-      // At each point in the merge zone, find the offset that places the barrier
-      // exactly at the grass edge of the other road (_ROAD_KERB from its CL).
-      const offsets = pts.map((p, k) => {
+
+      // Build world-space polyline of barrier positions, threading through
+      // overlap midpoints where they exist, otherwise using binary-search clamped offset.
+      const worldPoly = pts.map((p, k) => {
         const i = (mStart + k) % spl;
+        const midOverride = _overlapMidByIdx.get(i);
+        if (midOverride) {
+          // Route through the halfway point between the intersection and nearby road
+          return midOverride;
+        }
         const cx = p.pt.x, cy = p.pt.y;
         const nx = _wpN[i].px * side, ny = _wpN[i].py * side;
-        // Binary search: find largest offset where endpoint is still >= _ROAD_KERB from other CL
+        // Binary search: largest offset still >= _ROAD_KERB from other CL
         let lo = 4, hi = PERIM;
         for (let iter = 0; iter < 12; iter++) {
           const mid = (lo + hi) * 0.5;
@@ -1123,10 +1220,12 @@ function drawAutoSurfaces() {
           const d = _closestOtherCL(bx, by2, i);
           if (d >= _ROAD_KERB) lo = mid; else hi = mid;
         }
-        return lo;
+        return { x: cx + nx * lo, y: cy + ny * lo };
       });
-      const poly = buildOffsetScreenPolylineVarying(pts, side, offsets);
-      drawSurfacePattern(ctx, 'tecpro', poly, tecproMinW, side, cam.zoom);
+
+      // Convert world-space poly directly to screen (no further offset — positions already final)
+      const screenPoly = worldPoly.map(wp => worldToScreen(wp.x, wp.y));
+      drawSurfacePattern(ctx, 'tecpro', screenPoly, tecproMinW, side, cam.zoom);
     };
     for (let i = 0; i < spl; i++) {
       if (mz[i]) {
