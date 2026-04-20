@@ -126,230 +126,64 @@ window.addEventListener('load', () => {
 
 <!-- MAIN APP -->
 <div id="app">
-
-  <!-- LEFT SIDEBAR -->
-  <div id="sidebar">
-    <div class="sb-header">
-      <div style="display:flex;align-items:baseline;justify-content:space-between;">
-        <div class="sb-logo">CIRCUIT FORGE</div>
-        <span style="font-family:'Barlow Condensed',sans-serif;font-size:10px;font-weight:700;letter-spacing:1px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.3);border-radius:3px;padding:1px 6px;">v7.2</span>
-      </div>
-      <div class="sb-sub">Track Studio · v7.2</div>
-    </div>
-
-    <div id="upload-zone"
-         onclick="document.getElementById('file-input').click()"
-         ondragover="event.preventDefault();this.style.borderColor='var(--accent)'"
-         ondragleave="this.style.borderColor=''"
-         ondrop="event.preventDefault();const f=event.dataTransfer.files[0];if(f&&typeof loadBgImage==='function')loadBgImage(f)">
-      <div class="uz-icon">📁</div>
-      <div class="uz-text"><span class="uz-accent">Drop or click</span> to load<br>a background image</div>
-    </div>
-    <input type="file" id="file-input" accept="image/*">
-
-    <div class="divider"></div>
-
-    <div class="sb-section">
-      <div class="sb-label">Tool</div>
-      <div class="tool-grid">
-        <div class="tool-btn active" id="tool-waypoint" onclick="setTool('waypoint')">
-          <span class="tool-icon">📍</span>Waypoint
-        </div>
-        <div class="tool-btn" id="tool-paint" onclick="setTool('paint')">
-          <span class="tool-icon">🖌️</span>Paint
-        </div>
-        <div class="tool-btn" id="tool-erase" onclick="setTool('erase')">
-          <span class="tool-icon">⬜</span>Erase
-        </div>
-        <div class="tool-btn" id="tool-pan" onclick="setTool('pan')">
-          <span class="tool-icon">✋</span>Pan
-        </div>
-        <div class="tool-btn" id="tool-barrier" onclick="setTool('barrier')">
-          <span class="tool-icon">🚧</span>Barrier
-        </div>
-        <div class="tool-btn" onclick="setStartingPoint()" title="Set selected waypoint as Start/Finish">
-          <span class="tool-icon">🏁</span>Set Start
-        </div>
-      </div>
-    </div>
-
-    <div class="sb-section" id="barrier-side-section" style="display:none;">
-      <div class="sb-label">Barrier Side</div>
-      <div class="bside-row">
-        <button class="bside-btn" id="bside-left"  onclick="setBarrierSide('left')">◀ Left</button>
-        <button class="bside-btn active" id="bside-both" onclick="setBarrierSide('both')">Both</button>
-        <button class="bside-btn" id="bside-right" onclick="setBarrierSide('right')">Right ▶</button>
-      </div>
-    </div>
-
-    <div class="sb-section" id="surface-section">
-      <div class="sb-label">Surface Type</div>
-      <div class="surf-list">
-        <div class="surf-btn active" id="surf-flat-kerb" onclick="setSurface('flat_kerb')">
-          <div class="surf-dot" style="background:#e8392a;border:1px solid #fff;"></div>Flat Kerb
-        </div>
-        <div class="surf-btn" id="surf-sausage" onclick="setSurface('sausage')">
-          <div class="surf-dot" style="background:#f5c518;"></div>Sausage Kerb
-        </div>
-        <div class="surf-btn" id="surf-rumble" onclick="setSurface('rumble')">
-          <div class="surf-dot" style="background:#d44;border:1px solid #888;"></div>Rumble Strip
-        </div>
-        <div class="surf-btn" id="surf-gravel" onclick="setSurface('gravel')">
-          <div class="surf-dot" style="background:#c8b89a;"></div>Gravel
-        </div>
-        <div class="surf-btn" id="surf-sand" onclick="setSurface('sand')">
-          <div class="surf-dot" style="background:#e3cf98;"></div>Sand
-        </div>
-        <div class="surf-btn" id="surf-grass" onclick="setSurface('grass')">
-          <div class="surf-dot" style="background:#3a7a3a;"></div>Grass
-        </div>
-        <div class="surf-btn" id="surf-armco" onclick="setSurface('armco')">
-          <div class="surf-dot" style="background:#aaa;border:1px solid #f44;"></div>Armco Wall
-        </div>
-        <div class="surf-btn" id="surf-tecpro" onclick="setSurface('tecpro')">
-          <div class="surf-dot" style="background:#3a5fa8;"></div>Tecpro Barrier
-        </div>
-        <div class="surf-btn" id="surf-tyrewall" onclick="setSurface('tyrewall')">
-          <div class="surf-dot" style="background:#222;border:1px solid #555;"></div>Tyre Wall
-        </div>
-      </div>
-    </div>
-
-    <div class="sb-section" id="brush-section">
-      <div class="sb-label">Brush Size</div>
-      <div class="brush-row">
-        <input type="range" id="brush-size" min="3" max="40" value="12" oninput="updateBrush()">
-        <div class="brush-val" id="brush-display">12</div>
-      </div>
-    </div>
-
-    <div class="divider"></div>
-
-    <div class="kb-hint">
-      <div class="sb-label">Controls</div>
-      <div class="kb-row"><span class="kb-key">Scroll</span><span class="kb-desc">Zoom</span></div>
-      <div class="kb-row"><span class="kb-key">Space+Drag</span><span class="kb-desc">Pan</span></div>
-      <div class="kb-row"><span class="kb-key">W/P/E/B</span><span class="kb-desc">Switch tool</span></div>
-      <div class="kb-row"><span class="kb-key">Del</span><span class="kb-desc">Delete last WP</span></div>
-      <div class="kb-row"><span class="kb-key">Ctrl+Z</span><span class="kb-desc">Undo paint</span></div>
-      <div class="kb-row"><span class="kb-key">Q</span><span class="kb-desc">Exit 3D preview</span></div>
-    </div>
-
-    <div class="sb-spacer"></div>
-
-    <button class="action-btn" onclick="openSimplify()">✂ Simplify Waypoints</button>
-    <button class="action-btn" onclick="clearWaypoints()">Clear Waypoints</button>
-    <button class="action-btn danger" onclick="clearAll()">Reset All</button>
-    <button class="action-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;margin-top:2px;">✦ Convert Track Image</button>
-    <button id="btn-3d-toggle" class="action-btn" onclick="toggle3DPreview()" style="border-color:#00ccff;color:#00ccff;">3D Preview</button>
-    <button class="action-btn primary" onclick="openExport()">Export Track →</button>
-    <div style="height:10px;"></div>
-  </div>
-
-  <!-- CANVAS AREA -->
+  <!-- CANVAS AREA — full screen -->
   <div id="canvas-wrap">
     <canvas id="bg-canvas"></canvas>
     <canvas id="main-canvas"></canvas>
-    <div id="brush-ring"></div>
-    <div id="tool-hud">Waypoint Mode</div>
-    <div id="version-hud" style="position:absolute;top:12px;left:50%;transform:translateX(-50%);font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:2px;color:#a78bfa;background:rgba(167,139,250,0.1);border:1px solid rgba(167,139,250,0.25);padding:4px 12px;border-radius:3px;pointer-events:none;text-transform:uppercase;">CIRCUIT FORGE · v7.2</div>
     <div id="pinch-hint">2 fingers to zoom &amp; pan</div>
-    <div id="coords-hud">x: 0  y: 0</div>
     <div id="zoom-hud">100%</div>
-  </div>
-
-  <!-- RIGHT PANEL -->
-  <div id="right-panel">
-    <div class="rp-header">
-      <div class="rp-title">Track Info</div>
-      <button class="home-nav-btn" onclick="openHomeScreen()" title="Manage saved tracks">🏠 Tracks</button>
-    </div>
-    <div class="rp-section">
-      <div class="rp-label">Name</div>
-      <input class="track-name-input" id="track-name" type="text" value="MY CIRCUIT" maxlength="24" placeholder="TRACK NAME">
-      <input class="track-sub-input" id="track-sub"  type="text" value="Custom circuit" maxlength="40" placeholder="Short description">
-    </div>
-    <div class="rp-section">
-      <div class="toggle-row">
-        <span class="toggle-label">Auto barriers</span>
-        <label class="toggle"><input type="checkbox" id="barriers-toggle" checked><span class="toggle-slider"></span></label>
-      </div>
-      <div class="seg-row" style="margin-top:8px;">
-        <label style="font-size:12px;color:var(--text3);">Smoothness</label>
-        <input type="range" id="nperseg" min="4" max="24" value="12" oninput="document.getElementById('seg-val').textContent=this.value">
-        <span class="seg-val" id="seg-val">12</span>
-      </div>
-    </div>
-    <div class="rp-section">
-      <div class="rp-label">Stats</div>
-      <div class="info-row"><span class="info-key">Waypoints</span><span class="info-val" id="stat-wp">0</span></div>
-      <div class="info-row"><span class="info-key">Paint layers</span><span class="info-val" id="stat-paint">0</span></div>
-      <div class="info-row"><span class="info-key">Zoom</span><span class="info-val" id="stat-zoom">100%</span></div>
-    </div>
-    <div class="rp-section">
-      <div class="rp-label">Legend</div>
-      <div class="legend-item"><div class="legend-dot" style="background:#e8ff47;"></div><span>Waypoint</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#e8392a;border:1px solid #fff;"></div><span>Flat Kerb</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#f5c518;"></div><span>Sausage Kerb</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#d44;border:1px solid #888;"></div><span>Rumble Strip</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#c8b89a;"></div><span>Gravel</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#e3cf98;"></div><span>Sand</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#3a7a3a;"></div><span>Grass</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#aaa;border:1px solid #f44;"></div><span>Armco Wall</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#3a5fa8;"></div><span>Tecpro</span></div>
-      <div class="legend-item"><div class="legend-dot" style="background:#222;border:1px solid #555;"></div><span>Tyre Wall</span></div>
-    </div>
-    <div class="rp-section">
-      <button class="action-btn" onclick="saveCurrentTrack()" style="width:100%;margin:0;text-align:center;border-color:#00ff88;color:#00ff88;">💾 Save Track</button>
-    </div>
-    <div class="rp-section" style="border-top:1px solid var(--border);margin-top:auto;">
-      <div class="rp-label" style="margin-top:8px;">Waypoints</div>
-    </div>
-    <div id="wp-list"></div>
-    <div id="barrier-list-section" style="display:none;border-top:1px solid var(--border);">
-      <div class="rp-section" style="padding-bottom:0;">
-        <div class="rp-label" style="margin-top:8px;">Barrier Segments <span id="barrier-count" style="color:var(--accent2);">0</span></div>
-      </div>
-      <div id="barrier-list" style="padding:4px 14px 8px;max-height:140px;overflow-y:auto;"></div>
-    </div>
+    <!-- hidden inputs kept for compatibility -->
+    <input type="file" id="file-input" accept="image/*" style="display:none">
+    <input type="text" id="track-name" value="MY CIRCUIT" style="display:none">
+    <input type="text" id="track-sub"  value="Custom circuit" style="display:none">
+    <input type="range" id="nperseg" value="12" style="display:none">
+    <input type="range" id="brush-size" value="12" style="display:none">
+    <span id="stat-wp" style="display:none">0</span>
+    <span id="stat-paint" style="display:none">0</span>
   </div>
 </div>
 
-<!-- MOBILE BOTTOM BAR -->
-<div id="mobile-bar">
-  <div class="mb-btn active" id="mb-waypoint" onclick="setTool('waypoint');closeSurfOverlay()"><span class="mb-icon">📍</span>Waypoint</div>
-  <div class="mb-btn" id="mb-paint"   onclick="setTool('paint');closeSurfOverlay()"><span class="mb-icon">🖌️</span>Paint</div>
-  <div class="mb-btn" id="mb-erase"   onclick="setTool('erase');closeSurfOverlay()"><span class="mb-icon">⬜</span>Erase</div>
-  <div class="mb-btn" id="mb-pan"     onclick="setTool('pan');closeSurfOverlay()"><span class="mb-icon">✋</span>Pan</div>
-  <div class="mb-btn" id="mb-barrier" onclick="setTool('barrier');closeSurfOverlay()"><span class="mb-icon">🚧</span>Barrier</div>
-  <div class="mb-btn" onclick="setStartingPoint();closeSurfOverlay()"><span class="mb-icon">🏁</span>Start</div>
-  <div class="mb-sep"></div>
-  <div class="mb-btn" id="mb-surf" onclick="toggleSurfOverlay()"><span class="mb-icon" id="mb-surf-dot">🟥</span>Surface</div>
-  <div class="mb-sep"></div>
-  <div class="mb-btn" onclick="toggle3DPreview()"><span class="mb-icon">🔭</span>3D</div>
-  <div class="mb-btn" onclick="openHomeScreen()"><span class="mb-icon">🏠</span>Tracks</div>
-  <div class="mb-btn" onclick="openExport()"><span class="mb-icon">💾</span>Export</div>
-  <div class="mb-btn" onclick="openAIConvert()" style="border-color:#a78bfa;color:#a78bfa;flex-shrink:0;"><span class="mb-icon">✦</span>Convert</div>
-  <div class="mb-btn" onclick="openDetailsPanel()" style="border-color:#00ccff;color:#00ccff;flex-shrink:0;"><span class="mb-icon">ⓘ</span>Details</div>
+<!-- BOTTOM ACTION BAR -->
+<div id="action-bar">
+  <button class="ab-btn" onclick="toggle3DPreview()">🔭 3D</button>
+  <button class="ab-btn convert" onclick="openAIConvert()">✦ Convert</button>
+  <button class="ab-btn export" onclick="openExport()">⬇ Export</button>
+  <button class="ab-btn details" onclick="openDetailsPanel()">ⓘ Details</button>
 </div>
 
-<!-- MOBILE SURFACE OVERLAY -->
-<div id="surf-overlay">
-  <div class="so-btn active" id="so-flat_kerb" onclick="setSurface('flat_kerb');closeSurfOverlay()"><div class="so-dot" style="background:#e8392a;"></div>Flat Kerb</div>
-  <div class="so-btn" id="so-sausage"  onclick="setSurface('sausage');closeSurfOverlay()"><div class="so-dot" style="background:#f5c518;"></div>Sausage</div>
-  <div class="so-btn" id="so-rumble"   onclick="setSurface('rumble');closeSurfOverlay()"><div class="so-dot" style="background:#d44;"></div>Rumble</div>
-  <div class="so-btn" id="so-gravel"   onclick="setSurface('gravel');closeSurfOverlay()"><div class="so-dot" style="background:#c8b89a;"></div>Gravel</div>
-  <div class="so-btn" id="so-sand"     onclick="setSurface('sand');closeSurfOverlay()"><div class="so-dot" style="background:#e3cf98;"></div>Sand</div>
-  <div class="so-btn" id="so-grass"    onclick="setSurface('grass');closeSurfOverlay()"><div class="so-dot" style="background:#3a7a3a;"></div>Grass</div>
-  <div class="so-btn" id="so-armco"    onclick="setSurface('armco');closeSurfOverlay()"><div class="so-dot" style="background:#aaa;"></div>Armco</div>
-  <div class="so-btn" id="so-tecpro"   onclick="setSurface('tecpro');closeSurfOverlay()"><div class="so-dot" style="background:#3a5fa8;"></div>Tecpro</div>
-  <div class="so-btn" id="so-tyrewall" onclick="setSurface('tyrewall');closeSurfOverlay()"><div class="so-dot" style="background:#333;border:1px solid #555;"></div>Tyre Wall</div>
-</div>
-
-<div id="mobile-actions">
-  <div class="ma-btn" onclick="undoPaint()" title="Undo">↩️</div>
-  <div class="ma-btn" onclick="mobileDeleteLast()" title="Delete last waypoint">🗑️</div>
-</div>
+<style>
+#app { padding-top: 0; display: block; }
+#canvas-wrap { position: fixed; inset: 0; bottom: 52px; }
+#bg-canvas, #main-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+#pinch-hint {
+  position: absolute; bottom: 10px; left: 50%; transform: translateX(-50%);
+  font-family: 'Barlow Condensed', sans-serif; font-size: 12px; color: rgba(255,255,255,0.5);
+  pointer-events: none;
+}
+#zoom-hud {
+  position: absolute; bottom: 10px; right: 12px;
+  font-family: 'Barlow Condensed', sans-serif; font-size: 12px; font-weight: 700;
+  color: rgba(255,255,255,0.4); pointer-events: none;
+}
+#action-bar {
+  position: fixed; bottom: 0; left: 0; right: 0; height: 52px;
+  background: rgba(10,10,14,0.97);
+  border-top: 1px solid rgba(167,139,250,0.2);
+  display: flex; align-items: center; justify-content: space-around;
+  padding: 0 8px; gap: 8px; z-index: 500;
+}
+.ab-btn {
+  flex: 1; height: 36px; border-radius: 6px;
+  font-family: 'Barlow Condensed', sans-serif; font-size: 14px; font-weight: 700;
+  letter-spacing: 0.5px; cursor: pointer;
+  background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.15); color: #ccc;
+  transition: opacity 0.15s;
+}
+.ab-btn:active { opacity: 0.7; }
+.ab-btn.convert { border-color: rgba(167,139,250,0.5); color: #a78bfa; }
+.ab-btn.export  { border-color: rgba(0,255,136,0.4);  color: #00ff88; }
+.ab-btn.details { border-color: rgba(0,204,255,0.4);  color: #00ccff; }
+</style>
 
 <!-- NEW TRACK NAME MODAL -->
 <div id="new-track-modal" style="display:none;position:fixed;inset:0;z-index:900;background:rgba(0,0,0,0.75);align-items:center;justify-content:center;">

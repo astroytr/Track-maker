@@ -8,7 +8,7 @@ const ctx        = mainCanvas.getContext('2d');
 const wrap       = document.getElementById('canvas-wrap');
 
 let cam = { x: 0, y: 0, zoom: 1 };
-let tool = 'waypoint';
+let tool = 'pan';
 let surface = 'flat_kerb';
 let brushSize = 12;
 let waypoints = [];
@@ -170,13 +170,11 @@ function simplifyWaypoints(eps) {
 }
 
 // ═══════════════════════════════════════════════════
-// SPLINE CACHE — rebuilt once per render, shared by all draw calls
+// SPLINE CACHE
 // ═══════════════════════════════════════════════════
-
 function _invalidateSplineCache() {
   _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
 }
-
 function getCachedSpline(segs) {
   if (segs === 12) return _cachedSpline12 || (_cachedSpline12 = buildSplinePoints(12));
   if (segs === 16) return _cachedSpline16 || (_cachedSpline16 = buildSplinePoints(16));
@@ -184,10 +182,12 @@ function getCachedSpline(segs) {
   return buildSplinePoints(segs);
 }
 
-
+// ═══════════════════════════════════════════════════
+// RENDER
+// ═══════════════════════════════════════════════════
 function render() {
   if (typeof preview3dActive !== 'undefined' && preview3dActive) return;
-  _invalidateSplineCache(); // reset cache — rebuilt once per frame, shared by all draw calls
+  _invalidateSplineCache();
   const W = mainCanvas.width, H = mainCanvas.height;
 
   // ── Background — solid grass green ──
@@ -344,11 +344,7 @@ function drawTrackRoad() {
   screenPts.forEach((p,i) => i===0 ? ctx.moveTo(p.s.x,p.s.y) : ctx.lineTo(p.s.x,p.s.y));
   ctx.closePath(); ctx.stroke();
 
-
-
-  // ── Flat kerb — full circuit, both sides, at track edge ──
-  // Red/white alternating band running the entire circuit on both sides.
-  // Drawn AFTER asphalt so it sits just outside the asphalt edge.
+  // ── Flat kerb — full circuit, both sides, right at asphalt edge ──
   {
     const flatKerbLane = getSurfaceLane('flat_kerb', 0);
     let fkDist = 0;
@@ -365,25 +361,6 @@ function drawTrackRoad() {
         ctx.beginPath(); ctx.moveTo(pa[0].x, pa[0].y); ctx.lineTo(pa[1].x, pa[1].y); ctx.stroke();
       });
     }
-  }
-
-  // ── Inside kerbs — small red/white painted kerb on inside of corners ──
-  // Real circuits have kerbs on BOTH sides; inside kerb is narrower/flatter
-  const insideKerbW = Math.max(1.5, kerbW * 0.7);
-  const insideOffset = TRACK_HALF_WIDTH - 1.2; // just inside track edge
-  let dist2 = 0;
-  for (let i = 1; i < spl; i++) {
-    if (!inCornerRoad[i]) { dist2 += 2; continue; }
-    const side = -cornerSign[i]; // inside = opposite of turn direction
-    const prev = splinePts[(i-1+spl)%spl], curr = splinePts[i];
-    const pa = buildOffsetScreenPolyline([prev, curr], side, insideOffset);
-    if (pa.length < 2) continue;
-    dist2 += Math.hypot(pa[1].x-pa[0].x, pa[1].y-pa[0].y);
-    const phase = Math.floor(dist2 / 12);
-    ctx.strokeStyle = phase%2===0 ? 'rgba(210,20,20,0.90)' : 'rgba(240,240,240,0.90)';
-    ctx.lineWidth = insideKerbW;
-    ctx.lineCap = 'butt';
-    ctx.beginPath(); ctx.moveTo(pa[0].x,pa[0].y); ctx.lineTo(pa[1].x,pa[1].y); ctx.stroke();
   }
 
   // ── Braking markers — coloured boards on outside before heavy braking corners ──
@@ -655,30 +632,29 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
     // ── SAND — wide warm-yellow filled trap with fine grain ────────
     case 'sand': {
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      const sandW = Math.max(18, w);
       // Soft outer halo
-      ctx.lineWidth = sandW + 6 * zoom;
+      ctx.lineWidth = w + 6 * zoom;
       ctx.strokeStyle = 'rgba(195,175,100,0.22)';
       _polyPath(ctx, poly); ctx.stroke();
       // Solid filled base — full runoff width
-      ctx.lineWidth = sandW;
+      ctx.lineWidth = w;
       ctx.strokeStyle = 'rgba(232,210,138,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
       // Subtle inner shadow band
-      ctx.lineWidth = Math.max(4, sandW * 0.40);
+      ctx.lineWidth = Math.max(2, w * 0.40);
       ctx.strokeStyle = 'rgba(195,168,95,0.55)';
       _polyPath(ctx, poly); ctx.stroke();
       // Fine grain stipple spread across full width
       const arcs = _arcLengths(poly);
       const total = arcs[arcs.length - 1];
       const spacing = Math.max(2.5, 4 * zoom);
-      const halfW = sandW * 0.46;
+      const halfW = w * 0.46;
       for (let d = spacing * 0.3; d < total; d += spacing) {
         const p = _polyAtDist(poly, arcs, d);
         const perp = { x: -p.ty, y: p.tx };
         for (let row = -2; row <= 2; row++) {
           const off = row * halfW * 0.44 + Math.cos(d * 2.5 + row) * halfW * 0.12;
-          const r = Math.max(1.2, (1.2 + Math.cos(d * 4.3 + row) * 0.3) * zoom);
+          const r = Math.max(0.8, (0.9 + Math.cos(d * 4.3 + row) * 0.3) * zoom);
           const alpha = 0.35 + Math.cos(d * 2.1 + row * 1.1) * 0.15;
           ctx.fillStyle = 'rgba(168,138,72,' + alpha + ')';
           ctx.beginPath();
@@ -748,9 +724,9 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       while (d < total) {
         const end = Math.min(d + segLen - gap, total);
         const steps = 4;
-        // Soft shadow outline
-        ctx.lineWidth = w + 1;
-        ctx.strokeStyle = 'rgba(10,20,80,0.35)';
+        // Dark outline
+        ctx.lineWidth = w + 2;
+        ctx.strokeStyle = 'rgba(10,20,80,0.6)';
         ctx.beginPath();
         for (let s = 0; s <= steps; s++) {
           const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
@@ -768,7 +744,7 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
         ctx.stroke();
         // Light face highlight
         ctx.lineWidth = Math.max(1.5, w * 0.35);
-        ctx.strokeStyle = 'rgba(140,200,255,0.70)';
+        ctx.strokeStyle = 'rgba(140,200,255,0.85)';
         ctx.beginPath();
         for (let s = 0; s <= steps; s++) {
           const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);

@@ -14,7 +14,7 @@ function getSegmentNear(wx, wy) {
 function setStartingPoint() {
   if (waypoints.length===0){showToast('No waypoints yet!');return;}
   startingPointIdx = selectedWP>=0 ? selectedWP : findBestStartFinishWaypoint();
-  updateWPList(); render();
+  updateWPList(); markDirty();
   showToast(`Start set to WP ${startingPointIdx}`);
 }
 
@@ -130,7 +130,7 @@ function undoPaint() {
   paintLayers=paintLayers.slice(0,undoStack.pop());
   const el=document.getElementById('stat-paint');
   if (el) el.textContent=paintLayers.length;
-  render(); showToast('Undone');
+  markDirty(); showToast('Undone');
 }
 
 // ═══════════════════════════════════════════════════
@@ -149,7 +149,7 @@ mainCanvas.addEventListener('mousemove', e=>{
   if (ch) ch.textContent=`x: ${Math.round(mouseWorld.x)}  y: ${Math.round(mouseWorld.y)}`;
   updateBrushRing(pos.x,pos.y);
   handleMove(pos);
-  if (tool==='barrier'&&barrierSelStart>=0) render();
+  if (tool==='barrier'&&barrierSelStart>=0) markDirty();
 });
 mainCanvas.addEventListener('mouseup',    e=>handleUp(getCanvasPos(e.clientX,e.clientY)));
 mainCanvas.addEventListener('mouseleave', ()=>handleUp(null));
@@ -196,7 +196,7 @@ mainCanvas.addEventListener('touchmove', e=>{
     cam.zoom=newZoom;
     const after=screenToWorld(mid.x,mid.y);
     cam.x+=before.x-after.x; cam.y+=before.y-after.y;
-    updateZoomHUD(); render();
+    updateZoomHUD(); markDirty();
   } else if (ids.length===1) {
     const pos=touches[ids[0]];
     if (touchDownPos&&Math.hypot(pos.x-touchDownPos.x,pos.y-touchDownPos.y)>8) touchMoved=true;
@@ -212,7 +212,7 @@ mainCanvas.addEventListener('touchend', e=>{
     if (tool==='waypoint'&&(Date.now()-touchDownTime)<400&&!touchMoved&&touchDownPos){
       const world=screenToWorld(touchDownPos.x,touchDownPos.y);
       waypoints.push({x:world.x,y:world.y});
-      updateWPList(); render();
+      updateWPList(); markDirty();
     }
     handleUp(touchDownPos); touchDownPos=null;
   } else if (remaining===1) {
@@ -236,20 +236,20 @@ function handleDown(pos, isTouch) {
   }
   if (tool==='waypoint'&&!isTouch) {
     waypoints.push({x:world.x,y:world.y});
-    updateWPList(); render();
+    updateWPList(); markDirty();
   } else if (tool==='paint') {
     isPainting=true; undoStack.push(paintLayers.length);
-    paintAt(world.x,world.y); render();
+    paintAt(world.x,world.y); markDirty();
   } else if (tool==='erase') {
     isPainting=true; undoStack.push(paintLayers.length);
-    eraseAt(world.x,world.y); render();
+    eraseAt(world.x,world.y); markDirty();
   } else if (tool==='barrier') {
     const seg=getSegmentNear(world.x,world.y);
     if (seg>=0) {
       if (barrierSelStart<0) {
         barrierSelStart=seg;
         document.getElementById('tool-hud').textContent=`Barrier — WP ${seg} selected · now click end point`;
-        showToast(`Start: WP ${seg} — click the end waypoint`); render();
+        showToast(`Start: WP ${seg} — click the end waypoint`); markDirty();
       } else {
         if (seg!==barrierSelStart) {
           barrierSegments.push({
@@ -264,7 +264,7 @@ function handleDown(pos, isTouch) {
         }
         barrierSelStart=-1;
         document.getElementById('tool-hud').textContent='Barrier — click first waypoint';
-        render();
+        markDirty();
       }
     }
   }
@@ -274,12 +274,12 @@ function handleMove(pos) {
   if (isPanning) {
     cam.x=panStart.camX-(pos.x-panStart.x)/cam.zoom;
     cam.y=panStart.camY-(pos.y-panStart.y)/cam.zoom;
-    render(); return;
+    markDirty(); return;
   }
   if (isPainting) {
     const world=screenToWorld(pos.x,pos.y);
-    if (tool==='paint')      {paintAt(world.x,world.y); render();}
-    else if (tool==='erase') {eraseAt(world.x,world.y); render();}
+    if (tool==='paint')      {paintAt(world.x,world.y); markDirty();}
+    else if (tool==='erase') {eraseAt(world.x,world.y); markDirty();}
   }
 }
 
@@ -293,7 +293,7 @@ function applyZoom(factor, sx, sy) {
   cam.zoom=Math.max(0.05,Math.min(20,cam.zoom*factor));
   const after=screenToWorld(sx,sy);
   cam.x+=before.x-after.x; cam.y+=before.y-after.y;
-  updateZoomHUD(); render();
+  updateZoomHUD(); markDirty();
 }
 
 function updateZoomHUD() {
@@ -311,7 +311,7 @@ window.addEventListener('keydown', e=>{
   if (e.key==='e'||e.key==='E') setTool('erase');
   if (e.key==='b'||e.key==='B') setTool('barrier');
   if ((e.key==='Delete'||e.key==='Backspace')&&!e.target.matches('input,textarea')) {
-    if (waypoints.length>0&&tool==='waypoint'){waypoints.pop();updateWPList();render();}
+    if (waypoints.length>0&&tool==='waypoint'){waypoints.pop();updateWPList();markDirty();}
   }
   if (e.ctrlKey&&e.key==='z'){undoPaint();e.preventDefault();}
 });
@@ -324,7 +324,7 @@ window.addEventListener('keyup', e=>{
 
 // ── MOBILE HELPERS ──────────────────────────────────
 function mobileDeleteLast() {
-  if (waypoints.length>0){waypoints.pop();updateWPList();render();showToast('Deleted last WP');}
+  if (waypoints.length>0){waypoints.pop();updateWPList();markDirty();showToast('Deleted last WP');}
 }
 let surfOverlayOpen=false;
 function toggleSurfOverlay(){surfOverlayOpen=!surfOverlayOpen;document.getElementById('surf-overlay').classList.toggle('open',surfOverlayOpen);}
@@ -345,7 +345,7 @@ function loadBgImage(file) {
       const scale=Math.min((W*0.85)/img.width,(H*0.85)/img.height);
       const ww=img.width*scale/cam.zoom, wh=img.height*scale/cam.zoom;
       bgImageBounds={x:-ww/2,y:-wh/2,w:ww,h:wh};
-      cam.x=0; cam.y=0; render(); showToast('Image loaded');
+      cam.x=0; cam.y=0; markDirty(); showToast('Image loaded');
     };
     img.src=ev.target.result;
   };
@@ -489,7 +489,7 @@ function updateWPList() {
     div.innerHTML=`<span class="wp-num" style="${isStart?'color:#00ff88':issueCol?'color:'+issueCol:''}">${isStart?'🏁':issue?(issue.level==='hard'?'⚠':i):i}</span>
       <span class="wp-coords">${Math.round(wp.x)}, ${Math.round(wp.y)}</span>
       <span class="wp-del" onclick="event.stopPropagation();deleteWP(${i})">✕</span>`;
-    div.addEventListener('click',()=>{selectedWP=i;updateWPList();render();});
+    div.addEventListener('click',()=>{selectedWP=i;updateWPList();markDirty();});
     list.appendChild(div);
   });
 }
@@ -523,30 +523,30 @@ function editBarrierSide(i) {
   const choices=['both','left','right'];
   const cur=choices.indexOf(b.side)||0;
   b.side=choices[(cur+1)%3]||'both';
-  updateBarrierList(); render();
+  updateBarrierList(); markDirty();
   showToast('Side: '+b.side);
 }
 
-function deleteBarrier(i){barrierSegments.splice(i,1);updateBarrierList();render();showToast('Barrier removed');}
+function deleteBarrier(i){barrierSegments.splice(i,1);updateBarrierList();markDirty();showToast('Barrier removed');}
 
 function deleteWP(i) {
   waypoints.splice(i,1);
   if (selectedWP>=waypoints.length) selectedWP=-1;
   if (startingPointIdx>=waypoints.length) startingPointIdx=0;
-  updateWPList(); render();
+  updateWPList(); markDirty();
 }
 
 function clearWaypoints() {
   if (!confirm('Clear all waypoints?')) return;
   waypoints=[]; selectedWP=-1; startingPointIdx=0; barrierSegments=[]; barrierSelStart=-1;
-  updateWPList(); updateBarrierList(); render();
+  updateWPList(); updateBarrierList(); markDirty();
 }
 
 function clearAll() {
   if (!confirm('Reset everything? This cannot be undone.')) return;
   waypoints=[]; paintLayers=[]; undoStack=[]; selectedWP=-1; bgImage=null;
   barrierSegments=[]; barrierSelStart=-1; startingPointIdx=0;
-  updateWPList(); updateBarrierList(); render();
+  updateWPList(); updateBarrierList(); markDirty();
 }
 
 // ── Simplify waypoints shortcut ─────────────────────
@@ -575,3 +575,11 @@ function applySimplify() {
   simplifyWaypoints(eps);
   closeSimplify();
 }
+
+// ── Stubs for removed UI elements ──
+function updateBrush() {}
+function updateBrushRing() {}
+function closeSurfOverlay() {}
+function toggleSurfOverlay() {}
+function undoPaint() {}
+function mobileDeleteLast() { if(waypoints.length>0){waypoints.pop();updateWPList();markDirty();} }
