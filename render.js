@@ -26,6 +26,9 @@ let startingPointIdx = 0;
 let barrierSegments  = [];
 let barrierSelStart  = -1;
 let barrierSide      = 'both';   // 'both' | 'left' | 'right'
+let _cachedSpline12  = null;
+let _cachedSpline16  = null;
+let _cachedSpline20  = null;
 
 // ═══════════════════════════════════════════════════
 // RESIZE
@@ -169,10 +172,6 @@ function simplifyWaypoints(eps) {
 // ═══════════════════════════════════════════════════
 // SPLINE CACHE — rebuilt once per render, shared by all draw calls
 // ═══════════════════════════════════════════════════
-let _cachedSpline12 = null;
-let _cachedSpline16 = null;
-let _cachedSpline20 = null;
-let _splineCacheKey  = '';
 
 function _invalidateSplineCache() {
   _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
