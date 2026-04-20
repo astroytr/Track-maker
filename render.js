@@ -296,7 +296,7 @@ function buildSplinePoints(segs) {
 // ═══════════════════════════════════════════════════
 // TRACK ROAD
 // ═══════════════════════════════════════════════════
-function drawTrackRoad() {
+function drawTrackRoad_REMOVED_COMPACT_DUPLICATE() {
   const splinePts = buildSplinePoints(16);
   if (splinePts.length < 2) return;
   const n = waypoints.length;
@@ -503,6 +503,14 @@ function drawTrackRoad() {
     }
   }
 }
+
+function drawTrackRoad() {
+  const splinePts = buildSplinePoints(16);
+  if (splinePts.length < 2) return;
+  const n = waypoints.length;
+  const screenPts = splinePts.map(p => ({ s: worldToScreen(p.pt.x, p.pt.y), seg: p.seg }));
+  const trackW = Math.max(6, 14 * cam.zoom);
+  const kerbW  = Math.max(2, 3.5 * cam.zoom);
 
   // ── Curvature per spline point (for inside kerb / braking zone detection) ──
   const spl = splinePts.length;
