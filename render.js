@@ -996,26 +996,20 @@ function drawAutoSurfaces() {
     ptDom[i] = s >= 0 ? 1 : -1;
   }
 
-  // ── Overlap-zone detection ────────────────────────────────────────────────
-  // For every spline point we find the closest OTHER centreline point that is
-  // far away in index (different road section).  We store that raw distance in
-  // nearDist[sideIdx][i].  A barrier offset is only clamped when it would
-  // physically reach past that opposing centreline — i.e. when
-  //   intended_offset  >  nearDist
-  // Outside such true overlap zones the offset is left completely unchanged.
-  // Side detection: dot(offset_vector, normal) decides which of the two sides
-  // the neighbouring point belongs to, so only the facing side is ever affected.
-  const _MIN_SEP = Math.max(8, Math.floor(spl * 0.04));
-
-  // World-space sign-propagated normals (same algorithm as buildOffsetScreenPolyline)
+  // ── World-space normals (sign-propagated, consistent winding) ──────────
+  // Used to compute where a barrier endpoint actually lands in world space
+  // so we can test if it physically crosses into another road section.
   const _wpN = new Array(spl);
   {
     const _rn = splinePts.map((p, i) => {
-      const pv = splinePts[Math.max(0, i-1)].pt, nx2 = splinePts[Math.min(spl-1, i+1)].pt;
+      const pv = splinePts[Math.max(0, i-1)].pt;
+      const nx = splinePts[Math.min(spl-1, i+1)].pt;
       const ax = i===0 ? splinePts[1].pt.x-splinePts[0].pt.x
-               : i===spl-1 ? splinePts[spl-1].pt.x-splinePts[spl-2].pt.x : nx2.x-pv.x;
+               : i===spl-1 ? splinePts[spl-1].pt.x-splinePts[spl-2].pt.x
+               : nx.x-pv.x;
       const ay = i===0 ? splinePts[1].pt.y-splinePts[0].pt.y
-               : i===spl-1 ? splinePts[spl-1].pt.y-splinePts[spl-2].pt.y : nx2.y-pv.y;
+               : i===spl-1 ? splinePts[spl-1].pt.y-splinePts[spl-2].pt.y
+               : nx.y-pv.y;
       const sl = Math.sqrt(ax*ax+ay*ay)||1;
       return { px: -ay/sl, py: ax/sl };
     });
@@ -1025,35 +1019,44 @@ function drawAutoSurfaces() {
     const _ws = _area >= 0 ? -1 : 1;
     _wpN[0] = { px: _rn[0].px*_ws, py: _rn[0].py*_ws };
     for (let i=1; i<spl; i++) {
-      const _d = _rn[i].px*_wpN[i-1].px + _rn[i].py*_wpN[i-1].py;
-      _wpN[i] = { px: _rn[i].px*(_d>=0?1:-1), py: _rn[i].py*(_d>=0?1:-1) };
+      const _dot = _rn[i].px*_wpN[i-1].px + _rn[i].py*_wpN[i-1].py;
+      _wpN[i] = { px: _rn[i].px*(_dot>=0?1:-1), py: _rn[i].py*(_dot>=0?1:-1) };
     }
   }
 
-  // nearDist[0] = side -1, nearDist[1] = side +1
-  const _nearDist = [new Float32Array(spl).fill(Infinity),
-                     new Float32Array(spl).fill(Infinity)];
-  for (let i=0; i<spl; i++) {
-    const px=splinePts[i].pt.x, py=splinePts[i].pt.y;
-    const nx=_wpN[i].px, ny=_wpN[i].py;
-    for (let j=0; j<spl; j+=3) {
+  // ── Safe-offset function ──────────────────────────────────────────────────
+  // Given a proposed barrier offset at spline index i on a given side,
+  // compute where the barrier endpoint would land in world space and check
+  // if it is closer than TRACK_HALF_WIDTH to ANY other centreline point that
+  // is index-far away (different road section).  If so, it would physically
+  // enter the other road — clamp the offset so the endpoint just touches the
+  // other road's edge (other_centreline_dist - TRACK_HALF_WIDTH).
+  // Points that don't reach the other road are returned completely unchanged.
+  const _MIN_SEP = Math.max(8, Math.floor(spl * 0.04));
+  const _ROAD_HALF = TRACK_HALF_WIDTH; // = 7 world units
+
+  function _safeOffset(offset, sideNum, splIdx) {
+    const i = ((splIdx % spl) + spl) % spl;
+    const cx = splinePts[i].pt.x, cy = splinePts[i].pt.y;
+    const nx = _wpN[i].px * sideNum, ny = _wpN[i].py * sideNum;
+    // World position of the barrier endpoint at the proposed offset
+    const bx = cx + nx * offset, by = cy + ny * offset;
+    // Find if bx,by is inside any other road section
+    let minCLDist = Infinity;
+    for (let j = 0; j < spl; j += 2) {
       const gap = Math.min(Math.abs(j-i), spl-Math.abs(j-i));
       if (gap < _MIN_SEP) continue;
-      const dx=splinePts[j].pt.x-px, dy=splinePts[j].pt.y-py;
-      const d=Math.sqrt(dx*dx+dy*dy);
-      if (d < 0.001) continue;
-      const si = (dx*nx+dy*ny) >= 0 ? 1 : 0;
-      if (d < _nearDist[si][i]) _nearDist[si][i] = d;
+      const dx = splinePts[j].pt.x - bx, dy2 = splinePts[j].pt.y - by;
+      const d = Math.sqrt(dx*dx + dy2*dy2);
+      if (d < minCLDist) minCLDist = d;
     }
-  }
-
-  // Returns offset clamped to half the gap ONLY when it would actually overlap.
-  // If the offset doesn't reach the other road, it is returned unchanged.
-  function _capOverlap(offset, sideNum, splIdx) {
-    const idx = ((splIdx % spl) + spl) % spl;
-    const d = _nearDist[sideNum > 0 ? 1 : 0][idx];
-    if (d === Infinity || offset <= d) return offset;   // no collision — untouched
-    return Math.max(4, d * 0.5);                        // collision — meet in the middle
+    // If the barrier endpoint is within TRACK_HALF_WIDTH of another centreline
+    // it has entered the other road — pull it back to just that road's edge.
+    if (minCLDist >= _ROAD_HALF) return offset;  // no collision — untouched
+    // How far back do we need to pull? The endpoint needs to be exactly
+    // _ROAD_HALF away from the nearest centreline point.
+    // New offset = offset - (ROAD_HALF - minCLDist)
+    return Math.max(4, offset - (_ROAD_HALF - minCLDist));
   }
 
   // ── 1. ARMCO — full circuit, smooth per-point offset, no hard jumps ──
@@ -1074,7 +1077,7 @@ function drawAutoSurfaces() {
         const w = SK + 1 - Math.abs(d);
         sum += raw[(i + d + spl) % spl] * w; wt += w;
       }
-      sm[i] = _capOverlap(sum / wt, side, i);
+      sm[i] = _safeOffset(sum / wt, side, i);
     }
     const poly = buildOffsetScreenPolylineVarying(splinePts, side, sm);
     drawSurfacePattern(ctx, 'armco', poly, armcoLane, side, cam.zoom);
@@ -1086,7 +1089,7 @@ function drawAutoSurfaces() {
     if (pts.length < 2) return;
     const ds = dominantSign(run);
     const rawOff = buildTransitionOffsets(pts.length, PERIM, tarmacLane.center, TRANS);
-    const offsets = rawOff.map((o, k) => _capOverlap(o, ds, run.from + k));
+    const offsets = rawOff.map((o, k) => _safeOffset(o, ds, run.from + k));
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     const w = Math.max(4, tarmacLane.width * cam.zoom);
     ctx.lineWidth = w; ctx.strokeStyle = 'rgba(90,92,95,0.88)';
@@ -1102,7 +1105,7 @@ function drawAutoSurfaces() {
     if (pts.length < 2) return;
     const ds = dominantSign(run);
     const rawOff = buildTransitionOffsets(pts.length, PERIM, gravelLane.center, TRANS);
-    const offsets = rawOff.map((o, k) => _capOverlap(o, ds, run.from + k));
+    const offsets = rawOff.map((o, k) => _safeOffset(o, ds, run.from + k));
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'gravel', poly, gravelLane, ds, cam.zoom);
   });
@@ -1113,7 +1116,7 @@ function drawAutoSurfaces() {
     if (pts.length < 2) return;
     const ds = dominantSign(run);
     const rawOff = buildTransitionOffsets(pts.length, PERIM, sandLane.center, TRANS);
-    const offsets = rawOff.map((o, k) => _capOverlap(o, ds, run.from + k));
+    const offsets = rawOff.map((o, k) => _safeOffset(o, ds, run.from + k));
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'sand', poly, sandLane, ds, cam.zoom);
   });
@@ -1146,7 +1149,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     [-1, 1].forEach(side => {
-      const offsets = pts.map((_, k) => _capOverlap(tecproLane.center, side, run.from + k));
+      const offsets = pts.map((_, k) => _safeOffset(tecproLane.center, side, run.from + k));
       const poly = buildOffsetScreenPolylineVarying(pts, side, offsets);
       drawSurfacePattern(ctx, 'tecpro', poly, tecproMinW, side, cam.zoom);
     });
@@ -1159,7 +1162,7 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = pts.map((_, k) => _capOverlap(tyreLane.center, ds, run.from + k));
+    const offsets = pts.map((_, k) => _safeOffset(tyreLane.center, ds, run.from + k));
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'tyrewall', poly, tyreMinW, ds, cam.zoom);
   });
