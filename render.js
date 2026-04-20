@@ -988,6 +988,29 @@ function drawAutoSurfaces() {
     ptDom[i] = s >= 0 ? 1 : -1;
   }
 
+  // ── Proximity cap — for every spline point, find the closest OTHER spline
+  //    point that is far away in index (different road section).  The barrier
+  //    on each side must never exceed half that world-space distance, otherwise
+  //    barriers from two adjacent parallel road sections would overlap.
+  //    We only check points that are at least MIN_SEP indices apart so that
+  //    nearby points on the *same* curve don't falsely cap the offset.
+  const MIN_SEP = Math.max(8, Math.floor(spl * 0.04)); // ~4 % of circuit
+  const proxCap = new Float32Array(spl);               // world units
+  for (let i = 0; i < spl; i++) {
+    const px = splinePts[i].pt.x, py = splinePts[i].pt.y;
+    let minD2 = Infinity;
+    // Stride by 3 to keep O(n) manageable on large circuits
+    for (let j = 0; j < spl; j += 3) {
+      const gap = Math.min(Math.abs(j - i), spl - Math.abs(j - i));
+      if (gap < MIN_SEP) continue;
+      const dx = splinePts[j].pt.x - px, dy = splinePts[j].pt.y - py;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < minD2) minD2 = d2;
+    }
+    // Half of closest distance → maximum safe barrier reach (floor at 4 wu)
+    proxCap[i] = Math.max(4, Math.sqrt(minD2) * 0.5);
+  }
+
   // ── 1. ARMCO — full circuit, smooth per-point offset, no hard jumps ──
   [-1, 1].forEach(side => {
     const raw = Array.from({ length: spl }, (_, i) => {
@@ -1006,7 +1029,8 @@ function drawAutoSurfaces() {
         const w = SK + 1 - Math.abs(d);
         sum += raw[(i + d + spl) % spl] * w; wt += w;
       }
-      sm[i] = sum / wt;
+      // Clamp to proximity cap so barriers never cross into adjacent road section
+      sm[i] = Math.min(sum / wt, proxCap[i]);
     }
     const poly = buildOffsetScreenPolylineVarying(splinePts, side, sm);
     drawSurfacePattern(ctx, 'armco', poly, armcoLane, side, cam.zoom);
@@ -1032,7 +1056,11 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = buildTransitionOffsets(pts.length, PERIM, gravelLane.center, TRANS);
+    const rawOffsets = buildTransitionOffsets(pts.length, PERIM, gravelLane.center, TRANS);
+    const offsets = rawOffsets.map((o, k) => {
+      const idx = ((run.from + k) % spl + spl) % spl;
+      return Math.min(o, proxCap[idx]);
+    });
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'gravel', poly, gravelLane, ds, cam.zoom);
   });
@@ -1042,7 +1070,11 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const offsets = buildTransitionOffsets(pts.length, PERIM, sandLane.center, TRANS);
+    const rawOffsets = buildTransitionOffsets(pts.length, PERIM, sandLane.center, TRANS);
+    const offsets = rawOffsets.map((o, k) => {
+      const idx = ((run.from + k) % spl + spl) % spl;
+      return Math.min(o, proxCap[idx]);
+    });
     const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'sand', poly, sandLane, ds, cam.zoom);
   });
@@ -1075,7 +1107,12 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     [-1, 1].forEach(side => {
-      const poly = buildOffsetScreenPolyline(pts, side, tecproLane.center);
+      // Build per-point offsets clamped to proximity cap
+      const offsets = pts.map((p, k) => {
+        const idx = ((run.from + k) % spl + spl) % spl;
+        return Math.min(tecproLane.center, proxCap[idx]);
+      });
+      const poly = buildOffsetScreenPolylineVarying(pts, side, offsets);
       drawSurfacePattern(ctx, 'tecpro', poly, tecproMinW, side, cam.zoom);
     });
   });
@@ -1087,7 +1124,11 @@ function drawAutoSurfaces() {
     const pts = runPts(run);
     if (pts.length < 2) return;
     const ds = dominantSign(run);
-    const poly = buildOffsetScreenPolyline(pts, ds, tyreLane.center);
+    const offsets = pts.map((p, k) => {
+      const idx = ((run.from + k) % spl + spl) % spl;
+      return Math.min(tyreLane.center, proxCap[idx]);
+    });
+    const poly = buildOffsetScreenPolylineVarying(pts, ds, offsets);
     drawSurfacePattern(ctx, 'tyrewall', poly, tyreMinW, ds, cam.zoom);
   });
 }
@@ -1154,64 +1195,57 @@ function drawBarrierSegments() {
     ctx.textBaseline = 'middle';
     const tw = ctx.measureText(labelTxt + sideLabel).width;
     const pad = 5;
-    const dotR = Math.max(3, fontSize * 0.35);
-    const dotSpace = dotR * 2 + 4;                  // space reserved for the colour dot
-    const pillW = tw + pad * 2 + dotSpace;           // total pill width (dot + text)
-    const pillH = fontSize * 1.4;
+    const labelW = tw + pad * 2 + 12;
+    const labelH = fontSize * 1.4;
 
-    // Base Y — label above the midpoint, pushed out by the lane's label offset
-    const baseY = ms.y - Math.max(22, lane.labelOffset * cam.zoom);
+    // FIX: base Y — label above the midpoint offset by lane offset
+    let candidateY = ms.y - Math.max(22, lane.labelOffset * cam.zoom);
 
-    // Nudge candidateY in clean ±STEP increments until no overlap (max 10 tries)
-    const MAX_TRIES = 10;
-    const STEP = pillH + 4;                          // step by one label height + gap
-    let candidateY = baseY;
+    // FIX: nudge candidate Y in 18px steps until no overlap (max 8 attempts)
+    const MAX_TRIES = 8;
+    const STEP = 18;
     let placed = false;
     for (let attempt = 0; attempt < MAX_TRIES; attempt++) {
-      const rx = ms.x - pillW / 2;
-      const ry = candidateY - pillH / 2;
+      const rx = ms.x - labelW / 2;
+      const ry = candidateY - labelH / 2;
       let overlaps = false;
       for (const r of placedLabelRects) {
-        if (rx < r.x + r.w && rx + pillW > r.x && ry < r.y + r.h && ry + pillH > r.y) {
+        if (rx < r.x + r.w && rx + labelW > r.x && ry < r.y + r.h && ry + labelH > r.y) {
           overlaps = true; break;
         }
       }
       if (!overlaps) {
-        placedLabelRects.push({ x: rx, y: ry, w: pillW, h: pillH });
+        placedLabelRects.push({ x: rx, y: ry, w: labelW, h: labelH });
         placed = true;
         break;
       }
-      // Spiral outward: -STEP, +STEP, -2*STEP, +2*STEP, ...
-      const sign = attempt % 2 === 0 ? -1 : 1;
-      candidateY = baseY + sign * STEP * Math.ceil((attempt + 1) / 2);
+      // Alternate nudging: up, up+step, down, etc.
+      candidateY += (attempt % 2 === 0 ? -STEP : STEP * (attempt + 1));
     }
     if (!placed) { ctx.restore(); return; } // skip if can't fit
 
     const labelY = candidateY;
-    const pillX = ms.x - pillW / 2;
 
     // Pill background
     ctx.fillStyle = 'rgba(9,9,14,0.82)';
     ctx.beginPath();
     if (ctx.roundRect) {
-      ctx.roundRect(pillX, labelY - pillH / 2, pillW, pillH, 4);
+      ctx.roundRect(ms.x - tw/2 - pad, labelY - fontSize*0.7, tw + pad*2, fontSize*1.4, 4);
     } else {
-      ctx.rect(pillX, labelY - pillH / 2, pillW, pillH);
+      ctx.rect(ms.x - tw/2 - pad, labelY - fontSize*0.7, tw + pad*2, fontSize*1.4);
     }
     ctx.fill();
 
-    // Colour dot (left side of pill)
-    const dotX = pillX + pad + dotR;
+    // Colour dot
     ctx.fillStyle = cfg.dot;
     ctx.beginPath();
-    ctx.arc(dotX, labelY, dotR, 0, Math.PI * 2);
+    ctx.arc(ms.x - tw/2 - pad/2 - 5, labelY, Math.max(3, fontSize*0.35), 0, Math.PI*2);
     ctx.fill();
 
-    // Text (right of dot)
+    // Text
     ctx.fillStyle = '#f4f4f7';
     ctx.shadowColor = '#000'; ctx.shadowBlur = 3;
-    ctx.textAlign = 'left';
-    ctx.fillText(labelTxt + sideLabel, dotX + dotR + 4, labelY);
+    ctx.fillText(labelTxt + sideLabel, ms.x + 3, labelY);
     ctx.shadowBlur = 0;
     ctx.restore();
   });
