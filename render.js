@@ -29,6 +29,10 @@ let barrierSide      = 'both';   // 'both' | 'left' | 'right'
 let _cachedSpline12  = null;
 let _cachedSpline16  = null;
 let _cachedSpline20  = null;
+let _bgCamKey        = '';
+let _wpCacheKey      = '';
+let _paintSortKey    = -1;
+let _orderedPaintCache = [];
 
 // ═══════════════════════════════════════════════════
 // RESIZE
@@ -186,7 +190,6 @@ function getCachedSpline(segs) {
 
 
 // ── Background grid cache — only redrawn when camera or canvas size changes ──
-let _bgCamKey = '';
 function _redrawBg(W, H) {
   bgCtx.clearRect(0, 0, W, H);
   bgCtx.fillStyle = '#2d5a1b';
@@ -204,7 +207,6 @@ function _redrawBg(W, H) {
 }
 
 // ── Spline cache key — invalidate only when waypoints actually change ──
-let _wpCacheKey = '';
 function _getWpKey() {
   // cheap hash: count + sum of x+y of first/mid/last waypoint
   const n = waypoints.length;
@@ -216,8 +218,6 @@ function _getWpKey() {
 }
 
 // ── Paint layer sort cache — only re-sort when paintLayers changes ──
-let _paintSortKey = -1;
-let _orderedPaintCache = [];
 
 function render() {
   if (typeof preview3dActive !== 'undefined' && preview3dActive) return;
