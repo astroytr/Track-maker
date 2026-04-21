@@ -39,49 +39,14 @@ function findBestStartFinishWaypoint() {
 function setTool(t) {
   if (tool==='barrier'&&t!=='barrier') barrierSelStart=-1;
   tool=t;
-  document.querySelectorAll('.tool-btn').forEach(b=>b.classList.remove('active'));
-  const tb=document.getElementById('tool-'+t);
-  if (tb) tb.classList.add('active');
-  document.querySelectorAll('.mb-btn').forEach(b=>b.classList.remove('active'));
-  const mb=document.getElementById('mb-'+t);
-  if (mb) mb.classList.add('active');
-
-  const hudMap={
-    waypoint:'Waypoint — click to place',
-    paint:   'Paint — drag to paint surface',
-    erase:   'Erase — drag to erase',
-    pan:     'Pan — drag to move · scroll/pinch zoom',
-    barrier: 'Barrier — click first waypoint, then second'
-  };
-  const hud=document.getElementById('tool-hud');
-  if (hud) hud.textContent=hudMap[t]||t;
-
-  const showBrush   = t==='paint'||t==='erase';
-  const showSurface = t==='paint'||t==='barrier';
-  const showBarrierSide = t==='barrier';
-  const sSection=document.getElementById('surface-section');
-  const bSection=document.getElementById('brush-section');
-  const sdSection=document.getElementById('barrier-side-section');
-  if (sSection) sSection.style.display = showSurface?'':'none';
-  if (bSection) bSection.style.display = showBrush?'':'none';
-  if (sdSection) sdSection.style.display = showBarrierSide?'':'none';
-
-  mainCanvas.style.cursor = t==='pan'?'grab':(showBrush?'none':'crosshair');
-  const ring=document.getElementById('brush-ring');
-  if (ring) ring.style.display=showBrush?'':'none';
+  mainCanvas.style.cursor = t==='pan'?'grab':(t==='paint'||t==='erase'?'none':'crosshair');
 }
 
 function setSurface(s) {
   surface=s;
-  document.querySelectorAll('.surf-btn').forEach(b=>b.classList.remove('active'));
-  const sb=document.getElementById('surf-'+s.replaceAll('_','-'));
-  if (sb) sb.classList.add('active');
   document.querySelectorAll('.so-btn').forEach(b=>b.classList.remove('active'));
   const so=document.getElementById('so-'+s);
   if (so) so.classList.add('active');
-  const dotMap={flat_kerb:'🟥',sausage:'🟨',rumble:'🟧',gravel:'🟫',sand:'🟨',grass:'🟩',armco:'⬜',tecpro:'🟦',tyrewall:'⬛'};
-  const mbDot=document.getElementById('mb-surf-dot');
-  if (mbDot) mbDot.textContent=dotMap[s]||'🔲';
 }
 
 function setBarrierSide(s) {
@@ -93,17 +58,9 @@ function setBarrierSide(s) {
 
 function updateBrush() {
   brushSize=parseInt(document.getElementById('brush-size').value);
-  document.getElementById('brush-display').textContent=brushSize;
-  updateBrushRing();
 }
 
-function updateBrushRing(sx, sy) {
-  const ring=document.getElementById('brush-ring');
-  if (!ring) return;
-  const r=brushSize*cam.zoom;
-  ring.style.width=r*2+'px'; ring.style.height=r*2+'px';
-  if (sx!==undefined){ring.style.left=sx+'px';ring.style.top=sy+'px';}
-}
+function updateBrushRing(sx, sy) {}
 
 // ═══════════════════════════════════════════════════
 // PAINT / ERASE
@@ -145,9 +102,6 @@ mainCanvas.addEventListener('mousedown', e=>handleDown(getCanvasPos(e.clientX,e.
 mainCanvas.addEventListener('mousemove', e=>{
   const pos=getCanvasPos(e.clientX,e.clientY);
   mouseWorld=screenToWorld(pos.x,pos.y);
-  const ch=document.getElementById('coords-hud');
-  if (ch) ch.textContent=`x: ${Math.round(mouseWorld.x)}  y: ${Math.round(mouseWorld.y)}`;
-  updateBrushRing(pos.x,pos.y);
   handleMove(pos);
   if (tool==='barrier'&&barrierSelStart>=0) markDirty();
 });
@@ -248,7 +202,6 @@ function handleDown(pos, isTouch) {
     if (seg>=0) {
       if (barrierSelStart<0) {
         barrierSelStart=seg;
-        document.getElementById('tool-hud').textContent=`Barrier — WP ${seg} selected · now click end point`;
         showToast(`Start: WP ${seg} — click the end waypoint`); markDirty();
       } else {
         if (seg!==barrierSelStart) {
@@ -263,7 +216,6 @@ function handleDown(pos, isTouch) {
           updateBarrierList();
         }
         barrierSelStart=-1;
-        document.getElementById('tool-hud').textContent='Barrier — click first waypoint';
         markDirty();
       }
     }
@@ -297,9 +249,7 @@ function applyZoom(factor, sx, sy) {
 }
 
 function updateZoomHUD() {
-  const pct=Math.round(cam.zoom*100)+'%';
-  const zh=document.getElementById('zoom-hud'); if (zh) zh.textContent=pct;
-  const sz=document.getElementById('stat-zoom'); if (sz) sz.textContent=pct;
+  const zh=document.getElementById('zoom-hud'); if (zh) zh.textContent=Math.round(cam.zoom*100)+'%';
 }
 
 window.addEventListener('keydown', e=>{
@@ -427,95 +377,15 @@ function analyseTrack() {
   return { minR, minRIdx, minRm, speedAtMin, undriveable, tight, issues };
 }
 
-function updateDrivabilityBadge() {
-  const el = document.getElementById('drivability-badge');
-  if (!el) return;
-  if (waypoints.length < 3) { el.style.display='none'; return; }
-
-  const a = analyseTrack();
-  el.style.display = '';
-
-  if (a.undriveable > 0) {
-    el.textContent = `⚠ ${a.undriveable} undriveable corner${a.undriveable>1?'s':''}`;
-    el.style.cssText = 'display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-family:"Barlow Condensed",sans-serif;letter-spacing:.06em;background:rgba(255,60,60,.22);color:#ff6060;border:1px solid rgba(255,60,60,.35);cursor:pointer;';
-  } else if (a.tight > 0) {
-    el.textContent = `▲ ${a.tight} tight corner${a.tight>1?'s':''}`;
-    el.style.cssText = 'display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-family:"Barlow Condensed",sans-serif;letter-spacing:.06em;background:rgba(255,180,0,.18);color:#ffb800;border:1px solid rgba(255,180,0,.3);cursor:pointer;';
-  } else {
-    el.textContent = `✓ Driveable`;
-    el.style.cssText = 'display:inline-block;padding:2px 7px;border-radius:4px;font-size:10px;font-family:"Barlow Condensed",sans-serif;letter-spacing:.06em;background:rgba(48,224,96,.15);color:#30e060;border:1px solid rgba(48,224,96,.28);cursor:pointer;';
-  }
-
-  // Click badge → alert with full breakdown
-  el.onclick = () => {
-    const a2 = analyseTrack();
-    if (!a2) return;
-    const minSpd = Math.round(a2.speedAtMin);
-    const minRStr = a2.minR === Infinity ? 'straight' : Math.round(a2.minR) + 'u (' + a2.minRm.toFixed(0) + 'm)';
-    let msg = 'DRIVABILITY CHECK\n';
-    msg += '─────────────────────────────\n';
-    msg += 'Tightest corner : R = ' + minRStr + '\n';
-    msg += 'Min corner speed: ~' + minSpd + ' km/h\n\n';
-    if (a2.undriveable > 0) msg += '! ' + a2.undriveable + ' corner(s) physically too tight\n';
-    if (a2.tight > 0)       msg += '^ ' + a2.tight + ' tight corner(s) — very slow chicane\n';
-    if (a2.undriveable === 0 && a2.tight === 0) msg += 'All corners comfortable\n';
-    msg += '\nThresholds (from your car physics):\n';
-    msg += '  Undriveable : R < 16u   (< 14m  — below min steering radius)\n';
-    msg += '  Tight       : R < 137u  (< 127m — needs braking below 130 km/h)\n';
-    msg += '  Comfortable : R >= 206u (>= 191m — can hold 140+ km/h)\n\n';
-    msg += 'Ref: oval hairpin = R60u (55.7m → ~107 km/h)';
-    alert(msg);
-  };
-}
-
 // ═══════════════════════════════════════════════════
 // WAYPOINT LIST
 // ═══════════════════════════════════════════════════
 function updateWPList() {
-  const list=document.getElementById('wp-list');
   const statWP=document.getElementById('stat-wp');
   if (statWP) statWP.textContent=waypoints.length;
-  updateDrivabilityBadge();   // ← recheck every time waypoints change
-  if (!list) return;
-  list.innerHTML='';
-  waypoints.forEach((wp,i)=>{
-    const isStart=i===startingPointIdx;
-    // Colour-code waypoints that are part of problem corners
-    const a=waypoints.length>=3?analyseTrack():null;
-    const issue=a?a.issues.find(x=>x.idx===i):null;
-    const issueCol=issue?(issue.level==='hard'?'#ff6060':'#ffb800'):null;
-    const div=document.createElement('div');
-    div.className='wp-item'+(i===selectedWP?' selected':'');
-    div.innerHTML=`<span class="wp-num" style="${isStart?'color:#00ff88':issueCol?'color:'+issueCol:''}">${isStart?'🏁':issue?(issue.level==='hard'?'⚠':i):i}</span>
-      <span class="wp-coords">${Math.round(wp.x)}, ${Math.round(wp.y)}</span>
-      <span class="wp-del" onclick="event.stopPropagation();deleteWP(${i})">✕</span>`;
-    div.addEventListener('click',()=>{selectedWP=i;updateWPList();markDirty();});
-    list.appendChild(div);
-  });
 }
 
-function updateBarrierList() {
-  const section=document.getElementById('barrier-list-section');
-  const list   =document.getElementById('barrier-list');
-  const countEl=document.getElementById('barrier-count');
-  if (!section||!list) return;
-  if (barrierSegments.length===0){section.style.display='none';return;}
-  section.style.display='';
-  if (countEl) countEl.textContent=barrierSegments.length;
-  list.innerHTML='';
-  barrierSegments.forEach((b,i)=>{
-    const cfg=SURFACES[b.surface];
-    const div=document.createElement('div');
-    div.style.cssText='display:flex;align-items:center;gap:6px;padding:4px 0;border-bottom:1px solid rgba(255,255,255,0.05);';
-    const sideLabel=b.side==='both'||!b.side?'both':(b.side==='left'||b.side===-1?'left':'right');
-    div.innerHTML=`<div style="width:10px;height:10px;border-radius:2px;flex-shrink:0;background:${cfg?cfg.dot:'#aaa'};"></div>
-      <span style="font-family:'Barlow Condensed',sans-serif;font-size:11px;color:var(--text2);flex:1;">${cfg?cfg.label:b.surface} · ${sideLabel} · WP${b.from}→${b.to}</span>
-      <button onclick="editBarrierSide(${i})" style="font-size:10px;background:rgba(255,255,255,0.07);border:1px solid #333;border-radius:3px;color:#a78bfa;cursor:pointer;padding:2px 5px;">side</button>
-      <span onclick="deleteBarrier(${i})" style="font-size:10px;color:var(--text3);cursor:pointer;padding:2px 6px;"
-        onmouseover="this.style.color='#ff4747'" onmouseout="this.style.color='var(--text3)'">✕</span>`;
-    list.appendChild(div);
-  });
-}
+function updateBarrierList() {}
 
 function editBarrierSide(i) {
   const b=barrierSegments[i];
@@ -576,10 +446,3 @@ function applySimplify() {
   closeSimplify();
 }
 
-// ── Stubs for removed UI elements ──
-function updateBrush() {}
-function updateBrushRing() {}
-function closeSurfOverlay() {}
-function toggleSurfOverlay() {}
-function undoPaint() {}
-function mobileDeleteLast() { if(waypoints.length>0){waypoints.pop();updateWPList();markDirty();} }

@@ -33,6 +33,8 @@ let _bgCamKey        = '';
 let _wpCacheKey      = '';
 let _paintSortKey    = -1;
 let _orderedPaintCache = [];
+let _analyseCacheKey = '';
+let _analyseCache    = null;
 
 // ═══════════════════════════════════════════════════
 // RESIZE
@@ -179,6 +181,8 @@ function simplifyWaypoints(eps) {
 
 function _invalidateSplineCache() {
   _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
+  _analyseCacheKey = '';
+  _analyseCache = null;
 }
 
 function getCachedSpline(segs) {
@@ -277,11 +281,14 @@ function render() {
   }
 
   // ── Waypoint dots (with drivability highlight) ──
-  // Build issue map once per render — O(n), not per-dot
+  // analyseTrack is cached by wpKey — only recomputes when waypoints change
   const _driveIssues = new Map();
   if (typeof analyseTrack === 'function' && waypoints.length >= 3) {
-    const _da = analyseTrack();
-    if (_da) _da.issues.forEach(iss => _driveIssues.set(iss.idx, iss.level));
+    if (wpKey !== _analyseCacheKey) {
+      _analyseCacheKey = wpKey;
+      _analyseCache = analyseTrack();
+    }
+    if (_analyseCache) _analyseCache.issues.forEach(iss => _driveIssues.set(iss.idx, iss.level));
   }
 
   for (let i = 0; i < waypoints.length; i++) {

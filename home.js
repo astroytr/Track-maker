@@ -29,7 +29,6 @@ function saveCurrentTrack() {
     barrierSegments: barrierSegments.map(b => ({ ...b })),
     startingPointIdx,
     nPerSeg:  parseInt(document.getElementById('nperseg').value) || 12,
-    barriers: document.getElementById('barriers-toggle').checked,
     savedAt:  Date.now()
   };
   localStorage.setItem(storageKey, JSON.stringify(data));
@@ -49,13 +48,7 @@ function loadStoredTrack(storageKey) {
     selectedWP       = -1;
     document.getElementById('track-name').value = data.name || 'MY CIRCUIT';
     document.getElementById('track-sub').value  = data.sub  || '';
-    if (data.nPerSeg) {
-      document.getElementById('nperseg').value = data.nPerSeg;
-      document.getElementById('seg-val').textContent = data.nPerSeg;
-    }
-    if (data.barriers !== undefined) {
-      document.getElementById('barriers-toggle').checked = data.barriers;
-    }
+    if (data.nPerSeg) document.getElementById('nperseg').value = data.nPerSeg;
     updateWPList();
     updateBarrierList();
     // Re-generate barriers if the loaded track has none (e.g. freshly imported)
