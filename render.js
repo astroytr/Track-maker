@@ -185,41 +185,77 @@ function getCachedSpline(segs) {
 }
 
 
-function render() {
-  if (typeof preview3dActive !== 'undefined' && preview3dActive) return;
-  _invalidateSplineCache(); // reset cache — rebuilt once per frame, shared by all draw calls
-  const W = mainCanvas.width, H = mainCanvas.height;
-
-  // ── Background — solid grass green ──
+// ── Background grid cache — only redrawn when camera or canvas size changes ──
+let _bgCamKey = '';
+function _redrawBg(W, H) {
   bgCtx.clearRect(0, 0, W, H);
   bgCtx.fillStyle = '#2d5a1b';
   bgCtx.fillRect(0, 0, W, H);
-  // Subtle texture grid on top (very faint)
-  bgCtx.strokeStyle = 'rgba(0,0,0,0.08)';
-  bgCtx.lineWidth = 1;
+  // Single-path grid — far cheaper than one beginPath per line
   const gs = 50 * cam.zoom;
   const ox = (-cam.x * cam.zoom + W / 2) % gs;
   const oy = (-cam.y * cam.zoom + H / 2) % gs;
-  for (let x=ox; x<W; x+=gs) { bgCtx.beginPath(); bgCtx.moveTo(x,0); bgCtx.lineTo(x,H); bgCtx.stroke(); }
-  for (let y=oy; y<H; y+=gs) { bgCtx.beginPath(); bgCtx.moveTo(0,y); bgCtx.lineTo(W,y); bgCtx.stroke(); }
+  bgCtx.beginPath();
+  for (let x = ox; x < W; x += gs) { bgCtx.moveTo(x, 0); bgCtx.lineTo(x, H); }
+  for (let y = oy; y < H; y += gs) { bgCtx.moveTo(0, y); bgCtx.lineTo(W, y); }
+  bgCtx.strokeStyle = 'rgba(0,0,0,0.08)';
+  bgCtx.lineWidth = 1;
+  bgCtx.stroke();
+}
 
-  // ── Background image ──
-  if (bgImage) {
-    const s = worldToScreen(bgImageBounds.x, bgImageBounds.y);
-    bgCtx.globalAlpha = 0.55;
-    bgCtx.drawImage(bgImage, s.x, s.y, bgImageBounds.w * cam.zoom, bgImageBounds.h * cam.zoom);
-    bgCtx.globalAlpha = 1;
+// ── Spline cache key — invalidate only when waypoints actually change ──
+let _wpCacheKey = '';
+function _getWpKey() {
+  // cheap hash: count + sum of x+y of first/mid/last waypoint
+  const n = waypoints.length;
+  if (n === 0) return '0';
+  const s = waypoints[0].x + waypoints[0].y +
+            waypoints[Math.floor(n/2)].x + waypoints[Math.floor(n/2)].y +
+            waypoints[n-1].x + waypoints[n-1].y;
+  return `${n}_${s}`;
+}
+
+// ── Paint layer sort cache — only re-sort when paintLayers changes ──
+let _paintSortKey = -1;
+let _orderedPaintCache = [];
+
+function render() {
+  if (typeof preview3dActive !== 'undefined' && preview3dActive) return;
+  const W = mainCanvas.width, H = mainCanvas.height;
+
+  // Only redraw background when camera or size actually changed
+  const bgKey = `${cam.x.toFixed(2)}_${cam.y.toFixed(2)}_${cam.zoom.toFixed(4)}_${W}_${H}`;
+  if (bgKey !== _bgCamKey) {
+    _bgCamKey = bgKey;
+    _redrawBg(W, H);
+    // Background image redrawn too
+    if (bgImage) {
+      const s = worldToScreen(bgImageBounds.x, bgImageBounds.y);
+      bgCtx.globalAlpha = 0.55;
+      bgCtx.drawImage(bgImage, s.x, s.y, bgImageBounds.w * cam.zoom, bgImageBounds.h * cam.zoom);
+      bgCtx.globalAlpha = 1;
+    }
+  }
+
+  // Only invalidate spline cache when waypoints actually change
+  const wpKey = _getWpKey();
+  if (wpKey !== _wpCacheKey) {
+    _wpCacheKey = wpKey;
+    _invalidateSplineCache();
   }
 
   ctx.clearRect(0, 0, W, H);
 
-  // ── Paint layers ──
-  const orderedPaint = paintLayers.slice().sort((a,b) => {
-    const ar = a.rank !== undefined ? a.rank : (SURFACE_LANES[a.surface] ? SURFACE_LANES[a.surface].inner : 99);
-    const br = b.rank !== undefined ? b.rank : (SURFACE_LANES[b.surface] ? SURFACE_LANES[b.surface].inner : 99);
-    return br - ar;
-  });
-  for (const p of orderedPaint) {
+  // ── Paint layers — only re-sort when count changes ──
+  if (paintLayers.length !== _paintSortKey) {
+    _paintSortKey = paintLayers.length;
+    _orderedPaintCache = paintLayers.slice().sort((a, b) => {
+      const ar = a.rank !== undefined ? a.rank : (SURFACE_LANES[a.surface] ? SURFACE_LANES[a.surface].inner : 99);
+      const br = b.rank !== undefined ? b.rank : (SURFACE_LANES[b.surface] ? SURFACE_LANES[b.surface].inner : 99);
+      return br - ar;
+    });
+  }
+  for (const p of _orderedPaintCache) {
     const s = worldToScreen(p.x, p.y);
     ctx.beginPath();
     ctx.arc(s.x, s.y, p.r * cam.zoom, 0, Math.PI * 2);
@@ -233,8 +269,9 @@ function render() {
   // 3. Track road (asphalt + kerb chevrons) — always on top of runoff
   // 4. Centreline dashes
   if (waypoints.length >= 2) {
-    drawAutoSurfaces();      // auto: TecPro straights, gravel corners, rumble, sausage, tyrewall
-    drawBarrierSegments();   // user-placed segments paint on top of auto surfaces
+    drawAutoSurfaces();
+    drawBarrierSegments();
+    drawBarrierIntersectionFill();
     drawTrackRoad();
     drawCentreline();
   }
@@ -250,21 +287,40 @@ function render() {
   for (let i = 0; i < waypoints.length; i++) {
     const wp = waypoints[i];
     const s  = worldToScreen(wp.x, wp.y);
-    const isStart      = i === startingPointIdx;
-    const isSel        = i === selectedWP;
-    const isBarrierSel = tool === 'barrier' && i === barrierSelStart;
-    const issueLevel   = _driveIssues.get(i);
-    const r = isBarrierSel ? 8 : (isSel ? 7 : (isStart ? 7 : 4));
+    const isStart       = i === startingPointIdx;
+    const isSel         = i === selectedWP;
+    const isBarrierSel  = tool === 'barrier' && i === barrierSelStart;
+    const issueLevel    = _driveIssues.get(i);  // 'hard' | 'tight' | undefined
+
+    const r = isBarrierSel ? 11 : (isSel ? 9 : (isStart ? 8 : (issueLevel ? 7 : 5)));
+
+    // Outer glow ring for problem corners
+    if (issueLevel && !isStart && !isBarrierSel) {
+      ctx.beginPath();
+      ctx.arc(s.x, s.y, r + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = issueLevel === 'hard' ? 'rgba(255,60,60,0.55)' : 'rgba(255,180,0,0.45)';
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    }
 
     ctx.beginPath();
     ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = isBarrierSel    ? '#ff8c00'
-                  : isStart         ? '#00ff88'
-                  : isSel           ? '#a78bfa'
+    // Fill: barrier-sel=orange, start=green, selected=purple, hard=red, tight=amber, normal=yellow
+    ctx.fillStyle = isBarrierSel ? '#ff8c00'
+                  : isStart      ? '#00ff88'
+                  : isSel        ? '#a78bfa'
                   : issueLevel === 'hard'  ? '#ff4040'
                   : issueLevel === 'tight' ? '#ffb800'
                   : '#e8ff47';
     ctx.fill();
+    ctx.strokeStyle = isBarrierSel ? '#fff' : '#000';
+    ctx.lineWidth   = isBarrierSel ? 2.5 : 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#000';
+    ctx.font = `bold ${Math.max(7, Math.min(10, cam.zoom * 9))}px "Barlow Condensed", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(isStart ? 'SF' : i, s.x, s.y);
   }
 }
 
@@ -686,30 +742,115 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       break;
     }
 
-    // ── ARMCO — solid silver strip ──────────────────────────────────
+    // ── ARMCO — W-beam guardrail, two rails with corrugation ticks ──
     case 'armco': {
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      ctx.lineWidth = w;
-      ctx.strokeStyle = 'rgba(180,190,200,1.0)';
+      // Shadow
+      ctx.lineWidth = w + 4;
+      ctx.strokeStyle = 'rgba(20,20,20,0.55)';
       _polyPath(ctx, poly); ctx.stroke();
+      // Two W-beam rail bodies (draw as two parallel thick stripes)
+      for (const [col, lw] of [['rgba(160,180,200,1.0)', w], ['rgba(235,245,255,0.90)', Math.max(2, w*0.42)]]) {
+        ctx.lineWidth = lw;
+        ctx.strokeStyle = col;
+        _polyPath(ctx, poly); ctx.stroke();
+      }
+      // Corrugation ticks — denser and taller than before to suggest W-profile
+      const tickSpacing = Math.max(3, 5 * zoom);
+      const tickH = Math.max(2.5, w * 0.75);
+      ctx.strokeStyle = 'rgba(60,80,100,0.90)';
+      ctx.lineWidth = Math.max(1.5, zoom * 1.2);
+      ctx.lineCap = 'butt';
+      for (let d = 0; d < total; d += tickSpacing) {
+        const p = _polyAtDist(poly, arcs, d);
+        const perp = { x: -p.ty, y: p.tx };
+        ctx.beginPath();
+        ctx.moveTo(p.x - perp.x * tickH, p.y - perp.y * tickH);
+        ctx.lineTo(p.x + perp.x * tickH, p.y + perp.y * tickH);
+        ctx.stroke();
+      }
       break;
     }
 
-    // ── TECPRO — solid blue strip ───────────────────────────────────
+    // ── TECPRO — vivid blue modular barrier blocks ──────────────────
     case 'tecpro': {
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
+      const segLen = Math.max(6, 14 * zoom);
+      const gap    = Math.max(1.5, 2 * zoom);
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      ctx.lineWidth = w;
-      ctx.strokeStyle = 'rgba(20,70,220,1.0)';
-      _polyPath(ctx, poly); ctx.stroke();
+      let d = 0;
+      while (d < total) {
+        const end = Math.min(d + segLen - gap, total);
+        const steps = 4;
+        // Soft shadow outline
+        ctx.lineWidth = w + 1;
+        ctx.strokeStyle = 'rgba(10,20,80,0.35)';
+        ctx.beginPath();
+        for (let s = 0; s <= steps; s++) {
+          const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
+          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+        // Main blue body
+        ctx.lineWidth = w;
+        ctx.strokeStyle = 'rgba(20,70,220,1.0)';
+        ctx.beginPath();
+        for (let s = 0; s <= steps; s++) {
+          const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
+          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+        // Light face highlight
+        ctx.lineWidth = Math.max(1.5, w * 0.35);
+        ctx.strokeStyle = 'rgba(140,200,255,0.70)';
+        ctx.beginPath();
+        for (let s = 0; s <= steps; s++) {
+          const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
+          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
+        }
+        ctx.stroke();
+        d += segLen;
+      }
+      ctx.lineCap = 'butt';
       break;
     }
 
-    // ── TYRE WALL — solid dark strip ────────────────────────────────
+    // ── TYRE WALL — thick black stack with white stripe and tyre circles
     case 'tyrewall': {
+      // Dark shadow
+      ctx.lineWidth = w + 3;
+      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      ctx.lineWidth = w;
-      ctx.strokeStyle = 'rgba(30,30,30,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
+      // Main black tyre body
+      ctx.lineWidth = w;
+      ctx.strokeStyle = 'rgba(22,22,22,1.0)';
+      _polyPath(ctx, poly); ctx.stroke();
+      // Red safety stripe (standard tyre wall marking)
+      ctx.lineWidth = Math.max(2, w * 0.32);
+      ctx.strokeStyle = 'rgba(220,30,30,0.90)';
+      _polyPath(ctx, poly); ctx.stroke();
+      // White band on red stripe
+      ctx.lineWidth = Math.max(1, w * 0.12);
+      ctx.strokeStyle = 'rgba(255,255,255,0.70)';
+      _polyPath(ctx, poly); ctx.stroke();
+      // Individual tyre outlines
+      const arcs = _arcLengths(poly);
+      const total = arcs[arcs.length - 1];
+      const tyreSpacing = Math.max(5, w * 1.1);
+      ctx.strokeStyle = 'rgba(60,60,60,0.80)';
+      ctx.lineWidth = Math.max(1, 1.0 * zoom);
+      ctx.lineCap = 'butt';
+      for (let d = tyreSpacing * 0.5; d < total; d += tyreSpacing) {
+        const p = _polyAtDist(poly, arcs, d);
+        const r = Math.max(1.5, w * 0.44);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+        ctx.stroke();
+      }
       break;
     }
 
@@ -1191,70 +1332,96 @@ function drawBarrierSegments() {
 }
 
 // ═══════════════════════════════════════════════════
-// BARRIER INTERSECTION FILL
+// BARRIER INTERSECTION FILL — world space
+//
+// Works entirely in world coordinates so it's stable
+// regardless of pan/zoom. Only converts to screen at
+// the final draw step.
 //
 // Algorithm:
-//   1. Build screen-space polylines for every hard barrier (armco/tecpro/tyrewall)
-//      on each side, using the same offset as drawBarrierSegments.
-//   2. Test every segment pair across different polys for intersection (2D line test).
-//   3. For each intersecting poly-pair, find the TWO crossing points.
-//   4. Compute the midpoint between them and the two parent centreline points
-//      nearest each intersection → gives us the equidistant spine between
-//      the two roads.
-//   5. Draw a TecPro strip along that spine, width = half the gap between
-//      the two intersection points so it fills the zone evenly.
+//   1. Build world-space offset polylines for every
+//      hard barrier segment (armco/tecpro/tyrewall).
+//   2. Test every pair for segment–segment intersections.
+//   3. For each pair with exactly 2 crossing points,
+//      build the equidistant spine: at each step along
+//      ix1→ix2, find nearest pt on each poly and average
+//      them → true midline between both roads.
+//   4. Convert spine to screen and stroke solid TecPro.
 // ═══════════════════════════════════════════════════
+function _buildWorldOffsetPoly(pts, sideNum, offset) {
+  // Identical normal logic to buildOffsetScreenPolyline but stays in world space
+  const len = pts.length;
+  if (len < 2) return [];
+  const raw = pts.map((p, i) => {
+    const prev = pts[Math.max(0, i-1)], next = pts[Math.min(len-1, i+1)];
+    const ax = i===0 ? pts[1].pt.x-pts[0].pt.x : i===len-1 ? pts[len-1].pt.x-pts[len-2].pt.x : next.pt.x-prev.pt.x;
+    const ay = i===0 ? pts[1].pt.y-pts[0].pt.y : i===len-1 ? pts[len-1].pt.y-pts[len-2].pt.y : next.pt.y-prev.pt.y;
+    const sl = Math.sqrt(ax*ax+ay*ay)||1;
+    return { px: -ay/sl, py: ax/sl };
+  });
+  let area = 0;
+  for (let i = 0; i < len-1; i++) area += pts[i].pt.x*pts[i+1].pt.y - pts[i+1].pt.x*pts[i].pt.y;
+  const ws = area >= 0 ? -1 : 1;
+  const normals = new Array(len);
+  normals[0] = { px: raw[0].px*ws, py: raw[0].py*ws };
+  for (let i = 1; i < len; i++) {
+    const dot = raw[i].px*normals[i-1].px + raw[i].py*normals[i-1].py;
+    normals[i] = { px: raw[i].px*(dot>=0?1:-1), py: raw[i].py*(dot>=0?1:-1) };
+  }
+  return pts.map((p, i) => ({
+    x: p.pt.x + normals[i].px * sideNum * offset,
+    y: p.pt.y + normals[i].py * sideNum * offset,
+  }));
+}
+
 function drawBarrierIntersectionFill() {
-  if (waypoints.length < 3) return;
+  if (waypoints.length < 3 || !barrierSegments.length) return;
   const splinePts = getCachedSpline(20);
-  const N = splinePts.length;
-  if (N < 4) return;
+  if (splinePts.length < 4) return;
 
   const HARD = new Set(['armco', 'tecpro', 'tyrewall']);
 
-  // ── 1. Build all hard-barrier screen polys ──────────────────────
-  const barrierPolys = [];
+  // 1. Build world-space polys for all hard barrier segments
+  const worldPolys = [];
   barrierSegments.forEach(seg => {
     if (!HARD.has(seg.surface)) return;
-    const sides = (seg.side === 'both' || !seg.side) ? [-1, 1]
-                : [(seg.side === 'left' || seg.side === -1) ? -1 : 1];
+    const sides = (seg.side==='both'||!seg.side) ? [-1,1]
+                : [(seg.side==='left'||seg.side===-1)?-1:1];
     sides.forEach(sideNum => {
-      const pts  = getSplineSegmentPoints(splinePts, seg.from, seg.to);
+      const pts = getSplineSegmentPoints(splinePts, seg.from, seg.to);
       if (pts.length < 2) return;
-      const lane = getSurfaceLane(seg.surface, seg.lane || 0);
-      const poly = buildOffsetScreenPolyline(pts, sideNum, lane.center);
-      if (poly.length >= 2) barrierPolys.push({ poly, sideNum, splinePts: pts });
+      const lane = getSurfaceLane(seg.surface, seg.lane||0);
+      const poly = _buildWorldOffsetPoly(pts, sideNum, lane.center);
+      if (poly.length >= 2) worldPolys.push(poly);
     });
   });
 
-  if (barrierPolys.length < 2) return;
+  if (worldPolys.length < 2) return;
 
-  // ── 2. Line-segment intersection (2D) ────────────────────────────
-  function seg2DIntersect(p1, p2, p3, p4) {
-    const d1x = p2.x-p1.x, d1y = p2.y-p1.y;
-    const d2x = p4.x-p3.x, d2y = p4.y-p3.y;
-    const denom = d1x*d2y - d1y*d2x;
-    if (Math.abs(denom) < 1e-9) return null;
-    const t = ((p3.x-p1.x)*d2y - (p3.y-p1.y)*d2x) / denom;
-    const u = ((p3.x-p1.x)*d1y - (p3.y-p1.y)*d1x) / denom;
-    if (t < 0 || t > 1 || u < 0 || u > 1) return null;
-    return { x: p1.x + t*d1x, y: p1.y + t*d1y };
+  // 2. Segment–segment intersection in world space
+  function intersect2D(p1, p2, p3, p4) {
+    const d1x=p2.x-p1.x, d1y=p2.y-p1.y, d2x=p4.x-p3.x, d2y=p4.y-p3.y;
+    const den = d1x*d2y - d1y*d2x;
+    if (Math.abs(den) < 1e-10) return null;
+    const t = ((p3.x-p1.x)*d2y - (p3.y-p1.y)*d2x) / den;
+    const u = ((p3.x-p1.x)*d1y - (p3.y-p1.y)*d1x) / den;
+    if (t<0||t>1||u<0||u>1) return null;
+    return { x: p1.x+t*d1x, y: p1.y+t*d1y };
   }
 
-  // ── 3. Find intersections between every distinct poly pair ────────
-  // Group hits by poly-pair key, keep first two per pair
+  // 3. Collect up to 2 hits per poly pair
   const pairHits = new Map();
-  for (let a = 0; a < barrierPolys.length; a++) {
-    for (let b = a + 1; b < barrierPolys.length; b++) {
-      const pa = barrierPolys[a].poly;
-      const pb = barrierPolys[b].poly;
+  for (let a = 0; a < worldPolys.length; a++) {
+    for (let b = a+1; b < worldPolys.length; b++) {
+      const pa = worldPolys[a], pb = worldPolys[b];
       const key = `${a}_${b}`;
-      for (let i = 0; i < pa.length - 1 && (pairHits.get(key)||[]).length < 2; i++) {
-        for (let j = 0; j < pb.length - 1; j++) {
-          const hit = seg2DIntersect(pa[i], pa[i+1], pb[j], pb[j+1]);
+      for (let i = 0; i < pa.length-1; i++) {
+        if ((pairHits.get(key)||[]).length >= 2) break;
+        for (let j = 0; j < pb.length-1; j++) {
+          const hit = intersect2D(pa[i],pa[i+1],pb[j],pb[j+1]);
           if (hit) {
             if (!pairHits.has(key)) pairHits.set(key, []);
-            pairHits.get(key).push({ pt: hit, segA: i, segB: j, a, b });
+            pairHits.get(key).push({ pt: hit, a, b });
             if (pairHits.get(key).length >= 2) break;
           }
         }
@@ -1262,23 +1429,13 @@ function drawBarrierIntersectionFill() {
     }
   }
 
-  const tecproLane = getSurfaceLane('tecpro', 0);
-
   pairHits.forEach(hits => {
     if (hits.length < 2) return;
+    const ix1 = hits[0].pt, ix2 = hits[hits.length-1].pt;
+    const pa = worldPolys[hits[0].a], pb = worldPolys[hits[0].b];
 
-    const ix1 = hits[0], ix2 = hits[hits.length - 1];
-    const p1 = ix1.pt, p2 = ix2.pt;
-
-    // ── 4. Build equidistant spine between the two roads ────────────
-    // The spine runs from ix1 → ix2.
-    // At each step, find the world-space point that is equidistant from
-    // both barrier polylines by averaging the nearest points on each poly.
-    const SPINE_STEPS = 12;
-    const polyA = barrierPolys[ix1.a].poly;
-    const polyB = barrierPolys[ix1.b].poly;
-
-    function nearestPolyPt(poly, qx, qy) {
+    // 4. Build equidistant spine in world space
+    function nearestWPt(poly, qx, qy) {
       let best = poly[0], bestD = Infinity;
       for (const p of poly) {
         const d = (p.x-qx)**2 + (p.y-qy)**2;
@@ -1287,30 +1444,30 @@ function drawBarrierIntersectionFill() {
       return best;
     }
 
+    const STEPS = 14;
     const spine = [];
-    for (let s = 0; s <= SPINE_STEPS; s++) {
-      const f  = s / SPINE_STEPS;
-      const qx = p1.x + (p2.x - p1.x) * f;
-      const qy = p1.y + (p2.y - p1.y) * f;
-      // Average of nearest point on each barrier poly = equidistant midline
-      const na = nearestPolyPt(polyA, qx, qy);
-      const nb = nearestPolyPt(polyB, qx, qy);
-      spine.push({ x: (na.x + nb.x) * 0.5, y: (na.y + nb.y) * 0.5 });
+    for (let s = 0; s <= STEPS; s++) {
+      const f  = s / STEPS;
+      const qx = ix1.x + (ix2.x-ix1.x)*f;
+      const qy = ix1.y + (ix2.y-ix1.y)*f;
+      const na = nearestWPt(pa, qx, qy);
+      const nb = nearestWPt(pb, qx, qy);
+      spine.push({ x: (na.x+nb.x)*0.5, y: (na.y+nb.y)*0.5 });
     }
 
-    // ── 5. Draw TecPro along the spine ──────────────────────────────
-    // Width = distance between the two intersection points / SPINE_STEPS
-    // This fills the gap evenly without overshooting either road.
-    const gapDist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-    const fillW   = Math.max(4, gapDist / SPINE_STEPS * 1.4);
-    const fillLane = { ...tecproLane, width: fillW };
+    // 5. Convert to screen and stroke
+    const gapW = Math.hypot(ix2.x-ix1.x, ix2.y-ix1.y);
+    const strokeW = Math.max(4, gapW * cam.zoom * 0.18);
 
     ctx.save();
-    ctx.lineWidth = fillW;
+    ctx.lineWidth = strokeW;
     ctx.strokeStyle = 'rgba(20,70,220,1.0)';
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.beginPath();
-    spine.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    spine.forEach((p, i) => {
+      const s = worldToScreen(p.x, p.y);
+      i === 0 ? ctx.moveTo(s.x, s.y) : ctx.lineTo(s.x, s.y);
+    });
     ctx.stroke();
     ctx.restore();
   });
