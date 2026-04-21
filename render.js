@@ -383,49 +383,28 @@ function drawTrackRoad() {
 
 
 
-  // ── Flat kerb — full circuit, both sides, at track edge ──
-  // Red/white alternating band running the entire circuit on both sides.
-  // Drawn AFTER asphalt so it sits just outside the asphalt edge.
+  // ── Flat kerb — full circuit, both sides, batched dashed strokes ──
   {
     const flatKerbLane = getSurfaceLane('flat_kerb', 0);
-    let fkDist = 0;
-    for (let i = 0; i < spl - 1; i++) {
-      [-1, 1].forEach(side => {
-        const pa = buildOffsetScreenPolyline([splinePts[i], splinePts[i + 1]], side, flatKerbLane.center);
-        if (pa.length < 2) return;
-        const segLen = Math.hypot(pa[1].x - pa[0].x, pa[1].y - pa[0].y);
-        fkDist += segLen;
-        const phase = Math.floor(fkDist / Math.max(8, 14 * cam.zoom));
-        ctx.strokeStyle = phase % 2 === 0 ? 'rgba(215,25,25,0.92)' : 'rgba(245,245,245,0.92)';
-        ctx.lineWidth = Math.max(2, flatKerbLane.width * cam.zoom);
-        ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
-        ctx.beginPath(); ctx.moveTo(pa[0].x, pa[0].y); ctx.lineTo(pa[1].x, pa[1].y); ctx.stroke();
-      });
-    }
+    const kerbOffset = flatKerbLane.center;
+    const dashLen = Math.max(8, 14 * cam.zoom);
+    ctx.lineWidth = Math.max(2, flatKerbLane.width * cam.zoom);
+    ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+    [-1, 1].forEach(side => {
+      const poly = buildOffsetScreenPolyline(splinePts, side, kerbOffset);
+      ctx.setLineDash([dashLen, dashLen]);
+      ctx.lineDashOffset = 0;
+      ctx.strokeStyle = 'rgba(215,25,25,0.92)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineDashOffset = dashLen;
+      ctx.strokeStyle = 'rgba(245,245,245,0.92)';
+      _polyPath(ctx, poly); ctx.stroke();
+    });
+    ctx.setLineDash([]); ctx.lineDashOffset = 0;
   }
 
-  // ── Inside kerbs — small red/white painted kerb on inside of corners ──
-  // Real circuits have kerbs on BOTH sides; inside kerb is narrower/flatter
-  const insideKerbW = Math.max(1.5, kerbW * 0.7);
-  const insideOffset = TRACK_HALF_WIDTH - 1.2; // just inside track edge
-  let dist2 = 0;
-  for (let i = 1; i < spl; i++) {
-    if (!inCornerRoad[i]) { dist2 += 2; continue; }
-    const side = -cornerSign[i]; // inside = opposite of turn direction
-    const prev = splinePts[(i-1+spl)%spl], curr = splinePts[i];
-    const pa = buildOffsetScreenPolyline([prev, curr], side, insideOffset);
-    if (pa.length < 2) continue;
-    dist2 += Math.hypot(pa[1].x-pa[0].x, pa[1].y-pa[0].y);
-    const phase = Math.floor(dist2 / 12);
-    ctx.strokeStyle = phase%2===0 ? 'rgba(210,20,20,0.90)' : 'rgba(240,240,240,0.90)';
-    ctx.lineWidth = insideKerbW;
-    ctx.lineCap = 'butt';
-    ctx.beginPath(); ctx.moveTo(pa[0].x,pa[0].y); ctx.lineTo(pa[1].x,pa[1].y); ctx.stroke();
-  }
-
-  // ── Braking markers — coloured boards on outside before heavy braking corners ──
-  // 300m / 200m / 100m boards; appear on outside of track at straight→corner transitions
-  if (cam.zoom > 0.4) {
+  // ── Braking markers — only at zoom > 0.8 ──
+  if (cam.zoom > 0.8) {
     const markerColors = ['#ff2222','#ffdd00','#ffffff']; // 300 / 200 / 100
     const markerDists  = [24, 16, 8]; // in spline pts (~300/200/100m equivalent)
     for (let i = 1; i < spl; i++) {
@@ -589,47 +568,34 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
 
   switch (surface) {
 
-    // ── FLAT KERB — bold alternating red/white blocks ───────────────
+    // ── FLAT KERB — alternating red/white via two dash passes ───────────────
     case 'flat_kerb': {
-      const arcs = _arcLengths(poly);
-      const total = arcs[arcs.length - 1];
-      const blockLen = Math.max(5, 12 * zoom);
-      let dist = 0, block = 0;
+      // Two overlapping dashed strokes — far cheaper than per-segment beginPath
+      const dashLen = Math.max(5, 12 * zoom);
       ctx.lineWidth = w;
-      while (dist < total) {
-        const end = Math.min(dist + blockLen, total);
-        const steps = 4;
-        ctx.beginPath();
-        for (let s = 0; s <= steps; s++) {
-          const p = _polyAtDist(poly, arcs, dist + (end - dist) * s / steps);
-          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-        }
-        ctx.strokeStyle = block % 2 === 0 ? 'rgba(220,25,25,1.0)' : 'rgba(252,252,252,1.0)';
-        ctx.stroke();
-        dist = end; block++;
-      }
+      ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+      ctx.setLineDash([dashLen, dashLen]);
+      ctx.strokeStyle = 'rgba(220,25,25,1.0)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineDashOffset = dashLen;
+      ctx.strokeStyle = 'rgba(252,252,252,1.0)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.setLineDash([]); ctx.lineDashOffset = 0;
       break;
     }
 
-    // ── RUMBLE STRIP — vivid orange/white ──────────────────────────
+    // ── RUMBLE STRIP — vivid orange/white via dash passes ──────────────────
     case 'rumble': {
-      const arcs = _arcLengths(poly);
-      const total = arcs[arcs.length - 1];
-      const blockLen = Math.max(4, 8 * zoom);
-      let dist = 0, block = 0;
+      const dashLen = Math.max(4, 8 * zoom);
       ctx.lineWidth = w;
-      while (dist < total) {
-        const end = Math.min(dist + blockLen, total);
-        const steps = 3;
-        ctx.beginPath();
-        for (let s = 0; s <= steps; s++) {
-          const p = _polyAtDist(poly, arcs, dist + (end - dist) * s / steps);
-          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-        }
-        ctx.strokeStyle = block % 2 === 0 ? 'rgba(240,100,0,1.0)' : 'rgba(248,248,248,1.0)';
-        ctx.stroke();
-        dist = end; block++;
-      }
+      ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
+      ctx.setLineDash([dashLen, dashLen]);
+      ctx.strokeStyle = 'rgba(240,100,0,1.0)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineDashOffset = dashLen;
+      ctx.strokeStyle = 'rgba(248,248,248,1.0)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.setLineDash([]); ctx.lineDashOffset = 0;
       break;
     }
 
@@ -652,77 +618,29 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       break;
     }
 
-    // ── GRAVEL — wide tan/brown filled trap with stipple ──────────
+    // ── GRAVEL — solid tan strip (no stipple for perf) ──────────
     case 'gravel': {
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      // Soft outer halo
-      ctx.lineWidth = w + 6 * zoom;
-      ctx.strokeStyle = 'rgba(145,128,95,0.25)';
-      _polyPath(ctx, poly); ctx.stroke();
-      // Solid filled base
       ctx.lineWidth = w;
       ctx.strokeStyle = 'rgba(168,152,118,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
-      // Inner depth band
-      ctx.lineWidth = Math.max(2, w * 0.55);
-      ctx.strokeStyle = 'rgba(140,124,92,0.70)';
+      ctx.lineWidth = Math.max(2, w * 0.45);
+      ctx.strokeStyle = 'rgba(140,124,92,0.60)';
       _polyPath(ctx, poly); ctx.stroke();
-      // Stipple across full width
-      const arcs = _arcLengths(poly);
-      const total = arcs[arcs.length - 1];
-      const spacing = Math.max(3, 5 * zoom);
-      const halfW = w * 0.46;
-      for (let d = spacing * 0.3; d < total; d += spacing) {
-        const p = _polyAtDist(poly, arcs, d);
-        const perp = { x: -p.ty, y: p.tx };
-        for (let row = -2; row <= 2; row++) {
-          const off = row * halfW * 0.44 + Math.sin(d * 2.1 + row) * halfW * 0.15;
-          const r = Math.max(1, (1.3 + Math.sin(d * 3.7 + row) * 0.4) * zoom);
-          const alpha = 0.45 + Math.sin(d * 1.9 + row * 1.3) * 0.20;
-          ctx.fillStyle = 'rgba(110,92,65,' + alpha + ')';
-          ctx.beginPath();
-          ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
       ctx.lineCap = 'butt';
       break;
     }
 
-    // ── SAND — wide warm-yellow filled trap with fine grain ────────
+    // ── SAND — solid warm-yellow strip (no stipple for perf) ────────
     case 'sand': {
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
       const sandW = Math.max(18, w);
-      // Soft outer halo
-      ctx.lineWidth = sandW + 6 * zoom;
-      ctx.strokeStyle = 'rgba(195,175,100,0.22)';
-      _polyPath(ctx, poly); ctx.stroke();
-      // Solid filled base — full runoff width
       ctx.lineWidth = sandW;
       ctx.strokeStyle = 'rgba(232,210,138,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
-      // Subtle inner shadow band
-      ctx.lineWidth = Math.max(4, sandW * 0.40);
-      ctx.strokeStyle = 'rgba(195,168,95,0.55)';
+      ctx.lineWidth = Math.max(4, sandW * 0.35);
+      ctx.strokeStyle = 'rgba(195,168,95,0.50)';
       _polyPath(ctx, poly); ctx.stroke();
-      // Fine grain stipple spread across full width
-      const arcs = _arcLengths(poly);
-      const total = arcs[arcs.length - 1];
-      const spacing = Math.max(2.5, 4 * zoom);
-      const halfW = sandW * 0.46;
-      for (let d = spacing * 0.3; d < total; d += spacing) {
-        const p = _polyAtDist(poly, arcs, d);
-        const perp = { x: -p.ty, y: p.tx };
-        for (let row = -2; row <= 2; row++) {
-          const off = row * halfW * 0.44 + Math.cos(d * 2.5 + row) * halfW * 0.12;
-          const r = Math.max(1.2, (1.2 + Math.cos(d * 4.3 + row) * 0.3) * zoom);
-          const alpha = 0.35 + Math.cos(d * 2.1 + row * 1.1) * 0.15;
-          ctx.fillStyle = 'rgba(168,138,72,' + alpha + ')';
-          ctx.beginPath();
-          ctx.arc(p.x + perp.x * off, p.y + perp.y * off, r, 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
       ctx.lineCap = 'butt';
       break;
     }
@@ -742,115 +660,51 @@ function drawSurfacePattern(ctx, surface, poly, lane, sideNum, zoom) {
       break;
     }
 
-    // ── ARMCO — W-beam guardrail, two rails with corrugation ticks ──
+    // ── ARMCO — two-tone rail, no tick loops for perf ──
     case 'armco': {
-      const arcs = _arcLengths(poly);
-      const total = arcs[arcs.length - 1];
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      // Shadow
-      ctx.lineWidth = w + 4;
-      ctx.strokeStyle = 'rgba(20,20,20,0.55)';
+      ctx.lineWidth = w + 2;
+      ctx.strokeStyle = 'rgba(20,20,20,0.45)';
       _polyPath(ctx, poly); ctx.stroke();
-      // Two W-beam rail bodies (draw as two parallel thick stripes)
-      for (const [col, lw] of [['rgba(160,180,200,1.0)', w], ['rgba(235,245,255,0.90)', Math.max(2, w*0.42)]]) {
-        ctx.lineWidth = lw;
-        ctx.strokeStyle = col;
-        _polyPath(ctx, poly); ctx.stroke();
-      }
-      // Corrugation ticks — denser and taller than before to suggest W-profile
-      const tickSpacing = Math.max(3, 5 * zoom);
-      const tickH = Math.max(2.5, w * 0.75);
-      ctx.strokeStyle = 'rgba(60,80,100,0.90)';
-      ctx.lineWidth = Math.max(1.5, zoom * 1.2);
+      ctx.lineWidth = w;
+      ctx.strokeStyle = 'rgba(160,180,200,1.0)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineWidth = Math.max(2, w * 0.38);
+      ctx.strokeStyle = 'rgba(235,245,255,0.80)';
+      _polyPath(ctx, poly); ctx.stroke();
       ctx.lineCap = 'butt';
-      for (let d = 0; d < total; d += tickSpacing) {
-        const p = _polyAtDist(poly, arcs, d);
-        const perp = { x: -p.ty, y: p.tx };
-        ctx.beginPath();
-        ctx.moveTo(p.x - perp.x * tickH, p.y - perp.y * tickH);
-        ctx.lineTo(p.x + perp.x * tickH, p.y + perp.y * tickH);
-        ctx.stroke();
-      }
       break;
     }
 
-    // ── TECPRO — vivid blue modular barrier blocks ──────────────────
+    // ── TECPRO — solid blue barrier, single pass for perf ──────────────
     case 'tecpro': {
-      const arcs = _arcLengths(poly);
-      const total = arcs[arcs.length - 1];
-      const segLen = Math.max(6, 14 * zoom);
-      const gap    = Math.max(1.5, 2 * zoom);
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      let d = 0;
-      while (d < total) {
-        const end = Math.min(d + segLen - gap, total);
-        const steps = 4;
-        // Soft shadow outline
-        ctx.lineWidth = w + 1;
-        ctx.strokeStyle = 'rgba(10,20,80,0.35)';
-        ctx.beginPath();
-        for (let s = 0; s <= steps; s++) {
-          const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
-          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-        }
-        ctx.stroke();
-        // Main blue body
-        ctx.lineWidth = w;
-        ctx.strokeStyle = 'rgba(20,70,220,1.0)';
-        ctx.beginPath();
-        for (let s = 0; s <= steps; s++) {
-          const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
-          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-        }
-        ctx.stroke();
-        // Light face highlight
-        ctx.lineWidth = Math.max(1.5, w * 0.35);
-        ctx.strokeStyle = 'rgba(140,200,255,0.70)';
-        ctx.beginPath();
-        for (let s = 0; s <= steps; s++) {
-          const p = _polyAtDist(poly, arcs, d + (end - d) * s / steps);
-          s === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y);
-        }
-        ctx.stroke();
-        d += segLen;
-      }
+      ctx.lineWidth = w + 1;
+      ctx.strokeStyle = 'rgba(10,20,80,0.30)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineWidth = w;
+      ctx.strokeStyle = 'rgba(20,70,220,1.0)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineWidth = Math.max(1.5, w * 0.30);
+      ctx.strokeStyle = 'rgba(140,200,255,0.60)';
+      _polyPath(ctx, poly); ctx.stroke();
       ctx.lineCap = 'butt';
       break;
     }
 
-    // ── TYRE WALL — thick black stack with white stripe and tyre circles
+    // ── TYRE WALL — solid black with red stripe, no circle loop ──
     case 'tyrewall': {
-      // Dark shadow
-      ctx.lineWidth = w + 3;
-      ctx.strokeStyle = 'rgba(0,0,0,0.55)';
       ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.lineWidth = w + 2;
+      ctx.strokeStyle = 'rgba(0,0,0,0.45)';
       _polyPath(ctx, poly); ctx.stroke();
-      // Main black tyre body
       ctx.lineWidth = w;
       ctx.strokeStyle = 'rgba(22,22,22,1.0)';
       _polyPath(ctx, poly); ctx.stroke();
-      // Red safety stripe (standard tyre wall marking)
-      ctx.lineWidth = Math.max(2, w * 0.32);
+      ctx.lineWidth = Math.max(2, w * 0.30);
       ctx.strokeStyle = 'rgba(220,30,30,0.90)';
       _polyPath(ctx, poly); ctx.stroke();
-      // White band on red stripe
-      ctx.lineWidth = Math.max(1, w * 0.12);
-      ctx.strokeStyle = 'rgba(255,255,255,0.70)';
-      _polyPath(ctx, poly); ctx.stroke();
-      // Individual tyre outlines
-      const arcs = _arcLengths(poly);
-      const total = arcs[arcs.length - 1];
-      const tyreSpacing = Math.max(5, w * 1.1);
-      ctx.strokeStyle = 'rgba(60,60,60,0.80)';
-      ctx.lineWidth = Math.max(1, 1.0 * zoom);
       ctx.lineCap = 'butt';
-      for (let d = tyreSpacing * 0.5; d < total; d += tyreSpacing) {
-        const p = _polyAtDist(poly, arcs, d);
-        const r = Math.max(1.5, w * 0.44);
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
-        ctx.stroke();
-      }
       break;
     }
 
@@ -1025,7 +879,7 @@ function drawAutoSurfaces() {
   // (stride 2 — good enough, exact result not needed)
   function _closestOtherCL(bx, by, selfIdx) {
     let minD = Infinity;
-    for (let j = 0; j < spl; j += 2) {
+    for (let j = 0; j < spl; j += 4) {
       const gap = Math.min(Math.abs(j - selfIdx), spl - Math.abs(j - selfIdx));
       if (gap < _MIN_SEP) continue;
       const dx = splinePts[j].pt.x - bx, dy = splinePts[j].pt.y - by;
@@ -1069,7 +923,7 @@ function drawAutoSurfaces() {
       if (isMedium[i]) return PERIM_MD;
       return (PERIM + PERIM_MD) * 0.5;
     });
-    const SK = TRANS * 2;
+    const SK = TRANS; // was TRANS*2 — halved for perf
     const sm = new Float32Array(spl);
     for (let i = 0; i < spl; i++) {
       let sum = 0, wt = 0;

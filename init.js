@@ -9,9 +9,7 @@ setTimeout(() => {
   if (h) { h.style.transition = 'opacity 0.6s'; h.style.opacity = '0'; setTimeout(()=>{if(h)h.style.display='none';},600); }
 }, 3000);
 
-// Dirty-flag render loop — throttled to one render per rAF frame.
-// markDirty() just sets the flag; the loop does the actual render
-// once per animation frame so rapid pan/pinch events don't stack up.
+// Dirty-flag render loop — one render per rAF frame maximum.
 let _renderDirty = true;
 let _renderScheduled = false;
 function markDirty() {
@@ -24,9 +22,9 @@ function markDirty() {
 function _doRender() {
   _renderScheduled = false;
   if (_renderDirty) { _renderDirty = false; render(); }
+  // Re-schedule only when barrier hover tool is active (needs cursor tracking)
+  if (typeof tool !== 'undefined' && tool === 'barrier') {
+    _renderScheduled = true;
+    requestAnimationFrame(_doRender);
+  }
 }
-// Kick off continuous loop only for hover/cursor effects (barrier hover needs it)
-(function loop() {
-  if (_renderDirty) { _renderDirty = false; render(); }
-  requestAnimationFrame(loop);
-})();
