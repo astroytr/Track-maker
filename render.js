@@ -235,6 +235,7 @@ function render() {
   if (waypoints.length >= 2) {
     drawAutoSurfaces();      // auto: TecPro straights, gravel corners, rumble, sausage, tyrewall
     drawBarrierSegments();   // user-placed segments paint on top of auto surfaces
+    drawBarrierIntersectionFill(); // FIX: TecPro fill between barrier overlap intersection points
     drawTrackRoad();
     drawCentreline();
   }
@@ -337,8 +338,9 @@ function drawTrackRoad() {
   }
 
   // ── Asphalt — solid dark grey ──
+  // FIX: use TRACK_HALF_WIDTH*2 exactly so asphalt never bleeds past the kerb inner edge
   ctx.strokeStyle = 'rgba(48,50,54,0.97)';
-  ctx.lineWidth = trackW*2;
+  ctx.lineWidth = TRACK_HALF_WIDTH * 2 * cam.zoom;
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.beginPath();
   screenPts.forEach((p,i) => i===0 ? ctx.moveTo(p.s.x,p.s.y) : ctx.lineTo(p.s.x,p.s.y));
@@ -351,16 +353,14 @@ function drawTrackRoad() {
   // Drawn AFTER asphalt so it sits just outside the asphalt edge.
   {
     const flatKerbLane = getSurfaceLane('flat_kerb', 0);
-    // FIX: separate distance counter per side — shared counter caused phase
-    // discontinuity / texture glitch near the start/finish line wrap point.
-    const fkDists = { '-1': 0, '1': 0 };
+    let fkDist = 0;
     for (let i = 0; i < spl - 1; i++) {
       [-1, 1].forEach(side => {
         const pa = buildOffsetScreenPolyline([splinePts[i], splinePts[i + 1]], side, flatKerbLane.center);
         if (pa.length < 2) return;
         const segLen = Math.hypot(pa[1].x - pa[0].x, pa[1].y - pa[0].y);
-        fkDists[side] += segLen;
-        const phase = Math.floor(fkDists[side] / Math.max(8, 14 * cam.zoom));
+        fkDist += segLen;
+        const phase = Math.floor(fkDist / Math.max(8, 14 * cam.zoom));
         ctx.strokeStyle = phase % 2 === 0 ? 'rgba(215,25,25,0.92)' : 'rgba(245,245,245,0.92)';
         ctx.lineWidth = Math.max(2, flatKerbLane.width * cam.zoom);
         ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
@@ -419,48 +419,7 @@ function drawTrackRoad() {
     }
   }
 
-  // ── Pit lane stub — short parallel road off start/finish straight ──
-  if (startingPointIdx < waypoints.length && n >= 4) {
-    const sfIdx = startingPointIdx * 16;
-    const sfPt  = splinePts[Math.min(sfIdx, spl-1)];
-    // Find the straight direction at SF point
-    const nxt = splinePts[Math.min(sfIdx+4, spl-1)].pt;
-    const prv = splinePts[Math.max(sfIdx-4, 0)].pt;
-    const tdx = nxt.x - prv.x, tdy = nxt.y - prv.y;
-    const tlen = Math.sqrt(tdx*tdx+tdy*tdy)||1;
-    // Pit lane: parallel to track, offset ~3.5 world units to right, length ~20 world units back
-    const pitSide = 1; // pit lane always on right/inside by convention
-    const pitOffset = TRACK_HALF_WIDTH + 4.5;
-    const pitLen = 22;
-    // Build 5 pts along the pit lane parallel to the track centreline
-    const pitPts = [];
-    for (let k = -2; k <= 2; k++) {
-      const frac = k / 2;
-      const wx = sfPt.pt.x + tdx/tlen * frac * pitLen/2 - tdy/tlen * pitSide * pitOffset;
-      const wy = sfPt.pt.y + tdy/tlen * frac * pitLen/2 + tdx/tlen * pitSide * pitOffset;
-      pitPts.push(worldToScreen(wx, wy));
-    }
-    // Pit lane asphalt
-    ctx.save();
-    ctx.strokeStyle = 'rgba(55,57,62,0.92)';
-    ctx.lineWidth = Math.max(4, trackW * 0.55);
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-    ctx.beginPath();
-    pitPts.forEach((p,i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-    ctx.stroke();
-    // Pit entry/exit blend lines
-    const sfScreen = worldToScreen(sfPt.pt.x, sfPt.pt.y);
-    const pitEntry = pitPts[0], pitExit = pitPts[pitPts.length-1];
-    const trackEdge1 = buildOffsetScreenPolyline([splinePts[Math.max(sfIdx-2,0)], sfPt], pitSide, TRACK_HALF_WIDTH);
-    const trackEdge2 = buildOffsetScreenPolyline([sfPt, splinePts[Math.min(sfIdx+2,spl-1)]], pitSide, TRACK_HALF_WIDTH);
-    ctx.strokeStyle = 'rgba(55,57,62,0.75)';
-    ctx.lineWidth = Math.max(2, trackW * 0.3);
-    ctx.setLineDash([3,3]);
-    if (trackEdge1.length) { ctx.beginPath(); ctx.moveTo(trackEdge1[0].x,trackEdge1[0].y); ctx.lineTo(pitEntry.x,pitEntry.y); ctx.stroke(); }
-    if (trackEdge2.length) { ctx.beginPath(); ctx.moveTo(trackEdge2[trackEdge2.length-1].x,trackEdge2[trackEdge2.length-1].y); ctx.lineTo(pitExit.x,pitExit.y); ctx.stroke(); }
-    ctx.setLineDash([]);
-    ctx.restore();
-  }
+  // Pit lane stub removed — caused floating rectangle artefacts on tight/looping tracks
 
   // ── Start/finish line — bold chequered ──
   if (startingPointIdx < waypoints.length) {
@@ -1182,29 +1141,6 @@ function drawPermanentGrassBand() { /* removed — background already grass */ }
 // ═══════════════════════════════════════════════════
 // BARRIER SEGMENTS
 // ═══════════════════════════════════════════════════
-
-// FIX: per-point offset clamping for user-placed barriers.
-// Prevents barriers from rendering inside an adjacent road/kerb
-// (the same _ROAD_KERB rule used by drawAutoSurfaces, but applied
-// to manual segments which previously bypassed it entirely).
-function clampedBarrierOffset(pts, sideNum, proposedOffset) {
-  const _RK  = 9.2;   // road (7) + kerb bands — same as _ROAD_KERB in drawAutoSurfaces
-  const n    = pts.length;
-  const _MIN = Math.max(8, Math.floor(n * 0.08)); // min index gap = different road section
-  return pts.map((p, i) => {
-    let minD = Infinity;
-    for (let j = 0; j < n; j += 2) {
-      if (Math.abs(j - i) < _MIN) continue;
-      const dx = pts[j].pt.x - p.pt.x, dy = pts[j].pt.y - p.pt.y;
-      const d  = Math.sqrt(dx * dx + dy * dy);
-      if (d < minD) minD = d;
-    }
-    if (minD === Infinity || minD >= _RK + proposedOffset) return proposedOffset;
-    // Pull back so the barrier endpoint sits exactly _RK clear of the other road
-    return Math.max(4, proposedOffset - (_RK - minD));
-  });
-}
-
 function drawBarrierSegments() {
   const splinePts = getCachedSpline(20);
   const N = splinePts.length;
@@ -1240,9 +1176,7 @@ function drawBarrierSegments() {
 
     const lane = getSurfaceLane(seg.surface, seg.lane || 0);
 
-    // FIX: clamp offset so user-placed barriers don't bleed into adjacent roads
-    const _barrierOffsets = clampedBarrierOffset(pts, seg.sideNum, lane.center);
-    const screenPoly = buildOffsetScreenPolylineVarying(pts, seg.sideNum, _barrierOffsets);
+    const screenPoly = buildOffsetScreenPolyline(pts, seg.sideNum, lane.center);
     drawSurfacePattern(ctx, seg.surface, screenPoly, lane, seg.sideNum, cam.zoom);
 
     const labelKey = `${seg.surface}:${seg.sideNum}:${seg.lane || 0}`;
@@ -1321,6 +1255,119 @@ function drawBarrierSegments() {
   if (tool === 'barrier' && barrierSelStart >= 0) drawBarrierHover(splinePts, N);
 }
 
+// ═══════════════════════════════════════════════════
+// BARRIER INTERSECTION FILL
+// When two barrier polylines cross (overlap zone), find the two
+// intersection points, measure the arc-length between them, and
+// draw a TecPro segment that fills that exact gap evenly.
+// This replaces the messy overlap with a clean merge barrier.
+// ═══════════════════════════════════════════════════
+function drawBarrierIntersectionFill() {
+  if (waypoints.length < 3) return;
+  const splinePts = getCachedSpline(20);
+  const N = splinePts.length;
+  if (N < 4) return;
+
+  // Build screen polylines for every barrier segment, both sides
+  // Only consider hard barriers (armco, tecpro, tyrewall) — not runoff
+  const HARD = new Set(['armco', 'tecpro', 'tyrewall']);
+  const barrierPolys = [];
+
+  // Include auto-surface armco as well
+  // We work purely in screen space for intersection maths
+  [-1, 1].forEach(side => {
+    const tecproLane = getSurfaceLane('tecpro', 0);
+    const armcoLane  = getSurfaceLane('armco',  0);
+
+    // Collect user barrier segments that are hard barriers
+    barrierSegments.forEach(seg => {
+      if (!HARD.has(seg.surface)) return;
+      const sides = (seg.side === 'both' || !seg.side) ? [-1, 1]
+                  : [(seg.side === 'left' || seg.side === -1) ? -1 : 1];
+      if (!sides.includes(side)) return;
+      const pts  = getSplineSegmentPoints(splinePts, seg.from, seg.to);
+      if (pts.length < 2) return;
+      const lane = getSurfaceLane(seg.surface, seg.lane || 0);
+      const poly = buildOffsetScreenPolyline(pts, side, lane.center);
+      if (poly.length >= 2) barrierPolys.push({ poly, side, surface: seg.surface });
+    });
+  });
+
+  if (barrierPolys.length < 2) return;
+
+  // Line-segment intersection test (2D)
+  function segIntersect(p1, p2, p3, p4) {
+    const d1x = p2.x - p1.x, d1y = p2.y - p1.y;
+    const d2x = p4.x - p3.x, d2y = p4.y - p3.y;
+    const denom = d1x * d2y - d1y * d2x;
+    if (Math.abs(denom) < 1e-10) return null; // parallel
+    const t = ((p3.x - p1.x) * d2y - (p3.y - p1.y) * d2x) / denom;
+    const u = ((p3.x - p1.x) * d1y - (p3.y - p1.y) * d1x) / denom;
+    if (t < 0 || t > 1 || u < 0 || u > 1) return null;
+    return { x: p1.x + t * d1x, y: p1.y + t * d1y, t, u };
+  }
+
+  // Find all intersection points between any two different barrier polys
+  const intersections = [];
+  for (let a = 0; a < barrierPolys.length; a++) {
+    for (let b = a + 1; b < barrierPolys.length; b++) {
+      const pa = barrierPolys[a].poly;
+      const pb = barrierPolys[b].poly;
+      for (let i = 0; i < pa.length - 1; i++) {
+        for (let j = 0; j < pb.length - 1; j++) {
+          const hit = segIntersect(pa[i], pa[i+1], pb[j], pb[j+1]);
+          if (hit) {
+            intersections.push({
+              pt: { x: hit.x, y: hit.y },
+              polyA: a, segA: i,
+              polyB: b, segB: j,
+            });
+          }
+        }
+      }
+    }
+  }
+
+  if (intersections.length < 2) return;
+
+  // Group intersection pairs — take the first two that involve the same poly pair
+  // and draw a TecPro fill between them
+  const seen = new Map();
+  intersections.forEach(ix => {
+    const key = `${Math.min(ix.polyA, ix.polyB)}_${Math.max(ix.polyA, ix.polyB)}`;
+    if (!seen.has(key)) seen.set(key, []);
+    seen.get(key).push(ix);
+  });
+
+  const tecproLane = getSurfaceLane('tecpro', 0);
+  const tecproW    = { ...tecproLane, width: Math.max(tecproLane.width, 4.0) };
+
+  seen.forEach((ixList) => {
+    if (ixList.length < 2) return;
+    // Sort by screen position along x to get consistent ordering
+    ixList.sort((a, b) => a.pt.x - b.pt.x);
+    const ix1 = ixList[0], ix2 = ixList[ixList.length - 1];
+
+    // Build a short TecPro polyline between the two intersection points
+    // Interpolate evenly in screen space — 8 steps for smooth curve follow
+    const STEPS = 8;
+    const fillPoly = [];
+    for (let s = 0; s <= STEPS; s++) {
+      const f = s / STEPS;
+      fillPoly.push({
+        x: ix1.pt.x + (ix2.pt.x - ix1.pt.x) * f,
+        y: ix1.pt.y + (ix2.pt.y - ix1.pt.y) * f,
+      });
+    }
+    if (fillPoly.length >= 2) {
+      ctx.save();
+      ctx.globalAlpha = 0.92;
+      drawSurfacePattern(ctx, 'tecpro', fillPoly, tecproW, 1, cam.zoom);
+      ctx.restore();
+    }
+  });
+}
+
 function expandBarrierDrawItems(segments) {
   const items = [];
   segments.forEach(seg => {
@@ -1332,9 +1379,7 @@ function expandBarrierDrawItems(segments) {
 
 function mergeExpandedBarrierItems(items) {
   if (!items.length || !waypoints.length) return items;
-  // FIX: was 1% — too tight, let near-adjacent segments through as separate draws
-  // causing a doubled/overlapping fringe. 4% merges genuinely contiguous barriers.
-  const gapTolerance = Math.max(3, Math.floor(waypoints.length * 0.04));
+  const gapTolerance = Math.max(1, Math.floor(waypoints.length * 0.01)); // tight: only truly adjacent
   const sorted = items.slice().sort((a,b) =>
     String(a.surface).localeCompare(String(b.surface)) ||
     a.sideNum - b.sideNum ||
