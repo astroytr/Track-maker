@@ -215,15 +215,105 @@ function _computeNormalsForPts(pts) {
   return normals;
 }
 
+// ═══════════════════════════════════════════════════
+// AAA CLEAN OFFSET SYSTEM (stable, no spikes)
+// ═══════════════════════════════════════════════════
+
 function buildOffsetScreenPolyline(pts, sideNum, offset) {
-  const len = pts.length;
-  if (len < 2) return [];
-  const normals = _computeNormalsForPts(pts);
-  return pts.map((p, i) => {
-    const nx = normals[i].px * sideNum;
-    const ny = normals[i].py * sideNum;
-    return worldToScreen(p.pt.x + nx*offset, p.pt.y + ny*offset);
-  });
+  const n = pts.length;
+  if (n < 2) return [];
+
+  const normals = new Array(n);
+
+  function norm(x, y) {
+    const l = Math.hypot(x, y) || 1;
+    return { x: x / l, y: y / l };
+  }
+
+  function dot(ax, ay, bx, by) {
+    return ax * bx + ay * by;
+  }
+
+  // Step 1: compute normals
+  for (let i = 0; i < n; i++) {
+    const prev = pts[Math.max(0, i - 1)].pt;
+    const next = pts[Math.min(n - 1, i + 1)].pt;
+
+    const dx = next.x - prev.x;
+    const dy = next.y - prev.y;
+
+    const l = Math.hypot(dx, dy) || 1;
+
+    let nx = -dy / l;
+    let ny = dx / l;
+
+    if (sideNum === 1) {
+      nx = -nx;
+      ny = -ny;
+    }
+
+    normals[i] = { x: nx, y: ny };
+  }
+
+  // Step 2: smooth normals
+  for (let i = 1; i < n; i++) {
+    const p = normals[i - 1];
+    const c = normals[i];
+
+    const d = dot(p.x, p.y, c.x, c.y);
+
+    if (d < 0.6) {
+      c.x = p.x * 0.6 + c.x * 0.4;
+      c.y = p.y * 0.6 + c.y * 0.4;
+
+      const l = Math.hypot(c.x, c.y) || 1;
+      c.x /= l;
+      c.y /= l;
+    }
+  }
+
+  // Step 3: miter offset
+  const result = [];
+  const MITER_LIMIT = 4.0;
+
+  for (let i = 0; i < n; i++) {
+    const p = pts[i].pt;
+
+    if (i === 0 || i === n - 1) {
+      const nx = normals[i].x;
+      const ny = normals[i].y;
+
+      result.push(worldToScreen(p.x + nx * offset, p.y + ny * offset));
+      continue;
+    }
+
+    const n0 = normals[i - 1];
+    const n1 = normals[i];
+
+    const mx = n0.x + n1.x;
+    const my = n0.y + n1.y;
+
+    const len = Math.hypot(mx, my) || 1;
+    const mxn = mx / len;
+    const myn = my / len;
+
+    const denom = Math.max(1e-4, mxn * n1.x + myn * n1.y);
+    let miterLen = offset / denom;
+
+    const maxLen = offset * MITER_LIMIT;
+    if (Math.abs(miterLen) > maxLen) {
+      miterLen = Math.sign(miterLen) * maxLen;
+    }
+
+    result.push(
+      worldToScreen(
+        p.x + mxn * miterLen,
+        p.y + myn * miterLen
+      )
+    );
+  }
+
+  return result;
 }
 
 // ── Polyline path helper ─────────────────────────────
