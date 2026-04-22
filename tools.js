@@ -32,12 +32,6 @@ function updateSimplifyPreview() {}
 function applySimplify() { const eps=parseFloat(document.getElementById('simplify-eps').value)||2; simplifyWaypoints(eps); closeSimplify(); }
 function analyseTrack() { return null; }
 
-// ── Pan state ────────────────────────────────────────
-let isPanning  = false;
-let spaceDown  = false;
-let panStart   = { x:0, y:0, camX:0, camY:0 };
-let mouseWorld = { x:0, y:0 };
-
 // ── Helpers ──────────────────────────────────────────
 function getCanvasPos(clientX, clientY) {
   const r = mainCanvas.getBoundingClientRect();
