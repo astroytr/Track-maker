@@ -374,43 +374,53 @@ function drawBarrierLines() {
   const splinePts = getCachedSpline(20);
   if (splinePts.length < 2) return;
 
-  const innerOffset = BARRIER_INNER;   //  9.0 wu — inner barrier (just past kerb)
-  const outerOffset = BARRIER_OUTER;   // 26.0 wu — outer perimeter wall
+  const innerOffset = BARRIER_INNER;
+  const outerOffset = BARRIER_OUTER;
 
-  // Build all polylines first
-  const sides = [-1, 1].map(side => ({
-    inner: buildOffsetScreenPolyline(splinePts, side, innerOffset),
-    outer: buildOffsetScreenPolyline(splinePts, side, outerOffset),
-  }));
+  // Build a clip region for each side using the far-offset poly closed back
+  // through the centreline — this prevents the outer barrier on a tight hairpin
+  // from crossing over to the opposite side.
+  function buildSideClipPath(side) {
+    const far    = buildOffsetScreenPolyline(splinePts, side, outerOffset + 80);
+    const centre = splinePts.map(p => worldToScreen(p.pt.x, p.pt.y));
+    ctx.beginPath();
+    far.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    for (let i = centre.length - 1; i >= 0; i--) ctx.lineTo(centre[i].x, centre[i].y);
+    ctx.closePath();
+  }
 
-  // Draw outer walls first (shadow pass), then highlight — both sides before highlights
-  // so neither side's shadow bleeds over the other's highlight
-  sides.forEach(({ outer }) => {
+  [-1, 1].forEach(side => {
+    const inner = buildOffsetScreenPolyline(splinePts, side, innerOffset);
+    const outer = buildOffsetScreenPolyline(splinePts, side, outerOffset);
+
+    ctx.save();
+    buildSideClipPath(side);
+    ctx.clip();
+
+    // Outer wall shadow
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.lineWidth = Math.max(4, 3.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.5)';
     _polyPath(ctx, outer); ctx.stroke();
-  });
-  sides.forEach(({ outer }) => {
-    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+    // Outer wall silver
     ctx.lineWidth = Math.max(3, 2.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(170,185,200,1.0)';
     _polyPath(ctx, outer); ctx.stroke();
+    // Outer wall highlight
     ctx.lineWidth = Math.max(1, 1.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.stroke();
-  });
 
-  // Draw inner barriers (shadow then highlight)
-  sides.forEach(({ inner }) => {
+    // Inner barrier shadow
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.35)';
     _polyPath(ctx, inner); ctx.stroke();
-  });
-  sides.forEach(({ inner }) => {
+    // Inner barrier highlight
     ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(160,175,190,0.85)';
     _polyPath(ctx, inner); ctx.stroke();
+
+    ctx.restore();
   });
 }
 
