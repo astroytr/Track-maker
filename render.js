@@ -339,7 +339,7 @@ function drawTrackRoad() {
   });
   ctx.setLineDash([]); ctx.lineDashOffset = 0;
 
-  // Start/finish line
+  // Start/finish line — solid white band across the track
   if (startingPointIdx < waypoints.length) {
     const spl = splinePts.length;
     const i1  = Math.min(startingPointIdx * 16, spl-1);
@@ -348,17 +348,17 @@ function drawTrackRoad() {
       const sfPt = worldToScreen(waypoints[startingPointIdx].x, waypoints[startingPointIdx].y);
       const dx=splinePts[i2].pt.x-splinePts[i1].pt.x, dy=splinePts[i2].pt.y-splinePts[i1].pt.y;
       const len=Math.hypot(dx,dy)||1;
-      const ux=-dy/len*cam.zoom, uy=dx/len*cam.zoom;
-      const tx=dx/len*cam.zoom, ty=dy/len*cam.zoom;
-      const COLS=4, ROWS=2, sq=(trackW)/COLS;
+      const nx=-dy/len, ny=dx/len; // normal across the track
+      const halfW = TRACK_HALF_WIDTH * cam.zoom;
+      const lineW = Math.max(3, 3.5 * cam.zoom);
       ctx.save();
-      for (let row=0; row<ROWS; row++) for (let col=0; col<COLS; col++) {
-        const across=(col+0.5-COLS/2)*sq, along=(row+0.5-ROWS/2)*sq;
-        const cx=sfPt.x+ux*across+tx*along, cy=sfPt.y+uy*across+ty*along;
-        ctx.fillStyle=(row+col)%2===0?'#ffffff':'#111111';
-        ctx.save(); ctx.translate(cx,cy); ctx.rotate(Math.atan2(dy,dx));
-        ctx.fillRect(-sq*0.5,-sq*0.5,sq,sq); ctx.restore();
-      }
+      ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+      ctx.lineWidth = lineW;
+      ctx.lineCap = 'butt';
+      ctx.beginPath();
+      ctx.moveTo(sfPt.x - nx * halfW, sfPt.y - ny * halfW);
+      ctx.lineTo(sfPt.x + nx * halfW, sfPt.y + ny * halfW);
+      ctx.stroke();
       ctx.restore();
     }
   }
@@ -377,26 +377,37 @@ function drawBarrierLines() {
   const innerOffset = BARRIER_INNER;   //  9.0 wu — inner barrier (just past kerb)
   const outerOffset = BARRIER_OUTER;   // 26.0 wu — outer perimeter wall
 
-  [-1, 1].forEach(side => {
-    const inner = buildOffsetScreenPolyline(splinePts, side, innerOffset);
-    const outer = buildOffsetScreenPolyline(splinePts, side, outerOffset);
+  // Build all polylines first
+  const sides = [-1, 1].map(side => ({
+    inner: buildOffsetScreenPolyline(splinePts, side, innerOffset),
+    outer: buildOffsetScreenPolyline(splinePts, side, outerOffset),
+  }));
 
-    // Outer wall — thick armco-style silver line
+  // Draw outer walls first (shadow pass), then highlight — both sides before highlights
+  // so neither side's shadow bleeds over the other's highlight
+  sides.forEach(({ outer }) => {
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.lineWidth = Math.max(4, 3.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.5)';
     _polyPath(ctx, outer); ctx.stroke();
+  });
+  sides.forEach(({ outer }) => {
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.lineWidth = Math.max(3, 2.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(170,185,200,1.0)';
     _polyPath(ctx, outer); ctx.stroke();
     ctx.lineWidth = Math.max(1, 1.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.stroke();
+  });
 
-    // Inner barrier — thinner, slightly transparent
+  // Draw inner barriers (shadow then highlight)
+  sides.forEach(({ inner }) => {
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.35)';
     _polyPath(ctx, inner); ctx.stroke();
+  });
+  sides.forEach(({ inner }) => {
     ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(160,175,190,0.85)';
     _polyPath(ctx, inner); ctx.stroke();
