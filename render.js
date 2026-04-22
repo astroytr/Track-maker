@@ -325,7 +325,6 @@ for (let i = 0; i < n; i++) {
     )
   );
 }
-
 // ── Polyline path helper ─────────────────────────────
 function _polyPath(ctx, poly) {
   ctx.beginPath();
