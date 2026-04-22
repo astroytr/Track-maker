@@ -1078,53 +1078,43 @@ function drawPermanentGrassBand() { /* removed — background already grass */ }
 // ═══════════════════════════════════════════════════
 // BARRIER SEGMENTS
 // ═══════════════════════════════════════════════════
+// Each barrier surface is drawn as a copy of the track
+// spline offset outward by a fixed distance per side.
+// Surfaces stack outward in priority order so they never
+// overlap — inner surfaces claim their band first and
+// outer ones start immediately outside.
+// ═══════════════════════════════════════════════════
 function drawBarrierSegments() {
   const splinePts = getCachedSpline(20);
-  const N = splinePts.length;
-  if (!barrierSegments || barrierSegments.length === 0) {
-    return;
-  }
+  if (!barrierSegments || barrierSegments.length === 0) return;
 
-  // Priority tiers: runoff first (goes under), then kerbs, then hard barriers.
+  // Draw order: runoff under kerbs under hard barriers.
   const DRAW_TIER = { grass:0, gravel:1, sand:1, flat_kerb:2, rumble:2, sausage:2, tecpro:3, armco:3, tyrewall:3 };
 
-  // Sort by priority — innermost surfaces first within each tier so outer ones
-  // stack outward correctly when we advance the edge cursor below.
   const expanded = expandBarrierDrawItems(barrierSegments)
     .sort((a,b) => {
-      const ta = DRAW_TIER[a.surface] ?? 2;
-      const tb = DRAW_TIER[b.surface] ?? 2;
+      const ta = DRAW_TIER[a.surface] ?? 2, tb = DRAW_TIER[b.surface] ?? 2;
       if (ta !== tb) return ta - tb;
-      const la = getSurfaceLane(a.surface, a.lane || 0);
-      const lb = getSurfaceLane(b.surface, b.lane || 0);
-      return la.inner - lb.inner;   // innermost first so outer ones stack outside them
+      // Within same tier sort innermost first so the cursor stacks outward correctly
+      return (SURFACE_LANES[a.surface]?.inner ?? 9) - (SURFACE_LANES[b.surface]?.inner ?? 9);
     });
 
-  // ── Occupancy: per spline-point, per side, track the outermost claimed edge ──
-  // Key: `${sideNum}:${splineIdx}` → outermost offset used so far on that side.
-  // We use waypoint-index granularity (one entry per waypoint segment) for speed.
-  const WP = waypoints.length;
-  // edgeCursor[sideKey][wpIdx] = current free-edge offset (starts at 0 = road centre)
-  const edgeCursor = {};   // `${sideNum}:${wpIdx}` → float
-
-  function edgeKey(sideNum, wpIdx) { return `${sideNum}:${wpIdx}`; }
-
-  // Get current free-edge for a segment range on one side.
-  // Returns the max cursor across all waypoint indices in [from, to].
-  function getEdge(sideNum, from, to) {
-    let maxEdge = 0;
+  // Per-side stacking cursor: tracks the outermost used offset for each
+  // (sideNum, waypointIndex) cell so the next surface starts right outside it.
+  // Key = `${sideNum}:${wpIdx}`, value = outermost offset used so far.
+  const cursor = {};
+  function cursorGet(sideNum, from, to) {
+    let max = 0;
     for (let i = from; i <= to; i++) {
-      const k = edgeKey(sideNum, i);
-      if (edgeCursor[k] !== undefined && edgeCursor[k] > maxEdge) maxEdge = edgeCursor[k];
+      const v = cursor[`${sideNum}:${i}`];
+      if (v > max) max = v;
     }
-    return maxEdge;
+    return max;
   }
-
-  // Advance the cursor for all waypoint indices in [from, to] to at least newOuter.
-  function claimEdge(sideNum, from, to, newOuter) {
+  function cursorSet(sideNum, from, to, val) {
     for (let i = from; i <= to; i++) {
-      const k = edgeKey(sideNum, i);
-      if (edgeCursor[k] === undefined || edgeCursor[k] < newOuter) edgeCursor[k] = newOuter;
+      const k = `${sideNum}:${i}`;
+      if (!(cursor[k] > val)) cursor[k] = val;
     }
   }
 
@@ -1139,32 +1129,26 @@ function drawBarrierSegments() {
     const pts = getSplineSegmentPoints(splinePts, seg.from, seg.to);
     if (pts.length < 2) return;
 
-    // ── Occupancy-aware offset ──────────────────────────────────────────────
-    // Base lane defines how wide this surface is and where it starts (inner).
-    const baseLane = getSurfaceLane(seg.surface, seg.lane || 0);
-    const halfW    = baseLane.width * 0.5;
+    const baseLane = getSurfaceLane(seg.surface, 0);  // lane param ignored — stacking handles it
+    const w = baseLane.width;
 
-    // Find the outermost already-claimed offset for this side+range.
-    const currentEdge = getEdge(seg.sideNum, seg.from, seg.to);
-
-    // The natural inner edge of this surface (from SURFACE_LANES).
+    // Where does this surface naturally want to start (inner edge)?
     const naturalInner = baseLane.inner;
+    // Where is the current free edge on this side for this range?
+    const stackedInner = cursorGet(seg.sideNum, seg.from, seg.to);
+    // Place at whichever is further out
+    const inner  = Math.max(naturalInner, stackedInner);
+    const center = inner + w * 0.5;
+    const outer  = inner + w;
 
-    // Place at whichever is further out: natural position or end of claimed space.
-    const placedInner  = Math.max(naturalInner, currentEdge);
-    const placedCenter = placedInner + halfW;
-    const placedOuter  = placedInner + baseLane.width;
+    // Claim this band so the next surface starts outside
+    cursorSet(seg.sideNum, seg.from, seg.to, outer);
 
-    // Advance cursor so the next surface on this side starts outside us.
-    claimEdge(seg.sideNum, seg.from, seg.to, placedOuter);
-
-    // Build a lane descriptor at the resolved offset (center is what polyline uses).
-    const lane = { ...baseLane, inner: placedInner, center: placedCenter, outer: placedOuter };
-
-    const screenPoly = buildOffsetScreenPolyline(pts, seg.sideNum, placedCenter);
+    const lane = { ...baseLane, inner, center, outer };
+    const screenPoly = buildOffsetScreenPolyline(pts, seg.sideNum, center);
     drawSurfacePattern(ctx, seg.surface, screenPoly, lane, seg.sideNum, cam.zoom);
 
-    const labelKey = `${seg.surface}:${seg.sideNum}:${seg.lane || 0}`;
+    const labelKey = `${seg.surface}:${seg.sideNum}`;
     const shouldLabel = !seg.auto || (labelCount < 7 && !labelKeys.has(labelKey) && (seg.to - seg.from) >= Math.max(3, waypoints.length * 0.018));
     if (!shouldLabel) return;
     labelKeys.add(labelKey);
