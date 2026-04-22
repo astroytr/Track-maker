@@ -209,7 +209,7 @@ function _computeNormalsForPts(pts) {
   normals[0] = { px: raw[0].px * windSign, py: raw[0].py * windSign };
   for (let i = 1; i < len; i++) {
     const dot = raw[i].px*normals[i-1].px + raw[i].py*normals[i-1].py;
-    const s = dot >= 0 ? 1 : -1;
+    const s = dot > -0.2 ? 1 : -1;
     normals[i] = { px: raw[i].px*s, py: raw[i].py*s };
   }
   return normals;
@@ -466,14 +466,72 @@ function drawBarrierLines() {
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.closePath(); ctx.stroke();
 
-    // ── Inner barrier
+    // ── Smart Inner barrier (AAA smooth adaptive)
+    const normals = _computeNormalsForPts(splinePts);
+    const adjustedInner = [];
+    const alphaArr = [];
+
+    const minGap = 4.0;
+    const falloffRange = 6.0;
+
+    for (let i = 0; i < splinePts.length; i++) {
+      const p = splinePts[i];
+
+      const nx = normals[i].px * side;
+      const ny = normals[i].py * side;
+
+      let innerX = p.pt.x + nx * innerOffset;
+      let innerY = p.pt.y + ny * innerOffset;
+
+      const outerX = p.pt.x + nx * outerOffset;
+      const outerY = p.pt.y + ny * outerOffset;
+
+      const dx = outerX - innerX;
+      const dy = outerY - innerY;
+      const dist = Math.hypot(dx, dy);
+
+      if (dist < falloffRange) {
+        const t = Math.max(0, Math.min(1, (falloffRange - dist) / falloffRange));
+        const smooth = t * t * (3 - 2 * t); // smoothstep
+
+        const push = (minGap - dist) * 0.5 * smooth;
+
+        innerX -= nx * push;
+        innerY -= ny * push;
+      }
+
+      const screenPt = worldToScreen(innerX, innerY);
+      adjustedInner.push(screenPt);
+
+      // alpha fade when too tight
+      let alpha = 1.0;
+      if (dist < minGap) {
+        alpha = Math.max(0.15, dist / minGap);
+      }
+      alphaArr.push(alpha);
+    }
+
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.35)';
-    _polyPath(ctx, inner); ctx.closePath(); ctx.stroke();
+    for (let i = 0; i < adjustedInner.length - 1; i++) {
+      ctx.globalAlpha = alphaArr[i];
+      ctx.beginPath();
+      ctx.moveTo(adjustedInner[i].x, adjustedInner[i].y);
+      ctx.lineTo(adjustedInner[i+1].x, adjustedInner[i+1].y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
 
     ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(160,175,190,0.85)';
-    _polyPath(ctx, inner); ctx.closePath(); ctx.stroke();
+    for (let i = 0; i < adjustedInner.length - 1; i++) {
+      ctx.globalAlpha = alphaArr[i];
+      ctx.beginPath();
+      ctx.moveTo(adjustedInner[i].x, adjustedInner[i].y);
+      ctx.lineTo(adjustedInner[i+1].x, adjustedInner[i+1].y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
 
     ctx.restore();
   });
