@@ -273,58 +273,49 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
   }
 
   // Step 3: miter offset
-const result = [];
-const MITER_LIMIT = 2.5;   // reduced (important)
-const BEVEL_THRESHOLD = 0.7; // curvature sensitivity
+  const result = [];
+  const MITER_LIMIT = 4.0;
 
-for (let i = 0; i < n; i++) {
-  const p = pts[i].pt;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i].pt;
 
-  if (i === 0 || i === n - 1) {
-    const nx = normals[i].x;
-    const ny = normals[i].y;
+    if (i === 0 || i === n - 1) {
+      const nx = normals[i].x;
+      const ny = normals[i].y;
 
-    result.push(worldToScreen(p.x + nx * offset, p.y + ny * offset));
-    continue;
+      result.push(worldToScreen(p.x + nx * offset, p.y + ny * offset));
+      continue;
+    }
+
+    const n0 = normals[i - 1];
+    const n1 = normals[i];
+
+    const mx = n0.x + n1.x;
+    const my = n0.y + n1.y;
+
+    const len = Math.hypot(mx, my) || 1;
+    const mxn = mx / len;
+    const myn = my / len;
+
+    const denom = Math.max(1e-4, mxn * n1.x + myn * n1.y);
+    let miterLen = offset / denom;
+
+    const maxLen = offset * MITER_LIMIT;
+    if (Math.abs(miterLen) > maxLen) {
+      miterLen = Math.sign(miterLen) * maxLen;
+    }
+
+    result.push(
+      worldToScreen(
+        p.x + mxn * miterLen,
+        p.y + myn * miterLen
+      )
+    );
   }
 
-  const n0 = normals[i - 1];
-  const n1 = normals[i];
-
-  const dot = n0.x * n1.x + n0.y * n1.y;
-
-  // 🔴 SHARP TURN → use BEVEL (prevents bulging)
-  if (dot < BEVEL_THRESHOLD) {
-    const nx = n1.x;
-    const ny = n1.y;
-
-    result.push(worldToScreen(p.x + nx * offset, p.y + ny * offset));
-    continue;
-  }
-
-  // 🟢 NORMAL → use MITER
-  const mx = n0.x + n1.x;
-  const my = n0.y + n1.y;
-
-  const len = Math.hypot(mx, my) || 1;
-  const mxn = mx / len;
-  const myn = my / len;
-
-  const denom = Math.max(1e-4, mxn * n1.x + myn * n1.y);
-  let miterLen = offset / denom;
-
-  const maxLen = offset * MITER_LIMIT;
-  if (Math.abs(miterLen) > maxLen) {
-    miterLen = Math.sign(miterLen) * maxLen;
-  }
-
-  result.push(
-    worldToScreen(
-      p.x + mxn * miterLen,
-      p.y + myn * miterLen
-    )
-  );
+  return result;
 }
+
 // ── Polyline path helper ─────────────────────────────
 function _polyPath(ctx, poly) {
   ctx.beginPath();
