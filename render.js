@@ -366,56 +366,116 @@ function drawTrackRoad() {
 
 // ═══════════════════════════════════════════════════
 // BARRIER LINES
-// Two clean offset lines — inner and outer — following
-// the track shape exactly. These are the foundation;
-// surfaces will fill the space between them later.
+// Before drawing, the enclosed track area is split
+// along the centreline. A dividing path is built from
+// the centreline spline, capped at each end with a
+// short perpendicular stub (leaving a clean gap).
+// Each barrier side is clipped to its own half so
+// barriers from opposite sides never overlap.
 // ═══════════════════════════════════════════════════
+
+// Build the divider path for a given side:
+// Goes along the centreline, then caps the open ends
+// with a perpendicular stub extending far outward on
+// `side`, closing a region that strictly owns that half.
+function _buildBarrierClipRegion(splinePts, side, capReach) {
+  const n   = splinePts.length;
+  const cap = capReach; // how far the perpendicular end-caps extend
+
+  // Helper: perpendicular normal at point i (world space, pointing `side`)
+  function normalAt(i) {
+    const prev = splinePts[Math.max(0, i - 1)];
+    const next = splinePts[Math.min(n - 1, i + 1)];
+    const ax = next.pt.x - prev.pt.x;
+    const ay = next.pt.y - prev.pt.y;
+    const sl = Math.sqrt(ax * ax + ay * ay) || 1;
+    // raw perpendicular (left of travel)
+    return { px: -ay / sl, py: ax / sl };
+  }
+
+  // Compute winding sign once (same logic as buildOffsetScreenPolyline)
+  let area = 0;
+  for (let i = 0; i < n - 1; i++)
+    area += splinePts[i].pt.x * splinePts[i+1].pt.y - splinePts[i+1].pt.x * splinePts[i].pt.y;
+  const windSign = area >= 0 ? -1 : 1;
+
+  // Seed + propagate normals so they don't flip
+  const raw = splinePts.map((_, i) => normalAt(i));
+  const normals = new Array(n);
+  normals[0] = { px: raw[0].px * windSign, py: raw[0].py * windSign };
+  for (let i = 1; i < n; i++) {
+    const dot = raw[i].px * normals[i-1].px + raw[i].py * normals[i-1].py;
+    const s   = dot >= 0 ? 1 : -1;
+    normals[i] = { px: raw[i].px * s, py: raw[i].py * s };
+  }
+
+  // Screen-space centreline points
+  const centre = splinePts.map(p => worldToScreen(p.pt.x, p.pt.y));
+
+  // End-cap at point i: step perpendicularly toward `side` by `cap` world units
+  function capPt(i) {
+    const nx = normals[i].px * side;
+    const ny = normals[i].py * side;
+    return worldToScreen(
+      splinePts[i].pt.x + nx * cap,
+      splinePts[i].pt.y + ny * cap
+    );
+  }
+
+  // Region: start cap → along centreline forward → end cap → back along centreline reversed → close
+  ctx.beginPath();
+  // start perpendicular cap (from centre[0] outward)
+  ctx.moveTo(centre[0].x, centre[0].y);
+  const c0 = capPt(0);
+  ctx.lineTo(c0.x, c0.y);
+  // travel along the far edge (cap offset) in forward direction
+  for (let i = 1; i < n; i++) {
+    const cp = capPt(i);
+    ctx.lineTo(cp.x, cp.y);
+  }
+  // end cap back to centreline
+  ctx.lineTo(centre[n-1].x, centre[n-1].y);
+  // return along centreline in reverse
+  for (let i = n - 2; i >= 0; i--) ctx.lineTo(centre[i].x, centre[i].y);
+  ctx.closePath();
+}
+
 function drawBarrierLines() {
   const splinePts = getCachedSpline(20);
   if (splinePts.length < 2) return;
 
   const innerOffset = BARRIER_INNER;
   const outerOffset = BARRIER_OUTER;
-
-  // Build a clip region for each side using the far-offset poly closed back
-  // through the centreline — this prevents the outer barrier on a tight hairpin
-  // from crossing over to the opposite side.
-  function buildSideClipPath(side) {
-    const far    = buildOffsetScreenPolyline(splinePts, side, outerOffset + 80);
-    const centre = splinePts.map(p => worldToScreen(p.pt.x, p.pt.y));
-    ctx.beginPath();
-    far.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-    for (let i = centre.length - 1; i >= 0; i--) ctx.lineTo(centre[i].x, centre[i].y);
-    ctx.closePath();
-  }
+  // Cap extends well beyond the outer barrier so the clip region fully contains it
+  const capReach    = outerOffset + 60;
 
   [-1, 1].forEach(side => {
     const inner = buildOffsetScreenPolyline(splinePts, side, innerOffset);
     const outer = buildOffsetScreenPolyline(splinePts, side, outerOffset);
 
     ctx.save();
-    buildSideClipPath(side);
+    _buildBarrierClipRegion(splinePts, side, capReach);
     ctx.clip();
 
-    // Outer wall shadow
+    // Outer wall — shadow then silver then highlight
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
     ctx.lineWidth = Math.max(4, 3.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.5)';
     _polyPath(ctx, outer); ctx.stroke();
-    // Outer wall silver
+
     ctx.lineWidth = Math.max(3, 2.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(170,185,200,1.0)';
     _polyPath(ctx, outer); ctx.stroke();
-    // Outer wall highlight
+
     ctx.lineWidth = Math.max(1, 1.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.stroke();
 
-    // Inner barrier shadow
+    // Inner barrier — shadow then highlight
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.35)';
     _polyPath(ctx, inner); ctx.stroke();
-    // Inner barrier highlight
+
     ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(160,175,190,0.85)';
     _polyPath(ctx, inner); ctx.stroke();
