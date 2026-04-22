@@ -1082,26 +1082,54 @@ function drawBarrierSegments() {
   const splinePts = getCachedSpline(20);
   const N = splinePts.length;
   if (!barrierSegments || barrierSegments.length === 0) {
-    if (tool === 'barrier' && barrierSelStart >= 0) drawBarrierHover(splinePts, N);
     return;
   }
 
-  // Draw order: outermost first so inner layers paint over outer ones.
-  // Priority tiers ensure runoff (gravel/sand/grass) always goes under kerbs/barriers.
+  // Priority tiers: runoff first (goes under), then kerbs, then hard barriers.
   const DRAW_TIER = { grass:0, gravel:1, sand:1, flat_kerb:2, rumble:2, sausage:2, tecpro:3, armco:3, tyrewall:3 };
+
+  // Sort by priority — innermost surfaces first within each tier so outer ones
+  // stack outward correctly when we advance the edge cursor below.
   const expanded = expandBarrierDrawItems(barrierSegments)
     .sort((a,b) => {
       const ta = DRAW_TIER[a.surface] ?? 2;
       const tb = DRAW_TIER[b.surface] ?? 2;
-      if (ta !== tb) return ta - tb;  // lower tier (runoff) draws first
+      if (ta !== tb) return ta - tb;
       const la = getSurfaceLane(a.surface, a.lane || 0);
       const lb = getSurfaceLane(b.surface, b.lane || 0);
-      return lb.outer - la.outer;     // within same tier: outermost first
+      return la.inner - lb.inner;   // innermost first so outer ones stack outside them
     });
+
+  // ── Occupancy: per spline-point, per side, track the outermost claimed edge ──
+  // Key: `${sideNum}:${splineIdx}` → outermost offset used so far on that side.
+  // We use waypoint-index granularity (one entry per waypoint segment) for speed.
+  const WP = waypoints.length;
+  // edgeCursor[sideKey][wpIdx] = current free-edge offset (starts at 0 = road centre)
+  const edgeCursor = {};   // `${sideNum}:${wpIdx}` → float
+
+  function edgeKey(sideNum, wpIdx) { return `${sideNum}:${wpIdx}`; }
+
+  // Get current free-edge for a segment range on one side.
+  // Returns the max cursor across all waypoint indices in [from, to].
+  function getEdge(sideNum, from, to) {
+    let maxEdge = 0;
+    for (let i = from; i <= to; i++) {
+      const k = edgeKey(sideNum, i);
+      if (edgeCursor[k] !== undefined && edgeCursor[k] > maxEdge) maxEdge = edgeCursor[k];
+    }
+    return maxEdge;
+  }
+
+  // Advance the cursor for all waypoint indices in [from, to] to at least newOuter.
+  function claimEdge(sideNum, from, to, newOuter) {
+    for (let i = from; i <= to; i++) {
+      const k = edgeKey(sideNum, i);
+      if (edgeCursor[k] === undefined || edgeCursor[k] < newOuter) edgeCursor[k] = newOuter;
+    }
+  }
 
   const labelKeys = new Set();
   let labelCount = 0;
-  // FIX: track bounding boxes of placed labels to detect overlap
   const placedLabelRects = [];
 
   expanded.forEach((seg) => {
@@ -1111,9 +1139,29 @@ function drawBarrierSegments() {
     const pts = getSplineSegmentPoints(splinePts, seg.from, seg.to);
     if (pts.length < 2) return;
 
-    const lane = getSurfaceLane(seg.surface, seg.lane || 0);
+    // ── Occupancy-aware offset ──────────────────────────────────────────────
+    // Base lane defines how wide this surface is and where it starts (inner).
+    const baseLane = getSurfaceLane(seg.surface, seg.lane || 0);
+    const halfW    = baseLane.width * 0.5;
 
-    const screenPoly = buildOffsetScreenPolyline(pts, seg.sideNum, lane.center);
+    // Find the outermost already-claimed offset for this side+range.
+    const currentEdge = getEdge(seg.sideNum, seg.from, seg.to);
+
+    // The natural inner edge of this surface (from SURFACE_LANES).
+    const naturalInner = baseLane.inner;
+
+    // Place at whichever is further out: natural position or end of claimed space.
+    const placedInner  = Math.max(naturalInner, currentEdge);
+    const placedCenter = placedInner + halfW;
+    const placedOuter  = placedInner + baseLane.width;
+
+    // Advance cursor so the next surface on this side starts outside us.
+    claimEdge(seg.sideNum, seg.from, seg.to, placedOuter);
+
+    // Build a lane descriptor at the resolved offset (center is what polyline uses).
+    const lane = { ...baseLane, inner: placedInner, center: placedCenter, outer: placedOuter };
+
+    const screenPoly = buildOffsetScreenPolyline(pts, seg.sideNum, placedCenter);
     drawSurfacePattern(ctx, seg.surface, screenPoly, lane, seg.sideNum, cam.zoom);
 
     const labelKey = `${seg.surface}:${seg.sideNum}:${seg.lane || 0}`;
@@ -1189,7 +1237,6 @@ function drawBarrierSegments() {
     ctx.restore();
   });
 
-  if (tool === 'barrier' && barrierSelStart >= 0) drawBarrierHover(splinePts, N);
 }
 
 // ═══════════════════════════════════════════════════
