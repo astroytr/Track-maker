@@ -472,7 +472,7 @@ function drawBarrierLines() {
     const alphaArr = [];
 
     const minGap = 4.0;
-    const falloffRange = 6.0;
+    const falloffRange = 4.0;
 
     for (let i = 0; i < splinePts.length; i++) {
       const p = splinePts[i];
@@ -494,7 +494,7 @@ function drawBarrierLines() {
         const t = Math.max(0, Math.min(1, (falloffRange - dist) / falloffRange));
         const smooth = t * t * (3 - 2 * t); // smoothstep
 
-        const push = (minGap - dist) * 0.5 * smooth;
+        const push = Math.min(2.0, (minGap - dist) * 0.5 * smooth);
 
         innerX -= nx * push;
         innerY -= ny * push;
@@ -513,25 +513,21 @@ function drawBarrierLines() {
 
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.35)';
-    for (let i = 0; i < adjustedInner.length - 1; i++) {
-      ctx.globalAlpha = alphaArr[i];
-      ctx.beginPath();
-      ctx.moveTo(adjustedInner[i].x, adjustedInner[i].y);
-      ctx.lineTo(adjustedInner[i+1].x, adjustedInner[i+1].y);
-      ctx.stroke();
-    }
     ctx.globalAlpha = 1;
+    ctx.beginPath();
+    adjustedInner.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
 
     ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(160,175,190,0.85)';
-    for (let i = 0; i < adjustedInner.length - 1; i++) {
-      ctx.globalAlpha = alphaArr[i];
-      ctx.beginPath();
-      ctx.moveTo(adjustedInner[i].x, adjustedInner[i].y);
-      ctx.lineTo(adjustedInner[i+1].x, adjustedInner[i+1].y);
-      ctx.stroke();
-    }
     ctx.globalAlpha = 1;
+    ctx.beginPath();
+    adjustedInner.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
 
     ctx.restore();
   });
