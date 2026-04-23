@@ -540,52 +540,94 @@ function _getBarrierGeo() {
   const innerOffset = BARRIER_INNER;
   const outerOffset = BARRIER_OUTER;
   const n = splinePts.length;
+  const loopLen = n - 1; // splinePts has closing duplicate; real loop length is n-1
 
-  // ── Step 1: build normals for both sides ────────────────────────────────
+  // ── Step 1: build normals for both sides ─────────────────────────────────
   const normalsL = _buildNormalsForBarrier(splinePts, -1);
   const normalsR = _buildNormalsForBarrier(splinePts,  1);
 
-  // ── Step 2: build a coarse spatial grid of ALL centreline points ─────────
-  // Used to find nearby centreline points from other parts of the track so we
-  // can clamp outer barrier points that would intrude into adjacent sections.
-  //
-  // Grid cell size = outerOffset * 2 (a point can only affect cells within one
-  // cell radius, so we only need to check the 9 surrounding cells).
-  const CELL = outerOffset * 2;
-  const grid = new Map(); // key = "cx,cy" → array of spline indices
-
-  // Downsample for grid — every 4th point is enough for proximity detection
-  const STEP = 4;
-  for (let i = 0; i < n; i += STEP) {
+  // ── Step 2: build raw inner + outer arrays for both sides (no clamping yet)
+  // These are the "ideal" positions before any collision resolution.
+  const rawL = { inner: [], outer: [] };
+  const rawR = { inner: [], outer: [] };
+  for (let i = 0; i < n; i++) {
     const p = splinePts[i].pt;
-    const cx = Math.floor(p.x / CELL);
-    const cy = Math.floor(p.y / CELL);
-    const key = cx + ',' + cy;
-    if (!grid.has(key)) grid.set(key, []);
-    grid.get(key).push(i);
+    rawL.inner.push({ x: p.x + normalsL[i].x * innerOffset, y: p.y + normalsL[i].y * innerOffset });
+    rawL.outer.push({ x: p.x + normalsL[i].x * outerOffset, y: p.y + normalsL[i].y * outerOffset });
+    rawR.inner.push({ x: p.x + normalsR[i].x * innerOffset, y: p.y + normalsR[i].y * innerOffset });
+    rawR.outer.push({ x: p.x + normalsR[i].x * outerOffset, y: p.y + normalsR[i].y * outerOffset });
   }
 
-  // Skip enough local points to clear a full hairpin (~30 waypoints each side).
-  // On an 800wp × 20seg track that's 600 pts — about 3.75% of total.
-  // Hard-cap at 15% of total so it never excludes more than one "side" of the track.
-  const segsPerWp = Math.round((n - 1) / Math.max(1, waypoints.length));
-  const skipRadius = Math.min(Math.round(n * 0.15), segsPerWp * 30);
+  // ── Step 3: spatial grid of raw inner barrier points — one grid per side ──
+  // Cell size = innerOffset * 2 so a query only needs to check 9 surrounding cells.
+  const CELL = innerOffset * 2;
 
-  function nearestForeignCentrelineDist(wx, wy, skipIdx) {
+  function buildInnerGrid(innerArr) {
+    const g = new Map();
+    for (let i = 0; i < innerArr.length; i += 2) { // downsample every 2nd pt
+      const p = innerArr[i];
+      const key = Math.floor(p.x / CELL) + ',' + Math.floor(p.y / CELL);
+      if (!g.has(key)) g.set(key, []);
+      g.get(key).push(i);
+    }
+    return g;
+  }
+
+  const gridL = buildInnerGrid(rawL.inner);
+  const gridR = buildInnerGrid(rawR.inner);
+
+  // skipRadius: enough to clear a hairpin apex without skipping the parallel section.
+  // 40 waypoints each side on an 800wp track = 800 spline pts = 5% of 16k.
+  const segsPerWp = Math.round(loopLen / Math.max(1, waypoints.length));
+  const skipRadius = Math.min(Math.round(loopLen * 0.12), segsPerWp * 40);
+
+  // Find the nearest point in `grid`/`arr` that is foreign (outside skipRadius of skipIdx).
+  // Returns { dist, idx } — idx is the index into arr of the nearest foreign point.
+  function nearestForeign(wx, wy, skipIdx, grid, arr) {
     const cx0 = Math.floor(wx / CELL);
     const cy0 = Math.floor(wy / CELL);
-    let minDist = Infinity;
+    let minDist = Infinity, minIdx = -1;
     for (let dcx = -1; dcx <= 1; dcx++) {
       for (let dcy = -1; dcy <= 1; dcy++) {
-        const key = (cx0 + dcx) + ',' + (cy0 + dcy);
-        const cell = grid.get(key);
+        const cell = grid.get((cx0 + dcx) + ',' + (cy0 + dcy));
         if (!cell) continue;
         for (let k = 0; k < cell.length; k++) {
           const j = cell[k];
-          // Skip points that belong to the same local section of track.
-          // splinePts has a closing duplicate at index n-1 (same as index 0),
-          // so use n-1 as the loop length for the circular distance calculation.
-          const loopLen = n - 1;
+          const raw = Math.abs(j - skipIdx);
+          const delta = Math.min(raw, loopLen - raw);
+          if (delta < skipRadius) continue;
+          const q = arr[j];
+          const d = Math.hypot(wx - q.x, wy - q.y);
+          if (d < minDist) { minDist = d; minIdx = j; }
+        }
+      }
+    }
+    return { dist: minDist, idx: minIdx };
+  }
+
+  // ── Pass 1: clamp outer barriers away from foreign CENTRELINE ────────────
+  // Binary-search each outer point inward until it clears TRACK_HALF_WIDTH+2
+  // from any foreign centreline point.
+  // We reuse a centreline grid for this (cell size = outerOffset * 2).
+  const CELL_C = outerOffset * 2;
+  const centreGrid = new Map();
+  for (let i = 0; i < n; i += 4) {
+    const p = splinePts[i].pt;
+    const key = Math.floor(p.x / CELL_C) + ',' + Math.floor(p.y / CELL_C);
+    if (!centreGrid.has(key)) centreGrid.set(key, []);
+    centreGrid.get(key).push(i);
+  }
+
+  function nearestForeignCentreDist(wx, wy, skipIdx) {
+    const cx0 = Math.floor(wx / CELL_C);
+    const cy0 = Math.floor(wy / CELL_C);
+    let minDist = Infinity;
+    for (let dcx = -1; dcx <= 1; dcx++) {
+      for (let dcy = -1; dcy <= 1; dcy++) {
+        const cell = centreGrid.get((cx0 + dcx) + ',' + (cy0 + dcy));
+        if (!cell) continue;
+        for (let k = 0; k < cell.length; k++) {
+          const j = cell[k];
           const raw = Math.abs(j - skipIdx);
           const delta = Math.min(raw, loopLen - raw);
           if (delta < skipRadius) continue;
@@ -598,77 +640,77 @@ function _getBarrierGeo() {
     return minDist;
   }
 
-  // ── Step 3: build raw inner (both sides) for left/right cross-clamp ─────
-  const rawInnerL = [], rawInnerR = [];
-  for (let i = 0; i < n; i++) {
-    const p = splinePts[i].pt;
-    rawInnerL.push({ x: p.x + normalsL[i].x * innerOffset, y: p.y + normalsL[i].y * innerOffset });
-    rawInnerR.push({ x: p.x + normalsR[i].x * innerOffset, y: p.y + normalsR[i].y * innerOffset });
+  const OUTER_CLEARANCE = TRACK_HALF_WIDTH + 2;
+
+  function clampOuterPoint(px, py, nx, ny, splineIdx) {
+    const rawDist = nearestForeignCentreDist(px + nx * outerOffset, py + ny * outerOffset, splineIdx);
+    if (rawDist >= OUTER_CLEARANCE) return outerOffset; // already safe
+    let lo = innerOffset + 1, hi = outerOffset;
+    for (let iter = 0; iter < 10; iter++) {
+      const mid = (lo + hi) * 0.5;
+      const fd = nearestForeignCentreDist(px + nx * mid, py + ny * mid, splineIdx);
+      if (fd < OUTER_CLEARANCE) hi = mid; else lo = mid;
+    }
+    return lo;
   }
 
-  // ── Step 4: per-side geometry with both clamps applied ───────────────────
-  const rawInnerBySide = { '-1': rawInnerL, '1': rawInnerR };
-  const normalsBySide  = { '-1': normalsL,  '1': normalsR  };
+  const outerL = [], outerR = [];
+  for (let i = 0; i < n; i++) {
+    const p = splinePts[i].pt;
+    const offL = clampOuterPoint(p.x, p.y, normalsL[i].x, normalsL[i].y, i);
+    const offR = clampOuterPoint(p.x, p.y, normalsR[i].x, normalsR[i].y, i);
+    outerL.push({ x: p.x + normalsL[i].x * offL, y: p.y + normalsL[i].y * offL });
+    outerR.push({ x: p.x + normalsR[i].x * offR, y: p.y + normalsR[i].y * offR });
+  }
 
-  const geo = {};
-  [-1, 1].forEach(side => {
-    const opp = -side;
-    const norms    = normalsBySide[side];
-    const rawInner = rawInnerBySide[side];
-    const rawOpp   = rawInnerBySide[opp];
-    const innerWorld = [], outerWorld = [];
+  // ── Pass 2: merge inner barriers where they intersect ────────────────────
+  // For each inner barrier point on side L, find the nearest foreign inner
+  // barrier point on side R (and vice-versa). If their distance < merge threshold,
+  // both points slide toward their geometric midpoint proportionally.
+  //
+  // merge threshold = 2 * innerOffset means the two inner barriers are touching
+  // or overlapping — they should share a single merged wall at the midpoint.
+  const MERGE_THRESHOLD = innerOffset * 2.0;
+  // Blend radius: start merging smoothly when within 1.5× threshold
+  const BLEND_START = MERGE_THRESHOLD * 1.5;
 
-    for (let i = 0; i < n; i++) {
-      const p  = splinePts[i].pt;
-      const nx = norms[i].x, ny = norms[i].y;
+  const innerL = rawL.inner.map(p => ({ x: p.x, y: p.y }));
+  const innerR = rawR.inner.map(p => ({ x: p.x, y: p.y }));
 
-      // ── Outer barrier: step back until clear of any foreign centreline ──────
-      // Binary-search the offset from outerOffset down to innerOffset+1 until
-      // the candidate point is at least TRACK_HALF_WIDTH+2 wu from any foreign
-      // centreline point.  This is O(log N) per point and always correct.
-      const SAFE_CLEARANCE = TRACK_HALF_WIDTH + 2;
-      let lo = innerOffset + 1;
-      let hi = outerOffset;
-      let clampedOuterOffset = outerOffset;
-
-      // Quick early-out: raw outer point is already safe
-      const rawForeignDist = nearestForeignCentrelineDist(
-        p.x + nx * outerOffset, p.y + ny * outerOffset, i);
-      if (rawForeignDist < SAFE_CLEARANCE) {
-        // Need to clamp — binary search for the largest safe offset
-        for (let iter = 0; iter < 8; iter++) {
-          const mid = (lo + hi) * 0.5;
-          const fx = p.x + nx * mid;
-          const fy = p.y + ny * mid;
-          const fd = nearestForeignCentrelineDist(fx, fy, i);
-          if (fd < SAFE_CLEARANCE) {
-            hi = mid; // too far out, pull back
-          } else {
-            lo = mid; // safe, try pushing out more
-          }
-        }
-        clampedOuterOffset = lo;
-      }
-      outerWorld.push({ x: p.x + nx * clampedOuterOffset, y: p.y + ny * clampedOuterOffset });
-
-      // ── Inner barrier: same-frame left/right cross-clamp ─────────────────
-      let iwx = rawInner[i].x, iwy = rawInner[i].y;
-      const owx = rawOpp[i].x, owy = rawOpp[i].y;
-      const midX = (iwx + owx) * 0.5, midY = (iwy + owy) * 0.5;
-      const innerToOpp = Math.hypot(owx - iwx, owy - iwy);
-      if (innerToOpp < 2.0) {
-        iwx = midX; iwy = midY;
-      } else {
-        const toCentreX = p.x - iwx, toCentreY = p.y - iwy;
-        const toMidX = midX - iwx, toMidY = midY - iwy;
-        const dot = toCentreX * toMidX + toCentreY * toMidY;
-        if (dot < 0) { iwx = midX; iwy = midY; }
-      }
-      innerWorld.push({ x: iwx, y: iwy });
+  // Pass 2a — L points vs R grid
+  for (let i = 0; i < n; i++) {
+    const { dist, idx } = nearestForeign(innerL[i].x, innerL[i].y, i, gridR, rawR.inner);
+    if (dist < BLEND_START && idx >= 0) {
+      // t=0 at BLEND_START (no merge), t=1 at 0 distance (full merge to midpoint)
+      const t = Math.max(0, Math.min(1, 1 - (dist / BLEND_START)));
+      const smooth = t * t * (3 - 2 * t); // smoothstep
+      const rp = rawR.inner[idx];
+      const mx = (innerL[i].x + rp.x) * 0.5;
+      const my = (innerL[i].y + rp.y) * 0.5;
+      innerL[i].x += (mx - innerL[i].x) * smooth;
+      innerL[i].y += (my - innerL[i].y) * smooth;
     }
+  }
 
-    geo[side] = { innerWorld, outerWorld };
-  });
+  // Pass 2b — R points vs L grid (using updated innerL positions for consistency)
+  for (let i = 0; i < n; i++) {
+    const { dist, idx } = nearestForeign(innerR[i].x, innerR[i].y, i, gridL, rawL.inner);
+    if (dist < BLEND_START && idx >= 0) {
+      const t = Math.max(0, Math.min(1, 1 - (dist / BLEND_START)));
+      const smooth = t * t * (3 - 2 * t);
+      const lp = rawL.inner[idx]; // use raw so both sides merge symmetrically
+      const mx = (innerR[i].x + lp.x) * 0.5;
+      const my = (innerR[i].y + lp.y) * 0.5;
+      innerR[i].x += (mx - innerR[i].x) * smooth;
+      innerR[i].y += (my - innerR[i].y) * smooth;
+    }
+  }
+
+  // ── Assemble final geo ────────────────────────────────────────────────────
+  const geo = {
+    '-1': { innerWorld: innerL, outerWorld: outerL },
+     '1': { innerWorld: innerR, outerWorld: outerR }
+  };
 
   _cachedBarrierWorldGeo = geo;
   return geo;
