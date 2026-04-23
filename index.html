@@ -144,7 +144,7 @@ window.addEventListener('load', () => {
 <div id="action-bar">
   <button class="ab-btn" onclick="toggle3DPreview()">🔭 3D</button>
   <button class="ab-btn convert" onclick="openAIConvert()">✦ Convert</button>
-  <button class="ab-btn export" onclick="openExport()">⬇ Export</button>
+  <button class="ab-btn export" onclick="openExportPicker()">⬇ Export</button>
   <button class="ab-btn details" onclick="openDetailsPanel()">ⓘ Details</button>
   <button class="ab-btn" onclick="openBarrierLog()" style="background:rgba(232,255,71,0.12);color:#e8ff47;border-color:rgba(232,255,71,0.3);">📋 Log</button>
   <button id="debug-badge" class="debug-ok" onclick="CFDebug.toggle()">DEBUG</button>
@@ -168,68 +168,146 @@ function openBarrierLog() {
   const body  = document.getElementById('barrier-log-body');
   modal.style.display = 'flex';
 
-  // Force-bust the barrier cache so we always see the CURRENT render.js output,
-  // not a stale cached result from before the page loaded the latest fix.
   if (typeof _invalidateSplineCache === 'function') _invalidateSplineCache();
 
   const lines = [];
-  lines.push('<span style="color:#e8ff47;font-size:12px">══ RENDER DIAGNOSTICS ══</span>');
+  const H = (txt, col) => `<span style="color:${col||'#e8ff47'};font-weight:800;letter-spacing:1px">${txt}</span>`;
+  const S = (txt) => `<span style="color:#aaa">${txt}</span>`;
+  const OK  = (v)  => `<b style="color:#4f4">${v}</b>`;
+  const WARN = (v) => `<b style="color:#f90">${v}</b>`;
+  const ERR  = (v) => `<b style="color:#f44">${v}</b>`;
+  const INFO = (v) => `<b style="color:#4cf">${v}</b>`;
+  const YEL  = (v) => `<b style="color:#e8ff47">${v}</b>`;
+
+  lines.push(H('══ RENDER DIAGNOSTICS ══'));
+  lines.push(S('Generated: ' + new Date().toLocaleTimeString()));
+  lines.push('');
 
   try {
     // ── 1. BASIC STATE ────────────────────────────────────────────────────
-    lines.push('<span style="color:#aaa">── State ──</span>');
-    lines.push('Waypoints: <b style="color:#e8ff47">' + waypoints.length + '</b>');
+    lines.push(S('── State ──'));
+    lines.push('Waypoints: ' + YEL(waypoints.length));
+    if (waypoints.length < 3) {
+      lines.push(ERR('❌ Need ≥ 3 waypoints to build a track'));
+      body.innerHTML = lines.join('<br>'); return;
+    }
 
     const spl = getCachedSpline(20);
-    lines.push('Spline pts (20 segs): <b style="color:#e8ff47">' + spl.length + '</b>');
-    lines.push('BARRIER_INNER: <b>' + BARRIER_INNER + '</b> wu   BARRIER_OUTER: <b>' + BARRIER_OUTER + '</b> wu   TRACK_HALF_WIDTH: <b>' + TRACK_HALF_WIDTH + '</b> wu');
-    lines.push('Winding sign (_getWindSign): <b style="color:#e8ff47">' + _getWindSign() + '</b>  (−1 = clockwise on screen, +1 = CCW)');
+    const loopLen = spl.length - 1;
+    const segsPerWp = Math.round(loopLen / Math.max(1, waypoints.length));
+    lines.push('Spline pts (20 segs): ' + YEL(spl.length) + '  (loopLen: ' + loopLen + ', segsPerWp: ' + segsPerWp + ')');
+    lines.push('BARRIER_INNER: ' + INFO(BARRIER_INNER + ' wu') + '  BARRIER_OUTER: ' + INFO(BARRIER_OUTER + ' wu') + '  TRACK_HALF_WIDTH: ' + INFO(TRACK_HALF_WIDTH + ' wu'));
+    lines.push('Closing pt == pt[0]? ' + (Math.hypot(spl[spl.length-1].pt.x - spl[0].pt.x, spl[spl.length-1].pt.y - spl[0].pt.y) < 0.001 ? OK('yes ✅') : ERR('NO — spline not closed')));
     lines.push('');
 
-    // ── 2. NORMAL DIRECTION SANITY CHECK ─────────────────────────────────
-    lines.push('<span style="color:#aaa">── Normal direction check (first 3 pts) ──</span>');
+    // ── 2. TRACK SHAPE SUMMARY ────────────────────────────────────────────
+    // Compute bounding box, total arc length, and curvature hotspots so we
+    // can describe the track shape without rendering it.
+    lines.push(S('── Track shape ──'));
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+    let arcLen = 0;
+    let maxCurv = 0, maxCurvSeg = 0;
+    for (let i = 0; i < spl.length - 1; i++) {
+      const a = spl[i].pt, b = spl[i+1].pt;
+      minX=Math.min(minX,a.x); maxX=Math.max(maxX,a.x);
+      minY=Math.min(minY,a.y); maxY=Math.max(maxY,a.y);
+      arcLen += Math.hypot(b.x-a.x, b.y-a.y);
+    }
+    const trackW = (maxX-minX).toFixed(1), trackH = (maxY-minY).toFixed(1);
+    lines.push('Bounding box: ' + INFO(trackW + ' wu wide × ' + trackH + ' wu tall'));
+    lines.push('Approx arc length: ' + INFO(arcLen.toFixed(0) + ' wu  (~' + (arcLen * 0.93).toFixed(0) + ' m)'));
+    lines.push('Aspect ratio (W/H): ' + INFO((trackW/trackH).toFixed(2)));
+
+    // Curvature: detect sharpest corners by measuring angle change per unit length
+    const CURV_STEP = Math.max(1, Math.floor(segsPerWp / 4));
+    let corners = [];
+    for (let i = CURV_STEP; i < spl.length - CURV_STEP; i += CURV_STEP) {
+      const a = spl[i - CURV_STEP].pt, b = spl[i].pt, c = spl[i + CURV_STEP].pt;
+      const dx1=b.x-a.x, dy1=b.y-a.y, dx2=c.x-b.x, dy2=c.y-b.y;
+      const l1=Math.hypot(dx1,dy1)||1, l2=Math.hypot(dx2,dy2)||1;
+      const cosA = (dx1*dx2+dy1*dy2)/(l1*l2);
+      const angle = Math.acos(Math.max(-1,Math.min(1,cosA))) * 180/Math.PI;
+      if (angle > maxCurv) { maxCurv = angle; maxCurvSeg = spl[i].seg; }
+      if (angle > 25) corners.push({ angle: angle.toFixed(0), seg: spl[i].seg, x: b.x.toFixed(0), y: b.y.toFixed(0) });
+    }
+    corners.sort((a,b) => b.angle - a.angle);
+    const sharpness = maxCurv > 90 ? ERR('hairpin (>' + maxCurv.toFixed(0) + '°)') :
+                      maxCurv > 45 ? WARN('tight corner (' + maxCurv.toFixed(0) + '°)') :
+                                     OK('flowing (' + maxCurv.toFixed(0) + '°)');
+    lines.push('Sharpest corner: ' + sharpness + ' at waypoint seg ' + maxCurvSeg);
+    if (corners.length > 0) {
+      lines.push('Corners >25°: ' + INFO(corners.length) + ' — top 3: ' +
+        corners.slice(0,3).map(c => c.angle + '° (seg ' + c.seg + ' @ ' + c.x + ',' + c.y + ')').join(' | '));
+    } else {
+      lines.push('Corners >25°: ' + OK('none — very smooth track'));
+    }
+
+    // Winding
+    const ws = _getWindSign();
+    lines.push('Winding: ' + YEL(ws) + '  ' + (ws === -1 ? '(clockwise on screen)' : '(counter-clockwise on screen)'));
+    lines.push('');
+
+    // ── 3. NORMAL DIRECTION SANITY CHECK ─────────────────────────────────
+    lines.push(S('── Normal direction check (first, mid, last pts) ──'));
     const normL = _buildNormalsForBarrier(spl, -1);
     const normR = _buildNormalsForBarrier(spl,  1);
-    for (let i = 0; i < Math.min(3, spl.length); i++) {
+    const checkIdxs = [0, Math.floor(spl.length/2), spl.length-2];
+    let normalFail = false;
+    checkIdxs.forEach(function(i) {
+      if (i < 0 || i >= spl.length) return;
       const dot = normL[i].x * normR[i].x + normL[i].y * normR[i].y;
       const ok = dot < -0.5;
-      lines.push('pt[' + i + '] L·R dot: <b style="color:' + (ok ? '#4f4' : '#f44') + '">' + dot.toFixed(3) + '</b> ' + (ok ? '✅ opposite' : '❌ NOT OPPOSITE — normals wrong side'));
-    }
+      if (!ok) normalFail = true;
+      lines.push('pt[' + i + '] L·R dot: ' + (ok ? OK(dot.toFixed(3)) : ERR(dot.toFixed(3))) +
+        '  L=(' + normL[i].x.toFixed(2) + ',' + normL[i].y.toFixed(2) + ')' +
+        '  R=(' + normR[i].x.toFixed(2) + ',' + normR[i].y.toFixed(2) + ')' +
+        '  ' + (ok ? '✅' : '❌ normals same side!'));
+    });
+    // Also check seam point specifically (was the bug)
+    const seamIdx = spl.length - 1;
+    const seamDot = normL[seamIdx].x * normR[seamIdx].x + normL[seamIdx].y * normR[seamIdx].y;
+    const seamOk = seamDot < -0.5;
+    if (!seamOk) normalFail = true;
+    lines.push('pt[' + seamIdx + '] (SEAM) L·R dot: ' + (seamOk ? OK(seamDot.toFixed(3)) : ERR(seamDot.toFixed(3))) +
+      '  ' + (seamOk ? '✅ seam normal clean' : '❌ SEAM NORMAL BAD — degenerate tangent'));
+    if (normalFail) lines.push(ERR('❌ Normal direction failure detected — barriers will cross'));
     lines.push('');
 
-    // ── 3. ACTUAL DRAWN GEO (force-fresh from _getBarrierGeo) ─────────────
-    lines.push('<span style="color:#aaa">── What is actually being drawn ──</span>');
+    // ── 4. ACTUAL DRAWN GEO ───────────────────────────────────────────────
+    lines.push(S('── What is actually being drawn ──'));
     const geo = _getBarrierGeo();
-    if (!geo) { lines.push('<span style="color:#f44">_getBarrierGeo returned null</span>'); body.innerHTML = lines.join('<br>'); return; }
+    if (!geo) { lines.push(ERR('_getBarrierGeo returned null — no waypoints or spline failed')); body.innerHTML = lines.join('<br>'); return; }
 
     [[-1,'LEFT'],[1,'RIGHT']].forEach(function(pair) {
       const side = pair[0], label = pair[1];
       const { innerWorld, outerWorld } = geo[side];
-      lines.push('<span style="color:#e8ff47">— ' + label + ' —</span>');
-      lines.push('  inner pts: <b>' + innerWorld.length + '</b>   outer pts: <b>' + outerWorld.length + '</b>');
+      lines.push(H('— ' + label + ' —'));
+      lines.push('  pts: inner=' + INFO(innerWorld.length) + '  outer=' + INFO(outerWorld.length) +
+        (innerWorld.length !== outerWorld.length ? '  ' + ERR('⚠ length mismatch!') : ''));
 
-      // Sample first/mid/last inner offsets from their own centreline
-      [0, Math.floor(innerWorld.length/2), innerWorld.length-2].forEach(function(i) {
+      // Sample first, quarter, mid, three-quarter, last
+      const idxs = [0, Math.floor(innerWorld.length*0.25), Math.floor(innerWorld.length/2),
+                    Math.floor(innerWorld.length*0.75), innerWorld.length-1];
+      idxs.forEach(function(i) {
         if (i < 0 || i >= innerWorld.length || i >= spl.length) return;
         const cen = spl[i].pt;
         const iDist = Math.hypot(innerWorld[i].x - cen.x, innerWorld[i].y - cen.y);
         const oDist = Math.hypot(outerWorld[i].x - cen.x, outerWorld[i].y - cen.y);
         const iOk = iDist >= TRACK_HALF_WIDTH - 0.5 && iDist <= BARRIER_INNER + 1;
         const oOk = oDist >= BARRIER_INNER && oDist <= BARRIER_OUTER + 1;
-        lines.push('  [' + i + '] inner offset: <b style="color:' + (iOk ? '#4f4' : '#f90') + '">' + iDist.toFixed(2) + ' wu</b>  outer offset: <b style="color:' + (oOk ? '#4f4' : '#f90') + '">' + oDist.toFixed(2) + ' wu</b>');
+        const label_i = i === 0 ? 'START' : i === innerWorld.length-1 ? 'END' : i;
+        lines.push('  [' + label_i + '] cen=(' + cen.x.toFixed(1) + ',' + cen.y.toFixed(1) +
+          ')  inner=' + (iOk ? OK(iDist.toFixed(2)+'wu') : WARN(iDist.toFixed(2)+'wu')) +
+          '  outer=' + (oOk ? OK(oDist.toFixed(2)+'wu') : WARN(oDist.toFixed(2)+'wu')));
       });
     });
     lines.push('');
 
-    // ── 4. SPATIAL OVERLAP CHECK — inner L vs inner R ─────────────────────
-    // Build a spatial grid of inner-R points, then for each inner-L point
-    // find the nearest inner-R point anywhere in world space (no skip).
-    // This is the TRUE overlap check — not same-index comparison.
-    lines.push('<span style="color:#aaa">── Inner barrier spatial overlap (true nearest-neighbour) ──</span>');
+    // ── 5. SPATIAL OVERLAP CHECK ──────────────────────────────────────────
+    lines.push(S('── Inner barrier spatial overlap (true nearest-neighbour) ──'));
     const innerL = geo[-1].innerWorld;
     const innerR = geo[ 1].innerWorld;
 
-    // Build grid of R points
     const GCELL = 20;
     const rgrid = new Map();
     for (let i = 0; i < innerR.length; i += 2) {
@@ -239,8 +317,7 @@ function openBarrierLog() {
     }
 
     let minDist = Infinity, minIdxL = -1, minIdxR = -1;
-    let overlapCount = 0;
-    // Sample every 8th L point for speed
+    let overlapCount = 0, warnCount = 0;
     for (let i = 0; i < innerL.length; i += 8) {
       const lp = innerL[i];
       const cx0 = Math.floor(lp.x / GCELL), cy0 = Math.floor(lp.y / GCELL);
@@ -253,60 +330,98 @@ function openBarrierLog() {
             const d = Math.hypot(lp.x - rp.x, lp.y - rp.y);
             if (d < minDist) { minDist = d; minIdxL = i; minIdxR = cell[k]; }
             if (d < 1.0) overlapCount++;
+            else if (d < TRACK_HALF_WIDTH) warnCount++;
           }
         }
       }
     }
 
     const distCol = minDist < 1 ? '#f44' : minDist < TRACK_HALF_WIDTH ? '#f90' : '#4f4';
-    lines.push('Min L↔R inner distance (spatial): <b style="color:' + distCol + '">' + minDist.toFixed(2) + ' wu</b>');
+    lines.push('Min L↔R inner distance: <b style="color:' + distCol + '">' + minDist.toFixed(2) + ' wu</b>' +
+      (minDist < TRACK_HALF_WIDTH*2 ? '  ' + WARN('⚠ dangerously close') : '  ✅'));
+    if (warnCount > 0) lines.push('Points within ' + TRACK_HALF_WIDTH + ' wu (near-miss): ' + WARN(warnCount));
     if (minIdxL >= 0) {
-      lines.push('  At L[' + minIdxL + '] = (' + innerL[minIdxL].x.toFixed(1) + ', ' + innerL[minIdxL].y.toFixed(1) + ')');
-      lines.push('  vs R[' + minIdxR + '] = (' + innerR[minIdxR].x.toFixed(1) + ', ' + innerR[minIdxR].y.toFixed(1) + ')');
-      // Show what the centreline points are near those indices
+      lines.push('  Worst: L[' + minIdxL + ']=(' + innerL[minIdxL].x.toFixed(1) + ',' + innerL[minIdxL].y.toFixed(1) + ')' +
+        '  R[' + minIdxR + ']=(' + innerR[minIdxR].x.toFixed(1) + ',' + innerR[minIdxR].y.toFixed(1) + ')');
       if (minIdxL < spl.length) {
         const cL = spl[minIdxL].pt;
-        lines.push('  Nearest centreline: (' + cL.x.toFixed(1) + ', ' + cL.y.toFixed(1) + ')  seg=' + spl[minIdxL].seg);
+        lines.push('  Nearest centreline pt: (' + cL.x.toFixed(1) + ',' + cL.y.toFixed(1) + ')  seg=' + spl[minIdxL].seg +
+          '  ← waypoint #' + spl[minIdxL].seg + ' area');
       }
     }
-    lines.push('Overlap points (dist < 1wu, sampled): <b style="color:' + (overlapCount > 0 ? '#f44' : '#4f4') + '">' + overlapCount + '</b> ' + (overlapCount > 0 ? '❌ OVERLAPPING' : '✅ clear'));
+    lines.push('Overlap pts (dist < 1wu, sampled): ' + (overlapCount > 0 ? ERR(overlapCount + ' ❌ OVERLAPPING') : OK('0 ✅ clear')));
     lines.push('');
 
-    // ── 5. skipRadius values in effect ────────────────────────────────────
-    lines.push('<span style="color:#aaa">── Skip radii in effect ──</span>');
-    const loopLen = spl.length - 1;
-    const segsPerWp = Math.round(loopLen / Math.max(1, waypoints.length));
-    const skipOuter = Math.max(segsPerWp * 4,  Math.round(loopLen * 0.01));
-    const skipInner = Math.max(segsPerWp * 20, Math.round(loopLen * 0.04));
-    lines.push('segsPerWp: <b>' + segsPerWp + '</b>   loopLen: <b>' + loopLen + '</b>');
-    lines.push('skipOuter: <b style="color:#4cf">' + skipOuter + '</b> pts = ~' + (skipOuter/segsPerWp).toFixed(1) + ' waypoints');
-    lines.push('skipInner: <b style="color:#4cf">' + skipInner + '</b> pts = ~' + (skipInner/segsPerWp).toFixed(1) + ' waypoints');
-    lines.push('');
+    // ── 6. SEAM INTEGRITY CHECK ───────────────────────────────────────────
+    // New: explicitly verify the start/finish seam, which was the source of the v7.3 bug
+    lines.push(S('── Seam integrity (start/finish join) ──'));
+    const seamPtA = spl[0].pt, seamPtB = spl[spl.length-1].pt;
+    const seamGap = Math.hypot(seamPtA.x-seamPtB.x, seamPtA.y-seamPtB.y);
+    lines.push('Spline seam gap (pt[0] vs pt[last]): ' + (seamGap < 0.01 ? OK(seamGap.toFixed(4) + ' wu ✅') : WARN(seamGap.toFixed(4) + ' wu')));
 
-    // ── 6. CLAMP EFFECTIVENESS ────────────────────────────────────────────
-    lines.push('<span style="color:#aaa">── Clamp effectiveness (how many pts were pulled in) ──</span>');
+    // Check geo arrays close cleanly
     [[-1,'LEFT'],[1,'RIGHT']].forEach(function(pair) {
       const side = pair[0], label = pair[1];
-      const norms = side === -1 ? normL : normR;
+      const iW = geo[side].innerWorld, oW = geo[side].outerWorld;
+      const iGap = Math.hypot(iW[0].x-iW[iW.length-1].x, iW[0].y-iW[iW.length-1].y);
+      const oGap = Math.hypot(oW[0].x-oW[oW.length-1].x, oW[0].y-oW[oW.length-1].y);
+      const iOk = iGap < 2.0, oOk = oGap < 2.0;
+      lines.push(label + ' inner seam gap: ' + (iOk ? OK(iGap.toFixed(2)+'wu') : ERR(iGap.toFixed(2)+'wu')) +
+        '  outer seam gap: ' + (oOk ? OK(oGap.toFixed(2)+'wu') : ERR(oGap.toFixed(2)+'wu')));
+    });
+    lines.push('');
+
+    // ── 7. SKIP RADII ─────────────────────────────────────────────────────
+    lines.push(S('── Skip radii in effect ──'));
+    const skipOuter = Math.max(segsPerWp * 8,  Math.round(loopLen * 0.02));
+    const skipInner = Math.max(segsPerWp * 20, Math.round(loopLen * 0.04));
+    lines.push('skipOuter: ' + INFO(skipOuter + ' pts') + ' = ~' + (skipOuter/segsPerWp).toFixed(1) + ' waypoints' +
+      (skipOuter < 200 ? '  ' + WARN('⚠ may be narrow for busy seam') : '  ✅'));
+    lines.push('skipInner: ' + INFO(skipInner + ' pts') + ' = ~' + (skipInner/segsPerWp).toFixed(1) + ' waypoints');
+    lines.push('');
+
+    // ── 8. CLAMP EFFECTIVENESS ────────────────────────────────────────────
+    lines.push(S('── Clamp effectiveness ──'));
+    [[-1,'LEFT'],[1,'RIGHT']].forEach(function(pair) {
+      const side = pair[0], label = pair[1];
       const iWorld = geo[side].innerWorld;
       const oWorld = geo[side].outerWorld;
       let innerClamped = 0, outerClamped = 0;
-      const INNER_OFFSET = BARRIER_INNER;
-      const OUTER_OFFSET = BARRIER_OUTER;
-      for (let i = 0; i < Math.min(iWorld.length, spl.length); i++) {
+      let outerClampedSeam = 0; // within skipOuter*2 of seam
+      const total = Math.min(iWorld.length, spl.length);
+      for (let i = 0; i < total; i++) {
         const cen = spl[i].pt;
         const iD = Math.hypot(iWorld[i].x - cen.x, iWorld[i].y - cen.y);
         const oD = Math.hypot(oWorld[i].x - cen.x, oWorld[i].y - cen.y);
-        if (iD < INNER_OFFSET - 0.5) innerClamped++;
-        if (oD < OUTER_OFFSET - 0.5) outerClamped++;
+        if (iD < BARRIER_INNER - 0.5) innerClamped++;
+        if (oD < BARRIER_OUTER - 0.5) {
+          outerClamped++;
+          const distFromSeam = Math.min(i, loopLen - i);
+          if (distFromSeam < skipOuter * 2) outerClampedSeam++;
+        }
       }
-      const total = Math.min(iWorld.length, spl.length);
-      lines.push(label + ' — inner clamped: <b style="color:' + (innerClamped > 0 ? '#4cf' : '#888') + '">' + innerClamped + '/' + total + '</b>  outer clamped: <b style="color:' + (outerClamped > 0 ? '#4cf' : '#888') + '">' + outerClamped + '/' + total + '</b>');
+      const outerCol = outerClamped > 0 ? '#4cf' : '#888';
+      lines.push(label + ' — inner: ' + (innerClamped > 0 ? INFO(innerClamped) : '<b style="color:#888">0</b>') + '/' + total +
+        '  outer: <b style="color:' + outerCol + '">' + outerClamped + '</b>/' + total +
+        (outerClampedSeam > 0 ? '  ' + WARN('(' + outerClampedSeam + ' near seam ⚠)') : '  ' + OK('(0 near seam ✅)')));
     });
+    lines.push('');
+
+    // ── 9. OVERALL HEALTH SUMMARY ─────────────────────────────────────────
+    lines.push(S('── Health summary ──'));
+    const issues = [];
+    if (normalFail) issues.push('Normal direction failure');
+    if (overlapCount > 0) issues.push('Inner barriers overlapping (' + overlapCount + ' pts)');
+    if (minDist < TRACK_HALF_WIDTH) issues.push('Inner barriers dangerously close (' + minDist.toFixed(1) + ' wu)');
+    if (issues.length === 0) {
+      lines.push(OK('✅ All checks passed — barriers look healthy'));
+    } else {
+      issues.forEach(iss => lines.push(ERR('❌ ' + iss)));
+    }
 
   } catch(e) {
-    lines.push('<span style="color:#f44">ERROR: ' + e.message + '</span>');
-    lines.push('<span style="color:#f44">' + (e.stack||'').split('\n')[1] + '</span>');
+    lines.push(ERR('ERROR: ' + e.message));
+    lines.push(ERR((e.stack||'').split('\n').slice(1,3).join(' | ')));
     console.error(e);
   }
 
@@ -439,6 +554,33 @@ function _fallbackCopy(text, onDone) {
       <button class="modal-btn" onclick="cancelNewTrack()">Cancel</button>
       <button class="modal-btn copy" onclick="confirmNewTrack()">Start Building</button>
     </div>
+  </div>
+</div>
+
+<!-- EXPORT PICKER MODAL -->
+<div id="export-picker-modal" style="display:none;position:fixed;inset:0;z-index:1050;background:rgba(0,0,0,0.82);align-items:center;justify-content:center;">
+  <div style="width:min(340px,calc(100vw - 28px));background:#0d0d10;border:1px solid rgba(167,139,250,0.25);border-radius:14px;padding:20px;display:flex;flex-direction:column;gap:14px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <span style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:16px;letter-spacing:1.5px;color:#fff;">EXPORT</span>
+      <button onclick="closeExportPicker()" style="background:none;border:none;color:#666;font-size:18px;cursor:pointer;line-height:1;">✕</button>
+    </div>
+    <p style="font-size:12px;color:rgba(255,255,255,0.4);margin:0;line-height:1.5;">Choose what to export. Use <b style="color:#e8ff47;">2D Screenshot</b> to capture the current canvas as a PNG for debugging.</p>
+    <button onclick="closeExportPicker();openExport();"
+      style="width:100%;padding:14px;border-radius:10px;border:1px solid rgba(0,255,136,0.35);background:rgba(0,255,136,0.07);color:#00ff88;font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:15px;letter-spacing:1px;cursor:pointer;transition:opacity 0.15s;text-align:left;display:flex;align-items:center;gap:12px;">
+      <span style="font-size:22px;">📦</span>
+      <span>
+        3D Game Export<br>
+        <span style="font-size:11px;font-weight:400;color:rgba(0,255,136,0.55);">Downloads .js file for your racing game repo</span>
+      </span>
+    </button>
+    <button onclick="closeExportPicker();export2DCanvas();"
+      style="width:100%;padding:14px;border-radius:10px;border:1px solid rgba(232,255,71,0.35);background:rgba(232,255,71,0.07);color:#e8ff47;font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:15px;letter-spacing:1px;cursor:pointer;transition:opacity 0.15s;text-align:left;display:flex;align-items:center;gap:12px;">
+      <span style="font-size:22px;">🖼️</span>
+      <span>
+        2D Screenshot<br>
+        <span style="font-size:11px;font-weight:400;color:rgba(232,255,71,0.45);">Saves PNG of the current canvas view</span>
+      </span>
+    </button>
   </div>
 </div>
 
@@ -674,5 +816,52 @@ function closeDetailsPanel() {
 <script src="home.js"       onload="cfScriptLoaded('home.js')"       onerror="cfScriptFailed('home.js')"></script>
 <script src="preview3d.js"  onload="cfScriptLoaded('preview3d.js')"  onerror="cfScriptFailed('preview3d.js')"></script>
 <script src="init.js"       onload="cfScriptLoaded('init.js')"       onerror="cfScriptFailed('init.js')"></script>
+<script>
+// ── Export picker ──────────────────────────────────────
+function openExportPicker() {
+  document.getElementById('export-picker-modal').style.display = 'flex';
+}
+function closeExportPicker() {
+  document.getElementById('export-picker-modal').style.display = 'none';
+}
+
+// ── 2D canvas PNG download ─────────────────────────────
+function export2DCanvas() {
+  try {
+    // Composite bg + main canvas onto a temp canvas
+    const bg   = document.getElementById('bg-canvas');
+    const main = document.getElementById('main-canvas');
+    const W = main.width, H = main.height;
+
+    const tmp = document.createElement('canvas');
+    tmp.width = W; tmp.height = H;
+    const tCtx = tmp.getContext('2d');
+
+    // Draw background then track
+    if (bg) tCtx.drawImage(bg, 0, 0);
+    tCtx.drawImage(main, 0, 0);
+
+    // Build filename from track name
+    const nameEl = document.getElementById('track-topbar-name') || document.getElementById('track-name');
+    const rawName = (nameEl ? nameEl.value : 'track').trim().toLowerCase()
+                    .replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_') || 'track';
+    const filename = 'track_' + rawName + '_2d.png';
+
+    // Trigger download
+    tmp.toBlob(function(blob) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+      if (typeof showToast === 'function') showToast('Saved ' + filename);
+    }, 'image/png');
+  } catch(e) {
+    if (typeof showToast === 'function') showToast('Screenshot failed: ' + e.message);
+    console.error('export2DCanvas error:', e);
+  }
+}
+</script>
 </body>
 </html>

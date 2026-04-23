@@ -214,7 +214,8 @@ function genBarrierCode(seg, pts) {
 function buildExportCode() {
   const name     = (document.getElementById('track-name').value.trim() || 'MY CIRCUIT').toUpperCase();
   const sub      = document.getElementById('track-sub').value.trim()  || 'Custom circuit';
-  const barriers = document.getElementById('barriers-toggle').checked;
+  const barriersEl = document.getElementById('barriers-toggle');
+  const barriers = barriersEl ? barriersEl.checked : true; // default true if element missing
   const nPerSeg  = parseInt(document.getElementById('nperseg').value) || 12;
   const key      = name.toLowerCase().replace(/[^a-z0-9]/g,'_').replace(/__+/g,'_');
   const roadWidth = 28;
