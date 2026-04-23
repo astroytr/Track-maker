@@ -565,9 +565,11 @@ function _getBarrierGeo() {
     grid.get(key).push(i);
   }
 
-  // Return the minimum distance from world point (wx,wy) to any centreline point
-  // that is NOT within ±skipRadius indices of skipIdx (to exclude the local section)
-  const skipRadius = Math.ceil(n / waypoints.length) * 25; // ~25 waypoints worth of spline pts
+  // Skip enough local points to clear a full hairpin (~30 waypoints each side).
+  // On an 800wp × 20seg track that's 600 pts — about 3.75% of total.
+  // Hard-cap at 15% of total so it never excludes more than one "side" of the track.
+  const segsPerWp = Math.round((n - 1) / Math.max(1, waypoints.length));
+  const skipRadius = Math.min(Math.round(n * 0.15), segsPerWp * 30);
 
   function nearestForeignCentrelineDist(wx, wy, skipIdx) {
     const cx0 = Math.floor(wx / CELL);
@@ -580,8 +582,12 @@ function _getBarrierGeo() {
         if (!cell) continue;
         for (let k = 0; k < cell.length; k++) {
           const j = cell[k];
-          // Skip points that belong to the same local section of track
-          const delta = Math.min(Math.abs(j - skipIdx), n - Math.abs(j - skipIdx));
+          // Skip points that belong to the same local section of track.
+          // splinePts has a closing duplicate at index n-1 (same as index 0),
+          // so use n-1 as the loop length for the circular distance calculation.
+          const loopLen = n - 1;
+          const raw = Math.abs(j - skipIdx);
+          const delta = Math.min(raw, loopLen - raw);
           if (delta < skipRadius) continue;
           const q = splinePts[j].pt;
           const d = Math.hypot(wx - q.x, wy - q.y);
@@ -696,7 +702,8 @@ function _buildNormalsForBarrier(pts, sideNum) {
 }
 
 function drawBarrierLines() {
-  const geo = _getBarrierGeo();
+  let geo;
+  try { geo = _getBarrierGeo(); } catch(e) { console.error('barrier geo error', e); return; }
   if (!geo) return;
 
   [-1, 1].forEach(side => {
