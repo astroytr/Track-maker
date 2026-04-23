@@ -30,9 +30,12 @@ let barrierSegments  = [];
 let barrierSelStart  = -1;
 let barrierSide      = 'both';
 
-// ── Spline cache ─────────────────────────────────────
+// ── Spline + barrier geometry caches ─────────────────
 let _cachedSpline12 = null, _cachedSpline16 = null, _cachedSpline20 = null;
 let _bgCamKey = '', _wpCacheKey = '';
+let _cachedBarrierWorldGeo = null;
+let _cachedBarrierGeo = null;
+let _barrierGeoCamZoom = -1;
 
 // ── Track geometry constants (world units ≈ 0.93 m) ──
 const TRACK_HALF_WIDTH = 7;   // half of 14 m road
@@ -81,7 +84,8 @@ function resize() {
   const r = wrap.getBoundingClientRect();
   bgCanvas.width = mainCanvas.width = r.width;
   bgCanvas.height = mainCanvas.height = r.height;
-  render();
+  _bgCamKey = ''; // force bg redraw
+  if (typeof markDirty === 'function') markDirty(); else render();
 }
 window.addEventListener('resize', resize);
 resize();
@@ -124,6 +128,8 @@ function buildSplinePoints(segs) {
 
 function _invalidateSplineCache() {
   _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
+  _cachedBarrierWorldGeo = null;
+  _cachedBarrierGeo = null;
 }
 
 function getCachedSpline(segs) {
@@ -526,27 +532,110 @@ function _buildSideClipPath(splinePts, side, innerClipOffset, outerClipOffset) {
   ctx.closePath();
 }
 
-function drawBarrierLines() {
+function _getBarrierGeo() {
   const splinePts = getCachedSpline(20);
-  if (splinePts.length < 2) return;
+  if (splinePts.length < 2) return null;
+  if (_cachedBarrierWorldGeo) return _cachedBarrierWorldGeo;
 
   const innerOffset = BARRIER_INNER;
   const outerOffset = BARRIER_OUTER;
+  const n = splinePts.length;
 
-  // Clip inner boundary = 0.5 world units from centreline (never crosses to other side)
-  // Clip outer boundary = outerOffset + small margin
-  const clipInner   = 0.5;
-  const clipOuter   = outerOffset + 4.0;
+  // Build raw world-space inner points for both sides so we can cross-check them
+  const rawInnerWorld = { '-1': [], '1': [] };
+  [-1, 1].forEach(side => {
+    const normals = _buildNormalsForBarrier(splinePts, side);
+    for (let i = 0; i < n; i++) {
+      const p = splinePts[i].pt;
+      const nx = normals[i].x;
+      const ny = normals[i].y;
+      rawInnerWorld[side].push({ x: p.x + nx * innerOffset, y: p.y + ny * innerOffset });
+    }
+  });
+
+  // Build per-side geometry in WORLD space
+  const geo = {};
+  [-1, 1].forEach(side => {
+    const opp = -side;
+    const normals = _buildNormalsForBarrier(splinePts, side);
+    const innerWorld = [], outerWorld = [];
+
+    for (let i = 0; i < n; i++) {
+      const p = splinePts[i].pt;
+      const nx = normals[i].x, ny = normals[i].y;
+
+      outerWorld.push({ x: p.x + nx * outerOffset, y: p.y + ny * outerOffset });
+
+      let iwx = rawInnerWorld[side][i].x;
+      let iwy = rawInnerWorld[side][i].y;
+
+      const owx = rawInnerWorld[opp][i].x;
+      const owy = rawInnerWorld[opp][i].y;
+      const midX = (iwx + owx) * 0.5;
+      const midY = (iwy + owy) * 0.5;
+      const innerToOpp = Math.hypot(owx - iwx, owy - iwy);
+
+      if (innerToOpp < 2.0) {
+        iwx = midX; iwy = midY;
+      } else {
+        const toCentreX = p.x - iwx, toCentreY = p.y - iwy;
+        const toMidX = midX - iwx, toMidY = midY - iwy;
+        const dot = toCentreX * toMidX + toCentreY * toMidY;
+        if (dot < 0) { iwx = midX; iwy = midY; }
+      }
+
+      innerWorld.push({ x: iwx, y: iwy });
+    }
+
+    geo[side] = { innerWorld, outerWorld };
+  });
+
+  _cachedBarrierWorldGeo = geo;
+  return geo;
+}
+
+// Build normalised outward normals for one side of the track
+function _buildNormalsForBarrier(pts, sideNum) {
+  const n = pts.length;
+  const normals = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n].pt;
+    const next = pts[(i + 1) % n].pt;
+    const dx = next.x - prev.x, dy = next.y - prev.y;
+    const l = Math.hypot(dx, dy) || 1;
+    let nx = -dy / l, ny = dx / l;
+    if (sideNum === 1) { nx = -nx; ny = -ny; }
+    normals[i] = { x: nx, y: ny };
+  }
+  // Smooth — flip if dot goes negative
+  for (let i = 1; i < n; i++) {
+    const p = normals[i - 1], c = normals[i];
+    const d = p.x * c.x + p.y * c.y;
+    if (d < 0) { c.x = -c.x; c.y = -c.y; }
+    else if (d < 0.6) {
+      c.x = p.x * 0.6 + c.x * 0.4;
+      c.y = p.y * 0.6 + c.y * 0.4;
+      const l = Math.hypot(c.x, c.y) || 1; c.x /= l; c.y /= l;
+    }
+  }
+  return normals;
+}
+
+function drawBarrierLines() {
+  const geo = _getBarrierGeo();
+  if (!geo) return;
 
   [-1, 1].forEach(side => {
-    const inner = buildOffsetScreenPolyline(splinePts, side, innerOffset);
-    const outer = buildOffsetScreenPolyline(splinePts, side, outerOffset);
+    const { innerWorld, outerWorld } = geo[side];
+
+    // Convert world → screen at draw time (cheap; world-space geo is cached)
+    const inner = innerWorld.map(p => worldToScreen(p.x, p.y));
+    const outer = outerWorld.map(p => worldToScreen(p.x, p.y));
 
     ctx.save();
-    // No clip — geometry is correct per diagnostic log, evenodd clip was
-    // erasing the inner barrier inside tight hairpins where both side donuts overlap.
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
 
+    // Outer barrier — shadow + silver + highlight
     ctx.lineWidth = Math.max(4, 3.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.5)';
     _polyPath(ctx, outer); ctx.stroke();
@@ -559,60 +648,23 @@ function drawBarrierLines() {
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.stroke();
 
-    // ── Inner barrier — smooth adaptive, no phantom straight-line closure
-    const normals = _computeNormalsForPts(splinePts);
-    const adjustedInner = [];
-
-    const minGap = 4.0;
-    const falloffRange = 4.0;
-
-    for (let i = 0; i < splinePts.length; i++) {
-      const p = splinePts[i];
-
-      const nx = normals[i].px * side;
-      const ny = normals[i].py * side;
-
-      let innerX = p.pt.x + nx * innerOffset;
-      let innerY = p.pt.y + ny * innerOffset;
-
-      const outerX = p.pt.x + nx * outerOffset;
-      const outerY = p.pt.y + ny * outerOffset;
-
-      const dx = outerX - innerX;
-      const dy = outerY - innerY;
-      const dist = Math.hypot(dx, dy);
-
-      if (dist < falloffRange) {
-        const t = Math.max(0, Math.min(1, (falloffRange - dist) / falloffRange));
-        const smooth = t * t * (3 - 2 * t); // smoothstep
-        const push = Math.min(2.0, (minGap - dist) * 0.5 * smooth);
-        innerX -= nx * push;
-        innerY -= ny * push;
-      }
-
-      adjustedInner.push(worldToScreen(innerX, innerY));
-    }
-
-    // Shadow pass
+    // Inner barrier (overlap-clamped) — shadow + silver + highlight
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.35)';
-    ctx.globalAlpha = 1;
     ctx.beginPath();
-    adjustedInner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    inner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
     ctx.stroke();
 
-    // Silver pass
     ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(160,175,190,0.85)';
     ctx.beginPath();
-    adjustedInner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    inner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
     ctx.stroke();
 
-    // Highlight pass
     ctx.lineWidth = Math.max(0.8, 0.8 * cam.zoom);
     ctx.strokeStyle = 'rgba(220,235,255,0.45)';
     ctx.beginPath();
-    adjustedInner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    inner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
     ctx.stroke();
 
     ctx.restore();

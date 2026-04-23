@@ -158,7 +158,7 @@ window.addEventListener('load', () => {
       <button onclick="closeBarrierLog()" style="background:none;border:none;color:#888;font-size:18px;cursor:pointer;">✕</button>
     </div>
     <div id="barrier-log-body" style="overflow-y:auto;flex:1;font-family:monospace;font-size:11px;color:#ccc;line-height:1.7;background:#080808;border-radius:8px;padding:10px;"></div>
-    <button onclick="copyBarrierLog()" style="background:rgba(232,255,71,0.1);border:1px solid rgba(232,255,71,0.3);color:#e8ff47;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13px;letter-spacing:1px;padding:8px;border-radius:8px;cursor:pointer;">📋 COPY LOG</button>
+    <button id="barrier-copy-btn" onclick="copyBarrierLog()" style="background:rgba(232,255,71,0.1);border:1px solid rgba(232,255,71,0.3);color:#e8ff47;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13px;letter-spacing:1px;padding:8px;border-radius:8px;cursor:pointer;transition:color 0.2s,border-color 0.2s;">📋 COPY LOG</button>
   </div>
 </div>
 
@@ -169,42 +169,119 @@ function openBarrierLog() {
   modal.style.display = 'flex';
   const lines = [];
 
-  lines.push('<span style="color:#e8ff47">── OVERLAP CHECK ──</span>');
+  lines.push('<span style="color:#e8ff47">══ BARRIER DIAGNOSTICS ══</span>');
   try {
     const spl = getCachedSpline(20);
-    lines.push('spline pts: <b>' + spl.length + '</b>');
+    lines.push('Spline points: <b>' + spl.length + '</b>   Waypoints: <b>' + waypoints.length + '</b>');
+    lines.push('Cam zoom: <b>' + cam.zoom.toFixed(3) + '</b>   BARRIER_INNER: <b>' + BARRIER_INNER + '</b>   BARRIER_OUTER: <b>' + BARRIER_OUTER + '</b>');
+    lines.push('');
 
-    [[-1, 'LEFT'], [1, 'RIGHT']].forEach(function(pair) {
-      const side = pair[0], label = pair[1];
-      lines.push('<span style="color:#e8ff47">── ' + label + ' INNER BARRIER ──</span>');
-      const inner = buildOffsetScreenPolyline(spl, side, 9.0);
-      const outer = buildOffsetScreenPolyline(spl, side, 26.0);
+    const sides = [[-1, 'LEFT'], [1, 'RIGHT']];
+    const innerWorldBySide = {};
 
-      // Check seam gap
-      const seamDist = Math.hypot(inner[inner.length-1].x - inner[0].x, inner[inner.length-1].y - inner[0].y);
-      lines.push('seam gap: <b style="color:' + (seamDist < 2 ? '#4f4' : '#f44') + '">' + seamDist.toFixed(1) + 'px</b> ' + (seamDist < 2 ? '✅ closed' : '❌ OPEN — this is the gap bug'));
-
-      // Check overlap: for each inner point, measure distance to corresponding outer point
-      let overlapCount = 0, minGap = Infinity, minGapIdx = -1;
-      const checkLen = Math.min(inner.length, outer.length);
-      for (let i = 0; i < checkLen; i++) {
-        const d = Math.hypot(inner[i].x - outer[i].x, inner[i].y - outer[i].y);
-        if (d < minGap) { minGap = d; minGapIdx = i; }
-        if (d < 1) overlapCount++;
+    // First pass — build world-space inner points for both sides (same logic as _getBarrierGeo)
+    sides.forEach(function(pair) {
+      const side = pair[0];
+      const normals = _buildNormalsForBarrier(spl, side);
+      const pts = [];
+      for (let i = 0; i < spl.length; i++) {
+        const p = spl[i].pt;
+        pts.push({ x: p.x + normals[i].x * BARRIER_INNER, y: p.y + normals[i].y * BARRIER_INNER });
       }
-      lines.push('inner↔outer min gap: <b style="color:' + (minGap < 5 ? '#f44' : minGap < 20 ? '#f90' : '#4f4') + '">' + minGap.toFixed(1) + 'px</b> at idx ' + minGapIdx + ' ' + (minGap < 5 ? '❌ OVERLAP' : minGap < 20 ? '⚠️ tight' : '✅ ok'));
-      lines.push('overlap points (gap<1px): <b style="color:' + (overlapCount > 0 ? '#f44' : '#4f4') + '">' + overlapCount + '</b> ' + (overlapCount > 0 ? '❌ overlapping' : '✅ none'));
+      innerWorldBySide[side] = pts;
+    });
 
-      // Check for spikes (large jumps between adjacent inner points)
+    sides.forEach(function(pair) {
+      const side = pair[0], label = pair[1];
+      const opp = -side;
+      lines.push('<span style="color:#e8ff47">── ' + label + ' INNER BARRIER ──</span>');
+
+      const inner = buildOffsetScreenPolyline(spl, side, BARRIER_INNER);
+      const outer = buildOffsetScreenPolyline(spl, side, BARRIER_OUTER);
+
+      // Seam gap (closure)
+      const seamDist = Math.hypot(inner[inner.length-1].x - inner[0].x, inner[inner.length-1].y - inner[0].y);
+      lines.push('Seam gap: <b style="color:' + (seamDist < 2 ? '#4f4' : '#f44') + '">' + seamDist.toFixed(1) + 'px</b> ' + (seamDist < 2 ? '✅ closed' : '❌ OPEN'));
+
+      // Spike check
       let maxJump = 0, maxJumpIdx = -1;
       for (let i = 1; i < inner.length; i++) {
         const d = Math.hypot(inner[i].x - inner[i-1].x, inner[i].y - inner[i-1].y);
         if (d > maxJump) { maxJump = d; maxJumpIdx = i; }
       }
-      lines.push('max spike jump: <b style="color:' + (maxJump > 80 ? '#f44' : maxJump > 40 ? '#f90' : '#4f4') + '">' + maxJump.toFixed(1) + 'px</b> at idx ' + maxJumpIdx + ' ' + (maxJump > 80 ? '❌ SPIKE' : maxJump > 40 ? '⚠️ large' : '✅ ok'));
+      lines.push('Max spike jump: <b style="color:' + (maxJump > 80 ? '#f44' : maxJump > 40 ? '#f90' : '#4f4') + '">' + maxJump.toFixed(1) + 'px</b> at idx ' + maxJumpIdx + ' ' + (maxJump > 80 ? '❌ SPIKE' : maxJump > 40 ? '⚠️ large' : '✅ ok'));
+
+      // Cross-overlap with opposite side inner barrier (world-space)
+      const myPts = innerWorldBySide[side];
+      const oppPts = innerWorldBySide[opp];
+      let crossOverlapCount = 0, minCrossDist = Infinity, minCrossIdx = -1;
+      const checkLen = Math.min(myPts.length, oppPts.length);
+      for (let i = 0; i < checkLen; i++) {
+        const d = Math.hypot(myPts[i].x - oppPts[i].x, myPts[i].y - oppPts[i].y);
+        if (d < minCrossDist) { minCrossDist = d; minCrossIdx = i; }
+        // Overlap = if the two inners are on wrong sides of the centreline
+        const cen = spl[i].pt;
+        const toMine = Math.hypot(myPts[i].x - cen.x, myPts[i].y - cen.y);
+        const toOpp  = Math.hypot(oppPts[i].x - cen.x, oppPts[i].y - cen.y);
+        const gap = Math.hypot(myPts[i].x - oppPts[i].x, myPts[i].y - oppPts[i].y);
+        const cenDist = Math.hypot(cen.x - (myPts[i].x + oppPts[i].x)*0.5, cen.y - (myPts[i].y + oppPts[i].y)*0.5);
+        // Crossed if centre is outside the segment between the two inner pts
+        if (gap < 0.5) crossOverlapCount++;
+      }
+      const crossColor = crossOverlapCount > 0 ? '#f44' : minCrossDist < 5 ? '#f90' : '#4f4';
+      lines.push('Cross-side world dist (min): <b style="color:' + crossColor + '">' + minCrossDist.toFixed(2) + ' wu</b> at idx ' + minCrossIdx + ' ' + (crossOverlapCount > 0 ? '❌ CROSSING' : minCrossDist < 5 ? '⚠️ very tight' : '✅ ok'));
+      lines.push('Crossing points (dist<0.5wu): <b style="color:' + (crossOverlapCount > 0 ? '#f44' : '#4f4') + '">' + crossOverlapCount + '</b>');
+
+      // Worst 3 cross-side indices with detail
+      const dists = [];
+      for (let i = 0; i < checkLen; i++) {
+        dists.push({ i, d: Math.hypot(myPts[i].x - oppPts[i].x, myPts[i].y - oppPts[i].y) });
+      }
+      dists.sort((a,b) => a.d - b.d);
+      lines.push('<span style="color:#888">  Tightest 3 cross-side points:</span>');
+      for (let k = 0; k < Math.min(3, dists.length); k++) {
+        const e = dists[k];
+        const col = e.d < 1 ? '#f44' : e.d < 5 ? '#f90' : '#888';
+        lines.push('  <span style="color:' + col + '">idx ' + e.i + ': ' + e.d.toFixed(2) + ' wu</span>');
+      }
+
+      // Inner↔outer gap on same side (screen px)
+      let minGap = Infinity, minGapIdx2 = -1, overlapCount = 0;
+      const cLen = Math.min(inner.length, outer.length);
+      for (let i = 0; i < cLen; i++) {
+        const d = Math.hypot(inner[i].x - outer[i].x, inner[i].y - outer[i].y);
+        if (d < minGap) { minGap = d; minGapIdx2 = i; }
+        if (d < 1) overlapCount++;
+      }
+      lines.push('Same-side inner↔outer gap (min screen): <b style="color:' + (minGap < 5 ? '#f44' : minGap < 20 ? '#f90' : '#4f4') + '">' + minGap.toFixed(1) + 'px</b> at idx ' + minGapIdx2);
+      lines.push('Overlap pts (screen <1px): <b style="color:' + (overlapCount > 0 ? '#f44' : '#4f4') + '">' + overlapCount + '</b>');
+      lines.push('');
     });
+
+    lines.push('<span style="color:#888">── POST-CLAMP CHECK (actual drawn geometry) ──</span>');
+    const geo = typeof _getBarrierGeo === 'function' ? _getBarrierGeo() : null;
+    if (geo) {
+      sides.forEach(function(pair) {
+        const side = pair[0], label = pair[1];
+        const opp = -side;
+        const myInner  = geo[side].innerWorld;
+        const oppInner = geo[opp].innerWorld;
+        let minCross = Infinity, crossCount = 0;
+        const cLen2 = Math.min(myInner.length, oppInner.length);
+        for (let i = 0; i < cLen2; i++) {
+          const d = Math.hypot(myInner[i].x - oppInner[i].x, myInner[i].y - oppInner[i].y);
+          if (d < minCross) minCross = d;
+          if (d < 0.5) crossCount++;
+        }
+        lines.push(label + ' post-clamp cross gap: <b style="color:' + (minCross < 1 ? '#f44' : minCross < 3 ? '#f90' : '#4f4') + '">' + minCross.toFixed(2) + ' wu</b>  crossing pts: <b>' + crossCount + '</b> ' + (crossCount > 0 ? '❌' : '✅'));
+      });
+    } else {
+      lines.push('<span style="color:#888">_getBarrierGeo not available</span>');
+    }
+
   } catch(e) {
     lines.push('<span style="color:#f44">ERROR: ' + e.message + '</span>');
+    console.error(e);
   }
 
   body.innerHTML = lines.join('<br>');
@@ -216,26 +293,29 @@ function closeBarrierLog() {
 
 function copyBarrierLog() {
   const body = document.getElementById('barrier-log-body');
+  const btn  = document.getElementById('barrier-copy-btn');
   const text = body.innerText || body.textContent;
+
+  function _onCopied() {
+    if (btn) { btn.textContent = '✅ COPIED TO CLIPBOARD'; btn.style.color = '#4f4'; btn.style.borderColor = 'rgba(80,255,80,0.4)'; }
+    if (typeof showToast === 'function') showToast('Copied!');
+    setTimeout(function() {
+      if (btn) { btn.textContent = '📋 COPY LOG'; btn.style.color = '#e8ff47'; btn.style.borderColor = 'rgba(232,255,71,0.3)'; }
+    }, 2000);
+  }
+
   if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(text).then(function() {
-      if (typeof showToast === 'function') showToast('Copied!');
-    }).catch(function() {
-      _fallbackCopy(text);
-    });
+    navigator.clipboard.writeText(text).then(_onCopied).catch(function() { _fallbackCopy(text, _onCopied); });
   } else {
-    _fallbackCopy(text);
+    _fallbackCopy(text, _onCopied);
   }
 }
 
-function _fallbackCopy(text) {
+function _fallbackCopy(text, onDone) {
   const ta = document.createElement('textarea');
-  ta.value = text;
-  ta.style.position = 'fixed';
-  ta.style.opacity = '0';
-  document.body.appendChild(ta);
-  ta.focus(); ta.select();
-  try { document.execCommand('copy'); if (typeof showToast === 'function') showToast('Copied!'); }
+  ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+  document.body.appendChild(ta); ta.focus(); ta.select();
+  try { document.execCommand('copy'); if (onDone) onDone(); }
   catch(e) { if (typeof showToast === 'function') showToast('Copy failed'); }
   document.body.removeChild(ta);
 }
