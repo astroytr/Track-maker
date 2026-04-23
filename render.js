@@ -716,10 +716,14 @@ function _getBarrierGeo() {
   return geo;
 }
 
-// Build normalised outward normals for one side of the track
+// Build normalised outward normals for one side of the track.
+// Uses the SAME winding-aware anchor as buildOffsetScreenPolyline so barrier
+// normals are globally consistent — no more hemisphere flips on self-crossing tracks.
 function _buildNormalsForBarrier(pts, sideNum) {
   const n = pts.length;
   const normals = new Array(n);
+
+  // Step 1: raw per-point normals
   for (let i = 0; i < n; i++) {
     const prev = pts[(i - 1 + n) % n].pt;
     const next = pts[(i + 1) % n].pt;
@@ -729,7 +733,22 @@ function _buildNormalsForBarrier(pts, sideNum) {
     if (sideNum === 1) { nx = -nx; ny = -ny; }
     normals[i] = { x: nx, y: ny };
   }
-  // Smooth — flip if dot goes negative
+
+  // Step 2: anchor pt 0 to winding direction so the whole chain starts correctly.
+  // Without this, flip-propagation can lock the wrong hemisphere for the entire track.
+  const windSign = _getWindSign();
+  const expectedSign = sideNum === -1 ? windSign : -windSign;
+  const p0 = pts[0].pt, p1 = pts[1 % n].pt;
+  const dx0 = p1.x - p0.x, dy0 = p1.y - p0.y;
+  const l0 = Math.hypot(dx0, dy0) || 1;
+  const refX = (-dy0 / l0) * expectedSign;
+  const refY = ( dx0 / l0) * expectedSign;
+  if (normals[0].x * refX + normals[0].y * refY < 0) {
+    normals[0].x = -normals[0].x;
+    normals[0].y = -normals[0].y;
+  }
+
+  // Step 3: propagate — flip if dot goes negative, blend if nearly perpendicular
   for (let i = 1; i < n; i++) {
     const p = normals[i - 1], c = normals[i];
     const d = p.x * c.x + p.y * c.y;
