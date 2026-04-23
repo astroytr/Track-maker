@@ -305,10 +305,18 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
       miterLen = Math.sign(miterLen) * maxLen;
     }
 
+    let finalOffset = miterLen;
+
+    // prevent inner collapse on tight corners
+    const MIN_OFFSET = offset * 0.6;
+    if (Math.abs(finalOffset) < MIN_OFFSET) {
+      finalOffset = Math.sign(finalOffset) * MIN_OFFSET;
+    }
+
     result.push(
       worldToScreen(
-        p.x + mxn * miterLen,
-        p.y + myn * miterLen
+        p.x + mxn * finalOffset,
+        p.y + myn * finalOffset
       )
     );
   }
