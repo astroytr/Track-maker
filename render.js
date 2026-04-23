@@ -117,6 +117,8 @@ function buildSplinePoints(segs) {
     const p2=waypoints[(i+1)%n],   p3=waypoints[(i+2)%n];
     for (let j = 0; j < segs; j++) pts.push({ pt: catmullPoint(p0,p1,p2,p3,j/segs), seg: i });
   }
+  // Close the loop — append first point so offset polylines have no seam gap
+  if (pts.length > 0) pts.push({ pt: pts[0].pt, seg: pts[0].seg });
   return pts;
 }
 
@@ -234,10 +236,10 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
     return ax * bx + ay * by;
   }
 
-  // Step 1: compute normals
+  // Step 1: compute per-point normals using wrapped neighbours for closed loop
   for (let i = 0; i < n; i++) {
-    const prev = pts[Math.max(0, i - 1)].pt;
-    const next = pts[Math.min(n - 1, i + 1)].pt;
+    const prev = pts[(i - 1 + n) % n].pt;
+    const next = pts[(i + 1) % n].pt;
 
     const dx = next.x - prev.x;
     const dy = next.y - prev.y;
@@ -255,14 +257,18 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
     normals[i] = { x: nx, y: ny };
   }
 
-  // Step 2: smooth normals
+  // Step 2: smooth normals — flip if dot product goes negative (direction flip on tight corners)
   for (let i = 1; i < n; i++) {
     const p = normals[i - 1];
     const c = normals[i];
 
     const d = dot(p.x, p.y, c.x, c.y);
 
-    if (d < 0.6) {
+    // If normal flipped direction, un-flip it
+    if (d < 0) {
+      c.x = -c.x;
+      c.y = -c.y;
+    } else if (d < 0.6) {
       c.x = p.x * 0.6 + c.x * 0.4;
       c.y = p.y * 0.6 + c.y * 0.4;
 
@@ -274,7 +280,7 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
 
   // Step 3: miter offset
   const result = [];
-  const MITER_LIMIT = 4.0;
+  const MITER_LIMIT = 3.0;
 
   for (let i = 0; i < n; i++) {
     const p = pts[i].pt;
@@ -282,7 +288,6 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
     if (i === 0 || i === n - 1) {
       const nx = normals[i].x;
       const ny = normals[i].y;
-
       result.push(worldToScreen(p.x + nx * offset, p.y + ny * offset));
       continue;
     }
@@ -297,7 +302,14 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
     const mxn = mx / len;
     const myn = my / len;
 
-    const denom = Math.max(1e-4, mxn * n1.x + myn * n1.y);
+    // If miter bisector points away from expected side, fall back to simple normal
+    const sideCheck = dot(mxn, myn, n1.x, n1.y);
+    if (sideCheck < 0.1) {
+      result.push(worldToScreen(p.x + n1.x * offset, p.y + n1.y * offset));
+      continue;
+    }
+
+    const denom = Math.max(1e-4, sideCheck);
     let miterLen = offset / denom;
 
     const maxLen = offset * MITER_LIMIT;
@@ -305,18 +317,16 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
       miterLen = Math.sign(miterLen) * maxLen;
     }
 
-    let finalOffset = miterLen;
-
-    // prevent inner collapse on tight corners
+    // prevent collapse
     const MIN_OFFSET = offset * 0.6;
-    if (Math.abs(finalOffset) < MIN_OFFSET) {
-      finalOffset = Math.sign(finalOffset) * MIN_OFFSET;
+    if (Math.abs(miterLen) < MIN_OFFSET) {
+      miterLen = Math.sign(miterLen) * MIN_OFFSET;
     }
 
     result.push(
       worldToScreen(
-        p.x + mxn * finalOffset,
-        p.y + myn * finalOffset
+        p.x + mxn * miterLen,
+        p.y + myn * miterLen
       )
     );
   }
@@ -531,9 +541,6 @@ function drawBarrierLines() {
   [-1, 1].forEach(side => {
     const inner = buildOffsetScreenPolyline(splinePts, side, innerOffset);
     const outer = buildOffsetScreenPolyline(splinePts, side, outerOffset);
-    // Close loops
-    if (inner.length > 1) inner.push(inner[0]);
-    if (outer.length > 1) outer.push(outer[0]);
 
     ctx.save();
 
@@ -603,8 +610,6 @@ function drawBarrierLines() {
 
       adjustedInner.push(worldToScreen(innerX, innerY));
     }
-    // Close the loop — connect last point back to first
-    adjustedInner.push(adjustedInner[0]);
 
     // Shadow pass
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
