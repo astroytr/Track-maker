@@ -284,6 +284,13 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
     }
   }
 
+  // FIX 1: The closing duplicate point (pts[n-1] === pts[0] spatially) has a
+  // degenerate tangent (next - current ≈ zero), producing a garbage normal.
+  // Copy the second-to-last real normal so the seam has a clean direction.
+  if (n > 1) {
+    normals[n - 1] = { x: normals[n - 2].x, y: normals[n - 2].y };
+  }
+
   // Step 3: miter offset
   const result = [];
   const MITER_LIMIT = 3.0;
@@ -548,9 +555,11 @@ function _getBarrierGeo() {
 
   // ── Step 2: build raw inner + outer arrays for both sides (no clamping yet)
   // These are the "ideal" positions before any collision resolution.
+  // FIX 2: stop at n-1 to exclude the closing duplicate point (pts[n-1] === pts[0]).
+  // Including it caused phantom geometry at the seam that triggered false clamping.
   const rawL = { inner: [], outer: [] };
   const rawR = { inner: [], outer: [] };
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < n - 1; i++) {
     const p = splinePts[i].pt;
     rawL.inner.push({ x: p.x + normalsL[i].x * innerOffset, y: p.y + normalsL[i].y * innerOffset });
     rawL.outer.push({ x: p.x + normalsL[i].x * outerOffset, y: p.y + normalsL[i].y * outerOffset });
@@ -562,7 +571,9 @@ function _getBarrierGeo() {
   // skipOuter: tiny — only skip immediate local curve so parallel straights fire.
   // skipInner: larger — skip a full hairpin apex so we don't self-clamp corners.
   const segsPerWp = Math.round(loopLen / Math.max(1, waypoints.length));
-  const skipOuter = Math.max(segsPerWp * 4,  Math.round(loopLen * 0.01));
+  // FIX 3: skipOuter doubled (segsPerWp*8, loopLen*0.02) so the exclusion zone
+  // covers ~320 pts around the seam — matching the observed 319-point clamp band.
+  const skipOuter = Math.max(segsPerWp * 8,  Math.round(loopLen * 0.02));
   const skipInner = Math.max(segsPerWp * 20, Math.round(loopLen * 0.04));
 
   const CELL_C = outerOffset * 2;
@@ -611,8 +622,9 @@ function _getBarrierGeo() {
     return lo;
   }
 
+  // FIX 2 (cont): all geometry loops stop at n-1, excluding the closing duplicate.
   const outerL = [], outerR = [];
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < n - 1; i++) {
     const p = splinePts[i].pt;
     const offL = clampOuterOffset(p.x, p.y, normalsL[i].x, normalsL[i].y, i);
     const offR = clampOuterOffset(p.x, p.y, normalsR[i].x, normalsR[i].y, i);
@@ -640,7 +652,7 @@ function _getBarrierGeo() {
   }
 
   const innerL = [], innerR = [];
-  for (let i = 0; i < n; i++) {
+  for (let i = 0; i < n - 1; i++) {
     const p = splinePts[i].pt;
     const offL = clampInnerOffset(p.x, p.y, normalsL[i].x, normalsL[i].y, i);
     const offR = clampInnerOffset(p.x, p.y, normalsR[i].x, normalsR[i].y, i);
@@ -701,6 +713,11 @@ function _buildNormalsForBarrier(pts, sideNum) {
       const l = Math.hypot(c.x, c.y) || 1; c.x /= l; c.y /= l;
     }
   }
+  // FIX 1: Closing duplicate point (pts[n-1] === pts[0]) has a degenerate tangent.
+  // Copy the last real normal so the seam point has a clean, consistent direction.
+  if (n > 1) {
+    normals[n - 1] = { x: normals[n - 2].x, y: normals[n - 2].y };
+  }
   return normals;
 }
 
@@ -713,8 +730,11 @@ function drawBarrierLines() {
     const { innerWorld, outerWorld } = geo[side];
 
     // Convert world → screen at draw time (cheap; world-space geo is cached)
+    // FIX 2: geo arrays now stop before the closing duplicate; re-close visually here.
     const inner = innerWorld.map(p => worldToScreen(p.x, p.y));
+    inner.push(inner[0]);
     const outer = outerWorld.map(p => worldToScreen(p.x, p.y));
+    outer.push(outer[0]);
 
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
