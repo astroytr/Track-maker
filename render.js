@@ -541,40 +541,107 @@ function _getBarrierGeo() {
   const outerOffset = BARRIER_OUTER;
   const n = splinePts.length;
 
-  // Build raw world-space inner points for both sides so we can cross-check them
-  const rawInnerWorld = { '-1': [], '1': [] };
-  [-1, 1].forEach(side => {
-    const normals = _buildNormalsForBarrier(splinePts, side);
-    for (let i = 0; i < n; i++) {
-      const p = splinePts[i].pt;
-      const nx = normals[i].x;
-      const ny = normals[i].y;
-      rawInnerWorld[side].push({ x: p.x + nx * innerOffset, y: p.y + ny * innerOffset });
-    }
-  });
+  // ── Step 1: build normals for both sides ────────────────────────────────
+  const normalsL = _buildNormalsForBarrier(splinePts, -1);
+  const normalsR = _buildNormalsForBarrier(splinePts,  1);
 
-  // Build per-side geometry in WORLD space
+  // ── Step 2: build a coarse spatial grid of ALL centreline points ─────────
+  // Used to find nearby centreline points from other parts of the track so we
+  // can clamp outer barrier points that would intrude into adjacent sections.
+  //
+  // Grid cell size = outerOffset * 2 (a point can only affect cells within one
+  // cell radius, so we only need to check the 9 surrounding cells).
+  const CELL = outerOffset * 2;
+  const grid = new Map(); // key = "cx,cy" → array of spline indices
+
+  // Downsample for grid — every 4th point is enough for proximity detection
+  const STEP = 4;
+  for (let i = 0; i < n; i += STEP) {
+    const p = splinePts[i].pt;
+    const cx = Math.floor(p.x / CELL);
+    const cy = Math.floor(p.y / CELL);
+    const key = cx + ',' + cy;
+    if (!grid.has(key)) grid.set(key, []);
+    grid.get(key).push(i);
+  }
+
+  // Return the minimum distance from world point (wx,wy) to any centreline point
+  // that is NOT within ±skipRadius indices of skipIdx (to exclude the local section)
+  const skipRadius = Math.ceil(n / waypoints.length) * 25; // ~25 waypoints worth of spline pts
+
+  function nearestForeignCentrelineDist(wx, wy, skipIdx) {
+    const cx0 = Math.floor(wx / CELL);
+    const cy0 = Math.floor(wy / CELL);
+    let minDist = Infinity;
+    for (let dcx = -1; dcx <= 1; dcx++) {
+      for (let dcy = -1; dcy <= 1; dcy++) {
+        const key = (cx0 + dcx) + ',' + (cy0 + dcy);
+        const cell = grid.get(key);
+        if (!cell) continue;
+        for (let k = 0; k < cell.length; k++) {
+          const j = cell[k];
+          // Skip points that belong to the same local section of track
+          const delta = Math.min(Math.abs(j - skipIdx), n - Math.abs(j - skipIdx));
+          if (delta < skipRadius) continue;
+          const q = splinePts[j].pt;
+          const d = Math.hypot(wx - q.x, wy - q.y);
+          if (d < minDist) minDist = d;
+        }
+      }
+    }
+    return minDist;
+  }
+
+  // ── Step 3: build raw inner (both sides) for left/right cross-clamp ─────
+  const rawInnerL = [], rawInnerR = [];
+  for (let i = 0; i < n; i++) {
+    const p = splinePts[i].pt;
+    rawInnerL.push({ x: p.x + normalsL[i].x * innerOffset, y: p.y + normalsL[i].y * innerOffset });
+    rawInnerR.push({ x: p.x + normalsR[i].x * innerOffset, y: p.y + normalsR[i].y * innerOffset });
+  }
+
+  // ── Step 4: per-side geometry with both clamps applied ───────────────────
+  const rawInnerBySide = { '-1': rawInnerL, '1': rawInnerR };
+  const normalsBySide  = { '-1': normalsL,  '1': normalsR  };
+
   const geo = {};
   [-1, 1].forEach(side => {
     const opp = -side;
-    const normals = _buildNormalsForBarrier(splinePts, side);
+    const norms    = normalsBySide[side];
+    const rawInner = rawInnerBySide[side];
+    const rawOpp   = rawInnerBySide[opp];
     const innerWorld = [], outerWorld = [];
 
     for (let i = 0; i < n; i++) {
-      const p = splinePts[i].pt;
-      const nx = normals[i].x, ny = normals[i].y;
+      const p  = splinePts[i].pt;
+      const nx = norms[i].x, ny = norms[i].y;
 
-      outerWorld.push({ x: p.x + nx * outerOffset, y: p.y + ny * outerOffset });
+      // ── Outer barrier: clamp by nearest foreign centreline point ──────────
+      // The outer barrier must not reach closer than TRACK_HALF_WIDTH + 1wu
+      // to any other section of the track centreline (i.e. stay in the runoff,
+      // not intrude onto the asphalt of a parallel section).
+      const rawOuterX = p.x + nx * outerOffset;
+      const rawOuterY = p.y + ny * outerOffset;
+      const foreignDist = nearestForeignCentrelineDist(rawOuterX, rawOuterY, i);
+      let clampedOuterOffset = outerOffset;
+      if (foreignDist < TRACK_HALF_WIDTH + 2) {
+        // The raw outer point is already inside a foreign road — pull it back
+        // so the outer barrier sits at the edge of the foreign road's kerb
+        const safeRadius = TRACK_HALF_WIDTH + 2;
+        // How far from THIS centreline point is the foreign centreline?
+        const foreignDistFromCentre = nearestForeignCentrelineDist(p.x, p.y, i);
+        // Place outer barrier at midpoint between our centre and the foreign centre,
+        // minus one road half-width so it stays outside both roads
+        clampedOuterOffset = Math.max(innerOffset + 1, (foreignDistFromCentre - safeRadius) * 0.5 + innerOffset * 0.5);
+        clampedOuterOffset = Math.min(clampedOuterOffset, outerOffset);
+      }
+      outerWorld.push({ x: p.x + nx * clampedOuterOffset, y: p.y + ny * clampedOuterOffset });
 
-      let iwx = rawInnerWorld[side][i].x;
-      let iwy = rawInnerWorld[side][i].y;
-
-      const owx = rawInnerWorld[opp][i].x;
-      const owy = rawInnerWorld[opp][i].y;
-      const midX = (iwx + owx) * 0.5;
-      const midY = (iwy + owy) * 0.5;
+      // ── Inner barrier: same-frame left/right cross-clamp ─────────────────
+      let iwx = rawInner[i].x, iwy = rawInner[i].y;
+      const owx = rawOpp[i].x, owy = rawOpp[i].y;
+      const midX = (iwx + owx) * 0.5, midY = (iwy + owy) * 0.5;
       const innerToOpp = Math.hypot(owx - iwx, owy - iwy);
-
       if (innerToOpp < 2.0) {
         iwx = midX; iwy = midY;
       } else {
@@ -583,7 +650,6 @@ function _getBarrierGeo() {
         const dot = toCentreX * toMidX + toCentreY * toMidY;
         if (dot < 0) { iwx = midX; iwy = midY; }
       }
-
       innerWorld.push({ x: iwx, y: iwy });
     }
 
