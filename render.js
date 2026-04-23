@@ -429,7 +429,6 @@ function drawTrackRoad() {
     ctx.strokeStyle = 'rgba(255,255,255,0.7)';
     const poly = buildOffsetScreenPolyline(splinePts, side, edgeOffset);
     _polyPath(ctx, poly);
-    ctx.closePath();
     ctx.stroke();
   });
 
@@ -444,10 +443,10 @@ function drawTrackRoad() {
     ctx.setLineDash([dashLen, dashLen]);
     ctx.lineDashOffset = 0;
     ctx.strokeStyle = 'rgba(215,25,25,0.92)';
-    _polyPath(ctx, poly); ctx.closePath(); ctx.stroke();
+    _polyPath(ctx, poly); ctx.stroke();
     ctx.lineDashOffset = dashLen;
     ctx.strokeStyle = 'rgba(245,245,245,0.92)';
-    _polyPath(ctx, poly); ctx.closePath(); ctx.stroke();
+    _polyPath(ctx, poly); ctx.stroke();
   });
   ctx.setLineDash([]); ctx.lineDashOffset = 0;
 
@@ -533,7 +532,7 @@ function drawBarrierLines() {
     const outerPoly = buildOffsetScreenPolyline(splinePts, side, clipOuter);
     const innerPoly = buildOffsetScreenPolyline(splinePts, side, clipInner);
 
-    // Outer loop — forward
+    // Outer loop — forward (closed track loop)
     outerPoly.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
     ctx.closePath();
     // Inner loop — forward (same direction creates hole with evenodd)
@@ -543,23 +542,26 @@ function drawBarrierLines() {
     ctx.clip('evenodd');
 
     // ── Outer wall — shadow then silver then highlight
+    // NOTE: no closePath on stroke paths — track is a loop but closePath on an
+    // open polyline (built point-by-point) adds a phantom straight line across
+    // sharp corners. The loop closure is already implicit in the spline.
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
     ctx.lineWidth = Math.max(4, 3.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.5)';
-    _polyPath(ctx, outer); ctx.closePath(); ctx.stroke();
+    _polyPath(ctx, outer); ctx.stroke();
 
     ctx.lineWidth = Math.max(3, 2.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(170,185,200,1.0)';
-    _polyPath(ctx, outer); ctx.closePath(); ctx.stroke();
+    _polyPath(ctx, outer); ctx.stroke();
 
     ctx.lineWidth = Math.max(1, 1.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
-    _polyPath(ctx, outer); ctx.closePath(); ctx.stroke();
+    _polyPath(ctx, outer); ctx.stroke();
 
-    // ── Smart Inner barrier (AAA smooth adaptive)
+    // ── Inner barrier — smooth adaptive, no phantom straight-line closure
     const normals = _computeNormalsForPts(splinePts);
     const adjustedInner = [];
-    const alphaArr = [];
 
     const minGap = 4.0;
     const falloffRange = 4.0;
@@ -583,41 +585,35 @@ function drawBarrierLines() {
       if (dist < falloffRange) {
         const t = Math.max(0, Math.min(1, (falloffRange - dist) / falloffRange));
         const smooth = t * t * (3 - 2 * t); // smoothstep
-
         const push = Math.min(2.0, (minGap - dist) * 0.5 * smooth);
-
         innerX -= nx * push;
         innerY -= ny * push;
       }
 
-      const screenPt = worldToScreen(innerX, innerY);
-      adjustedInner.push(screenPt);
-
-      // alpha fade when too tight
-      let alpha = 1.0;
-      if (dist < minGap) {
-        alpha = Math.max(0.15, dist / minGap);
-      }
-      alphaArr.push(alpha);
+      adjustedInner.push(worldToScreen(innerX, innerY));
     }
 
+    // Shadow pass
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.35)';
     ctx.globalAlpha = 1;
     ctx.beginPath();
-    adjustedInner.forEach((p, i) => {
-      if (i === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
-    });
+    adjustedInner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.stroke();
 
+    // Silver pass
     ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(160,175,190,0.85)';
-    ctx.globalAlpha = 1;
     ctx.beginPath();
-    adjustedInner.forEach((p, i) => {
-      if (i === 0) ctx.moveTo(p.x, p.y);
-      else ctx.lineTo(p.x, p.y);
-    });
+    adjustedInner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.stroke();
+
+    // Highlight pass
+    ctx.lineWidth = Math.max(0.8, 0.8 * cam.zoom);
+    ctx.strokeStyle = 'rgba(220,235,255,0.45)';
+    ctx.beginPath();
+    adjustedInner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
+    ctx.stroke();
 
     ctx.restore();
   });
