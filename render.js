@@ -543,26 +543,8 @@ function drawBarrierLines() {
     const outer = buildOffsetScreenPolyline(splinePts, side, outerOffset);
 
     ctx.save();
-
-    // Clip to this side's exclusive band [0.5wu … clipOuter wu]
-    // Uses 'evenodd' fill rule so the donut hole (centreline half) is excluded
-    ctx.beginPath();
-    const outerPoly = buildOffsetScreenPolyline(splinePts, side, clipOuter);
-    const innerPoly = buildOffsetScreenPolyline(splinePts, side, clipInner);
-
-    // Outer loop — forward (closed track loop)
-    outerPoly.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-    ctx.closePath();
-    // Inner loop — forward (same direction creates hole with evenodd)
-    innerPoly.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-    ctx.closePath();
-
-    ctx.clip('evenodd');
-
-    // ── Outer wall — shadow then silver then highlight
-    // NOTE: no closePath on stroke paths — track is a loop but closePath on an
-    // open polyline (built point-by-point) adds a phantom straight line across
-    // sharp corners. The loop closure is already implicit in the spline.
+    // No clip — geometry is correct per diagnostic log, evenodd clip was
+    // erasing the inner barrier inside tight hairpins where both side donuts overlap.
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
 
     ctx.lineWidth = Math.max(4, 3.5 * cam.zoom);
