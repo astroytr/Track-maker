@@ -616,24 +616,32 @@ function _getBarrierGeo() {
       const p  = splinePts[i].pt;
       const nx = norms[i].x, ny = norms[i].y;
 
-      // ── Outer barrier: clamp by nearest foreign centreline point ──────────
-      // The outer barrier must not reach closer than TRACK_HALF_WIDTH + 1wu
-      // to any other section of the track centreline (i.e. stay in the runoff,
-      // not intrude onto the asphalt of a parallel section).
-      const rawOuterX = p.x + nx * outerOffset;
-      const rawOuterY = p.y + ny * outerOffset;
-      const foreignDist = nearestForeignCentrelineDist(rawOuterX, rawOuterY, i);
+      // ── Outer barrier: step back until clear of any foreign centreline ──────
+      // Binary-search the offset from outerOffset down to innerOffset+1 until
+      // the candidate point is at least TRACK_HALF_WIDTH+2 wu from any foreign
+      // centreline point.  This is O(log N) per point and always correct.
+      const SAFE_CLEARANCE = TRACK_HALF_WIDTH + 2;
+      let lo = innerOffset + 1;
+      let hi = outerOffset;
       let clampedOuterOffset = outerOffset;
-      if (foreignDist < TRACK_HALF_WIDTH + 2) {
-        // The raw outer point is already inside a foreign road — pull it back
-        // so the outer barrier sits at the edge of the foreign road's kerb
-        const safeRadius = TRACK_HALF_WIDTH + 2;
-        // How far from THIS centreline point is the foreign centreline?
-        const foreignDistFromCentre = nearestForeignCentrelineDist(p.x, p.y, i);
-        // Place outer barrier at midpoint between our centre and the foreign centre,
-        // minus one road half-width so it stays outside both roads
-        clampedOuterOffset = Math.max(innerOffset + 1, (foreignDistFromCentre - safeRadius) * 0.5 + innerOffset * 0.5);
-        clampedOuterOffset = Math.min(clampedOuterOffset, outerOffset);
+
+      // Quick early-out: raw outer point is already safe
+      const rawForeignDist = nearestForeignCentrelineDist(
+        p.x + nx * outerOffset, p.y + ny * outerOffset, i);
+      if (rawForeignDist < SAFE_CLEARANCE) {
+        // Need to clamp — binary search for the largest safe offset
+        for (let iter = 0; iter < 8; iter++) {
+          const mid = (lo + hi) * 0.5;
+          const fx = p.x + nx * mid;
+          const fy = p.y + ny * mid;
+          const fd = nearestForeignCentrelineDist(fx, fy, i);
+          if (fd < SAFE_CLEARANCE) {
+            hi = mid; // too far out, pull back
+          } else {
+            lo = mid; // safe, try pushing out more
+          }
+        }
+        clampedOuterOffset = lo;
       }
       outerWorld.push({ x: p.x + nx * clampedOuterOffset, y: p.y + ny * clampedOuterOffset });
 
