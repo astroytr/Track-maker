@@ -146,8 +146,108 @@ window.addEventListener('load', () => {
   <button class="ab-btn convert" onclick="openAIConvert()">✦ Convert</button>
   <button class="ab-btn export" onclick="openExport()">⬇ Export</button>
   <button class="ab-btn details" onclick="openDetailsPanel()">ⓘ Details</button>
+  <button class="ab-btn" onclick="openBarrierLog()" style="background:rgba(232,255,71,0.12);color:#e8ff47;border-color:rgba(232,255,71,0.3);">📋 Log</button>
   <button id="debug-badge" class="debug-ok" onclick="CFDebug.toggle()">DEBUG</button>
 </div>
+
+<!-- BARRIER LOG MODAL -->
+<div id="barrier-log-modal" style="display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,0.85);align-items:flex-end;justify-content:center;">
+  <div style="width:100%;max-width:520px;background:#0d0d10;border-top:2px solid rgba(232,255,71,0.4);border-radius:16px 16px 0 0;padding:16px;max-height:70vh;display:flex;flex-direction:column;gap:10px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;">
+      <span style="font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:15px;letter-spacing:1.5px;color:#e8ff47;">BARRIER DIAGNOSTICS</span>
+      <button onclick="closeBarrierLog()" style="background:none;border:none;color:#888;font-size:18px;cursor:pointer;">✕</button>
+    </div>
+    <div id="barrier-log-body" style="overflow-y:auto;flex:1;font-family:monospace;font-size:11px;color:#ccc;line-height:1.7;background:#080808;border-radius:8px;padding:10px;"></div>
+    <button onclick="copyBarrierLog()" style="background:rgba(232,255,71,0.1);border:1px solid rgba(232,255,71,0.3);color:#e8ff47;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:13px;letter-spacing:1px;padding:8px;border-radius:8px;cursor:pointer;">📋 COPY LOG</button>
+  </div>
+</div>
+
+<script>
+function openBarrierLog() {
+  const modal = document.getElementById('barrier-log-modal');
+  const body  = document.getElementById('barrier-log-body');
+  modal.style.display = 'flex';
+
+  const lines = [];
+
+  lines.push('<span style="color:#e8ff47">── STATE ──</span>');
+  const wpCount = (typeof waypoints !== 'undefined') ? waypoints.length : 'undefined';
+  lines.push('waypoints: <b>' + wpCount + '</b>');
+  lines.push('startingPointIdx: <b>' + (typeof startingPointIdx !== 'undefined' ? startingPointIdx : 'undefined') + '</b>');
+  lines.push('cam.zoom: <b>' + (typeof cam !== 'undefined' ? cam.zoom.toFixed(3) : 'undefined') + '</b>');
+
+  lines.push('<span style="color:#e8ff47">── SPLINE ──</span>');
+  try {
+    const spl = getCachedSpline(20);
+    lines.push('spline pts (segs=20): <b>' + spl.length + '</b>');
+    if (spl.length > 1) {
+      const first = spl[0].pt, last = spl[spl.length-1].pt;
+      lines.push('first pt: (' + first.x.toFixed(2) + ', ' + first.y.toFixed(2) + ')');
+      lines.push('last  pt: (' + last.x.toFixed(2) + ', ' + last.y.toFixed(2) + ')');
+      const seam = Math.hypot(last.x - first.x, last.y - first.y);
+      lines.push('seam gap (world units): <b style="color:' + (seam < 0.01 ? '#4f4' : '#f44') + '">' + seam.toFixed(4) + '</b> ' + (seam < 0.01 ? '✅ closed' : '❌ OPEN — gap here!'));
+    }
+  } catch(e) {
+    lines.push('<span style="color:#f44">spline error: ' + e.message + '</span>');
+  }
+
+  [[-1, 'side -1 (inner left)'],[1, 'side +1 (inner right)']].forEach(function(pair) {
+    const side = pair[0], label = pair[1];
+    lines.push('<span style="color:#e8ff47">── INNER BARRIER ' + label + ' ──</span>');
+    try {
+      const spl = getCachedSpline(20);
+      const poly = buildOffsetScreenPolyline(spl, side, 9.0);
+      lines.push('offset poly pts: <b>' + poly.length + '</b>');
+      let maxJump = 0, maxJumpIdx = -1;
+      for (let i = 1; i < poly.length; i++) {
+        const d = Math.hypot(poly[i].x - poly[i-1].x, poly[i].y - poly[i-1].y);
+        if (d > maxJump) { maxJump = d; maxJumpIdx = i; }
+      }
+      lines.push('max jump: <b style="color:' + (maxJump > 80 ? '#f44' : '#4f4') + '">' + maxJump.toFixed(1) + 'px</b> at idx ' + maxJumpIdx + ' ' + (maxJump > 80 ? '❌ SPIKE' : '✅ ok'));
+      if (poly.length > 1) {
+        const seam = Math.hypot(poly[poly.length-1].x - poly[0].x, poly[poly.length-1].y - poly[0].y);
+        lines.push('screen seam: <b style="color:' + (seam < 2 ? '#4f4' : '#f88') + '">' + seam.toFixed(1) + 'px</b> ' + (seam < 2 ? '✅ closed' : '⚠️ gap'));
+      }
+      if (typeof _computeNormalsForPts === 'function') {
+        const normals = _computeNormalsForPts(spl);
+        let flips = 0, flipIdxs = [];
+        for (let i = 1; i < normals.length; i++) {
+          const d = normals[i].px * normals[i-1].px + normals[i].py * normals[i-1].py;
+          if (d < 0) { flips++; if (flipIdxs.length < 5) flipIdxs.push(i); }
+        }
+        lines.push('normal flips: <b style="color:' + (flips === 0 ? '#4f4' : '#f90') + '">' + flips + '</b> ' + (flips === 0 ? '✅ clean' : '⚠️ concave dents at idx: ' + flipIdxs.join(', ')));
+      }
+      let reversals = 0;
+      for (let i = 2; i < poly.length; i++) {
+        const ax = poly[i-1].x-poly[i-2].x, ay = poly[i-1].y-poly[i-2].y;
+        const bx = poly[i].x-poly[i-1].x,   by = poly[i].y-poly[i-1].y;
+        const cross = ax*by - ay*bx;
+        if (i > 2) {
+          const ax2 = poly[i-2].x-poly[i-3].x, ay2 = poly[i-2].y-poly[i-3].y;
+          const cross2 = ax2*by - ay2*bx;
+          if (Math.sign(cross) !== Math.sign(cross2) && Math.abs(cross) > 200) reversals++;
+        }
+      }
+      lines.push('winding reversals: <b style="color:' + (reversals < 3 ? '#4f4' : '#f90') + '">' + reversals + '</b> ' + (reversals < 3 ? '✅ ok' : '⚠️ concave shape detected'));
+    } catch(e) {
+      lines.push('<span style="color:#f44">error: ' + e.message + '</span>');
+    }
+  });
+
+  body.innerHTML = lines.join('<br>');
+}
+
+function closeBarrierLog() {
+  document.getElementById('barrier-log-modal').style.display = 'none';
+}
+
+function copyBarrierLog() {
+  const text = document.getElementById('barrier-log-body').innerText;
+  navigator.clipboard.writeText(text).then(function() {
+    if (typeof showToast === 'function') showToast('Log copied!');
+  });
+}
+</script>
 
 <style>
 #app { padding-top: 0; display: block; }
