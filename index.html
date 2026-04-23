@@ -167,120 +167,146 @@ function openBarrierLog() {
   const modal = document.getElementById('barrier-log-modal');
   const body  = document.getElementById('barrier-log-body');
   modal.style.display = 'flex';
-  const lines = [];
 
-  lines.push('<span style="color:#e8ff47">══ BARRIER DIAGNOSTICS ══</span>');
+  // Force-bust the barrier cache so we always see the CURRENT render.js output,
+  // not a stale cached result from before the page loaded the latest fix.
+  if (typeof _invalidateSplineCache === 'function') _invalidateSplineCache();
+
+  const lines = [];
+  lines.push('<span style="color:#e8ff47;font-size:12px">══ RENDER DIAGNOSTICS ══</span>');
+
   try {
+    // ── 1. BASIC STATE ────────────────────────────────────────────────────
+    lines.push('<span style="color:#aaa">── State ──</span>');
+    lines.push('Waypoints: <b style="color:#e8ff47">' + waypoints.length + '</b>');
+
     const spl = getCachedSpline(20);
-    lines.push('Spline points: <b>' + spl.length + '</b>   Waypoints: <b>' + waypoints.length + '</b>');
-    lines.push('Cam zoom: <b>' + cam.zoom.toFixed(3) + '</b>   BARRIER_INNER: <b>' + BARRIER_INNER + '</b>   BARRIER_OUTER: <b>' + BARRIER_OUTER + '</b>');
+    lines.push('Spline pts (20 segs): <b style="color:#e8ff47">' + spl.length + '</b>');
+    lines.push('BARRIER_INNER: <b>' + BARRIER_INNER + '</b> wu   BARRIER_OUTER: <b>' + BARRIER_OUTER + '</b> wu   TRACK_HALF_WIDTH: <b>' + TRACK_HALF_WIDTH + '</b> wu');
+    lines.push('Winding sign (_getWindSign): <b style="color:#e8ff47">' + _getWindSign() + '</b>  (−1 = clockwise on screen, +1 = CCW)');
     lines.push('');
 
-    const sides = [[-1, 'LEFT'], [1, 'RIGHT']];
-    const innerWorldBySide = {};
-
-    // First pass — build world-space inner points for both sides (same logic as _getBarrierGeo)
-    sides.forEach(function(pair) {
-      const side = pair[0];
-      const normals = _buildNormalsForBarrier(spl, side);
-      const pts = [];
-      for (let i = 0; i < spl.length; i++) {
-        const p = spl[i].pt;
-        pts.push({ x: p.x + normals[i].x * BARRIER_INNER, y: p.y + normals[i].y * BARRIER_INNER });
-      }
-      innerWorldBySide[side] = pts;
-    });
-
-    sides.forEach(function(pair) {
-      const side = pair[0], label = pair[1];
-      const opp = -side;
-      lines.push('<span style="color:#e8ff47">── ' + label + ' INNER BARRIER ──</span>');
-
-      const inner = buildOffsetScreenPolyline(spl, side, BARRIER_INNER);
-      const outer = buildOffsetScreenPolyline(spl, side, BARRIER_OUTER);
-
-      // Seam gap (closure)
-      const seamDist = Math.hypot(inner[inner.length-1].x - inner[0].x, inner[inner.length-1].y - inner[0].y);
-      lines.push('Seam gap: <b style="color:' + (seamDist < 2 ? '#4f4' : '#f44') + '">' + seamDist.toFixed(1) + 'px</b> ' + (seamDist < 2 ? '✅ closed' : '❌ OPEN'));
-
-      // Spike check
-      let maxJump = 0, maxJumpIdx = -1;
-      for (let i = 1; i < inner.length; i++) {
-        const d = Math.hypot(inner[i].x - inner[i-1].x, inner[i].y - inner[i-1].y);
-        if (d > maxJump) { maxJump = d; maxJumpIdx = i; }
-      }
-      lines.push('Max spike jump: <b style="color:' + (maxJump > 80 ? '#f44' : maxJump > 40 ? '#f90' : '#4f4') + '">' + maxJump.toFixed(1) + 'px</b> at idx ' + maxJumpIdx + ' ' + (maxJump > 80 ? '❌ SPIKE' : maxJump > 40 ? '⚠️ large' : '✅ ok'));
-
-      // Cross-overlap with opposite side inner barrier (world-space)
-      const myPts = innerWorldBySide[side];
-      const oppPts = innerWorldBySide[opp];
-      let crossOverlapCount = 0, minCrossDist = Infinity, minCrossIdx = -1;
-      const checkLen = Math.min(myPts.length, oppPts.length);
-      for (let i = 0; i < checkLen; i++) {
-        const d = Math.hypot(myPts[i].x - oppPts[i].x, myPts[i].y - oppPts[i].y);
-        if (d < minCrossDist) { minCrossDist = d; minCrossIdx = i; }
-        // Overlap = if the two inners are on wrong sides of the centreline
-        const cen = spl[i].pt;
-        const toMine = Math.hypot(myPts[i].x - cen.x, myPts[i].y - cen.y);
-        const toOpp  = Math.hypot(oppPts[i].x - cen.x, oppPts[i].y - cen.y);
-        const gap = Math.hypot(myPts[i].x - oppPts[i].x, myPts[i].y - oppPts[i].y);
-        const cenDist = Math.hypot(cen.x - (myPts[i].x + oppPts[i].x)*0.5, cen.y - (myPts[i].y + oppPts[i].y)*0.5);
-        // Crossed if centre is outside the segment between the two inner pts
-        if (gap < 0.5) crossOverlapCount++;
-      }
-      const crossColor = crossOverlapCount > 0 ? '#f44' : minCrossDist < 5 ? '#f90' : '#4f4';
-      lines.push('Cross-side world dist (min): <b style="color:' + crossColor + '">' + minCrossDist.toFixed(2) + ' wu</b> at idx ' + minCrossIdx + ' ' + (crossOverlapCount > 0 ? '❌ CROSSING' : minCrossDist < 5 ? '⚠️ very tight' : '✅ ok'));
-      lines.push('Crossing points (dist<0.5wu): <b style="color:' + (crossOverlapCount > 0 ? '#f44' : '#4f4') + '">' + crossOverlapCount + '</b>');
-
-      // Worst 3 cross-side indices with detail
-      const dists = [];
-      for (let i = 0; i < checkLen; i++) {
-        dists.push({ i, d: Math.hypot(myPts[i].x - oppPts[i].x, myPts[i].y - oppPts[i].y) });
-      }
-      dists.sort((a,b) => a.d - b.d);
-      lines.push('<span style="color:#888">  Tightest 3 cross-side points:</span>');
-      for (let k = 0; k < Math.min(3, dists.length); k++) {
-        const e = dists[k];
-        const col = e.d < 1 ? '#f44' : e.d < 5 ? '#f90' : '#888';
-        lines.push('  <span style="color:' + col + '">idx ' + e.i + ': ' + e.d.toFixed(2) + ' wu</span>');
-      }
-
-      // Inner↔outer gap on same side (screen px)
-      let minGap = Infinity, minGapIdx2 = -1, overlapCount = 0;
-      const cLen = Math.min(inner.length, outer.length);
-      for (let i = 0; i < cLen; i++) {
-        const d = Math.hypot(inner[i].x - outer[i].x, inner[i].y - outer[i].y);
-        if (d < minGap) { minGap = d; minGapIdx2 = i; }
-        if (d < 1) overlapCount++;
-      }
-      lines.push('Same-side inner↔outer gap (min screen): <b style="color:' + (minGap < 5 ? '#f44' : minGap < 20 ? '#f90' : '#4f4') + '">' + minGap.toFixed(1) + 'px</b> at idx ' + minGapIdx2);
-      lines.push('Overlap pts (screen <1px): <b style="color:' + (overlapCount > 0 ? '#f44' : '#4f4') + '">' + overlapCount + '</b>');
-      lines.push('');
-    });
-
-    lines.push('<span style="color:#888">── POST-CLAMP CHECK (actual drawn geometry) ──</span>');
-    const geo = typeof _getBarrierGeo === 'function' ? _getBarrierGeo() : null;
-    if (geo) {
-      sides.forEach(function(pair) {
-        const side = pair[0], label = pair[1];
-        const opp = -side;
-        const myInner  = geo[side].innerWorld;
-        const oppInner = geo[opp].innerWorld;
-        let minCross = Infinity, crossCount = 0;
-        const cLen2 = Math.min(myInner.length, oppInner.length);
-        for (let i = 0; i < cLen2; i++) {
-          const d = Math.hypot(myInner[i].x - oppInner[i].x, myInner[i].y - oppInner[i].y);
-          if (d < minCross) minCross = d;
-          if (d < 0.5) crossCount++;
-        }
-        lines.push(label + ' post-clamp cross gap: <b style="color:' + (minCross < 1 ? '#f44' : minCross < 3 ? '#f90' : '#4f4') + '">' + minCross.toFixed(2) + ' wu</b>  crossing pts: <b>' + crossCount + '</b> ' + (crossCount > 0 ? '❌' : '✅'));
-      });
-    } else {
-      lines.push('<span style="color:#888">_getBarrierGeo not available</span>');
+    // ── 2. NORMAL DIRECTION SANITY CHECK ─────────────────────────────────
+    lines.push('<span style="color:#aaa">── Normal direction check (first 3 pts) ──</span>');
+    const normL = _buildNormalsForBarrier(spl, -1);
+    const normR = _buildNormalsForBarrier(spl,  1);
+    for (let i = 0; i < Math.min(3, spl.length); i++) {
+      const dot = normL[i].x * normR[i].x + normL[i].y * normR[i].y;
+      const ok = dot < -0.5;
+      lines.push('pt[' + i + '] L·R dot: <b style="color:' + (ok ? '#4f4' : '#f44') + '">' + dot.toFixed(3) + '</b> ' + (ok ? '✅ opposite' : '❌ NOT OPPOSITE — normals wrong side'));
     }
+    lines.push('');
+
+    // ── 3. ACTUAL DRAWN GEO (force-fresh from _getBarrierGeo) ─────────────
+    lines.push('<span style="color:#aaa">── What is actually being drawn ──</span>');
+    const geo = _getBarrierGeo();
+    if (!geo) { lines.push('<span style="color:#f44">_getBarrierGeo returned null</span>'); body.innerHTML = lines.join('<br>'); return; }
+
+    [[-1,'LEFT'],[1,'RIGHT']].forEach(function(pair) {
+      const side = pair[0], label = pair[1];
+      const { innerWorld, outerWorld } = geo[side];
+      lines.push('<span style="color:#e8ff47">— ' + label + ' —</span>');
+      lines.push('  inner pts: <b>' + innerWorld.length + '</b>   outer pts: <b>' + outerWorld.length + '</b>');
+
+      // Sample first/mid/last inner offsets from their own centreline
+      [0, Math.floor(innerWorld.length/2), innerWorld.length-2].forEach(function(i) {
+        if (i < 0 || i >= innerWorld.length || i >= spl.length) return;
+        const cen = spl[i].pt;
+        const iDist = Math.hypot(innerWorld[i].x - cen.x, innerWorld[i].y - cen.y);
+        const oDist = Math.hypot(outerWorld[i].x - cen.x, outerWorld[i].y - cen.y);
+        const iOk = iDist >= TRACK_HALF_WIDTH - 0.5 && iDist <= BARRIER_INNER + 1;
+        const oOk = oDist >= BARRIER_INNER && oDist <= BARRIER_OUTER + 1;
+        lines.push('  [' + i + '] inner offset: <b style="color:' + (iOk ? '#4f4' : '#f90') + '">' + iDist.toFixed(2) + ' wu</b>  outer offset: <b style="color:' + (oOk ? '#4f4' : '#f90') + '">' + oDist.toFixed(2) + ' wu</b>');
+      });
+    });
+    lines.push('');
+
+    // ── 4. SPATIAL OVERLAP CHECK — inner L vs inner R ─────────────────────
+    // Build a spatial grid of inner-R points, then for each inner-L point
+    // find the nearest inner-R point anywhere in world space (no skip).
+    // This is the TRUE overlap check — not same-index comparison.
+    lines.push('<span style="color:#aaa">── Inner barrier spatial overlap (true nearest-neighbour) ──</span>');
+    const innerL = geo[-1].innerWorld;
+    const innerR = geo[ 1].innerWorld;
+
+    // Build grid of R points
+    const GCELL = 20;
+    const rgrid = new Map();
+    for (let i = 0; i < innerR.length; i += 2) {
+      const key = Math.floor(innerR[i].x / GCELL) + ',' + Math.floor(innerR[i].y / GCELL);
+      if (!rgrid.has(key)) rgrid.set(key, []);
+      rgrid.get(key).push(i);
+    }
+
+    let minDist = Infinity, minIdxL = -1, minIdxR = -1;
+    let overlapCount = 0;
+    // Sample every 8th L point for speed
+    for (let i = 0; i < innerL.length; i += 8) {
+      const lp = innerL[i];
+      const cx0 = Math.floor(lp.x / GCELL), cy0 = Math.floor(lp.y / GCELL);
+      for (let dcx = -2; dcx <= 2; dcx++) {
+        for (let dcy = -2; dcy <= 2; dcy++) {
+          const cell = rgrid.get((cx0+dcx) + ',' + (cy0+dcy));
+          if (!cell) continue;
+          for (let k = 0; k < cell.length; k++) {
+            const rp = innerR[cell[k]];
+            const d = Math.hypot(lp.x - rp.x, lp.y - rp.y);
+            if (d < minDist) { minDist = d; minIdxL = i; minIdxR = cell[k]; }
+            if (d < 1.0) overlapCount++;
+          }
+        }
+      }
+    }
+
+    const distCol = minDist < 1 ? '#f44' : minDist < TRACK_HALF_WIDTH ? '#f90' : '#4f4';
+    lines.push('Min L↔R inner distance (spatial): <b style="color:' + distCol + '">' + minDist.toFixed(2) + ' wu</b>');
+    if (minIdxL >= 0) {
+      lines.push('  At L[' + minIdxL + '] = (' + innerL[minIdxL].x.toFixed(1) + ', ' + innerL[minIdxL].y.toFixed(1) + ')');
+      lines.push('  vs R[' + minIdxR + '] = (' + innerR[minIdxR].x.toFixed(1) + ', ' + innerR[minIdxR].y.toFixed(1) + ')');
+      // Show what the centreline points are near those indices
+      if (minIdxL < spl.length) {
+        const cL = spl[minIdxL].pt;
+        lines.push('  Nearest centreline: (' + cL.x.toFixed(1) + ', ' + cL.y.toFixed(1) + ')  seg=' + spl[minIdxL].seg);
+      }
+    }
+    lines.push('Overlap points (dist < 1wu, sampled): <b style="color:' + (overlapCount > 0 ? '#f44' : '#4f4') + '">' + overlapCount + '</b> ' + (overlapCount > 0 ? '❌ OVERLAPPING' : '✅ clear'));
+    lines.push('');
+
+    // ── 5. skipRadius values in effect ────────────────────────────────────
+    lines.push('<span style="color:#aaa">── Skip radii in effect ──</span>');
+    const loopLen = spl.length - 1;
+    const segsPerWp = Math.round(loopLen / Math.max(1, waypoints.length));
+    const skipOuter = Math.max(segsPerWp * 4,  Math.round(loopLen * 0.01));
+    const skipInner = Math.max(segsPerWp * 20, Math.round(loopLen * 0.04));
+    lines.push('segsPerWp: <b>' + segsPerWp + '</b>   loopLen: <b>' + loopLen + '</b>');
+    lines.push('skipOuter: <b style="color:#4cf">' + skipOuter + '</b> pts = ~' + (skipOuter/segsPerWp).toFixed(1) + ' waypoints');
+    lines.push('skipInner: <b style="color:#4cf">' + skipInner + '</b> pts = ~' + (skipInner/segsPerWp).toFixed(1) + ' waypoints');
+    lines.push('');
+
+    // ── 6. CLAMP EFFECTIVENESS ────────────────────────────────────────────
+    lines.push('<span style="color:#aaa">── Clamp effectiveness (how many pts were pulled in) ──</span>');
+    [[-1,'LEFT'],[1,'RIGHT']].forEach(function(pair) {
+      const side = pair[0], label = pair[1];
+      const norms = side === -1 ? normL : normR;
+      const iWorld = geo[side].innerWorld;
+      const oWorld = geo[side].outerWorld;
+      let innerClamped = 0, outerClamped = 0;
+      const INNER_OFFSET = BARRIER_INNER;
+      const OUTER_OFFSET = BARRIER_OUTER;
+      for (let i = 0; i < Math.min(iWorld.length, spl.length); i++) {
+        const cen = spl[i].pt;
+        const iD = Math.hypot(iWorld[i].x - cen.x, iWorld[i].y - cen.y);
+        const oD = Math.hypot(oWorld[i].x - cen.x, oWorld[i].y - cen.y);
+        if (iD < INNER_OFFSET - 0.5) innerClamped++;
+        if (oD < OUTER_OFFSET - 0.5) outerClamped++;
+      }
+      const total = Math.min(iWorld.length, spl.length);
+      lines.push(label + ' — inner clamped: <b style="color:' + (innerClamped > 0 ? '#4cf' : '#888') + '">' + innerClamped + '/' + total + '</b>  outer clamped: <b style="color:' + (outerClamped > 0 ? '#4cf' : '#888') + '">' + outerClamped + '/' + total + '</b>');
+    });
 
   } catch(e) {
     lines.push('<span style="color:#f44">ERROR: ' + e.message + '</span>');
+    lines.push('<span style="color:#f44">' + (e.stack||'').split('\n')[1] + '</span>');
     console.error(e);
   }
 
