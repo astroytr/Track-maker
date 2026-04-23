@@ -531,6 +531,9 @@ function drawBarrierLines() {
   [-1, 1].forEach(side => {
     const inner = buildOffsetScreenPolyline(splinePts, side, innerOffset);
     const outer = buildOffsetScreenPolyline(splinePts, side, outerOffset);
+    // Close loops
+    if (inner.length > 1) inner.push(inner[0]);
+    if (outer.length > 1) outer.push(outer[0]);
 
     ctx.save();
 
@@ -600,6 +603,8 @@ function drawBarrierLines() {
 
       adjustedInner.push(worldToScreen(innerX, innerY));
     }
+    // Close the loop — connect last point back to first
+    adjustedInner.push(adjustedInner[0]);
 
     // Shadow pass
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
