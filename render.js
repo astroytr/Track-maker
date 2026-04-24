@@ -587,6 +587,43 @@ function _getBarrierGeo() {
   const segsPerWp = Math.max(1, Math.round(loopLen / Math.max(1, waypoints.length)));
   // Local skip: ignore spline points within ~3 waypoints of self (same curve section).
   const localSkip = segsPerWp * 3;
+  const strictLocalSkip = Math.max(2, segsPerWp);
+
+  // Arc-length map lets us distinguish "really the same nearby curve section"
+  // from a different track section that only happens to come physically close.
+  const prefixLen = new Float64Array(loopLen + 1);
+  for (let i = 0; i < loopLen; i++) {
+    const a = splinePts[i].pt;
+    const b = splinePts[(i + 1) % loopLen].pt;
+    prefixLen[i + 1] = prefixLen[i] + Math.hypot(b.x - a.x, b.y - a.y);
+  }
+  const totalArcLen = prefixLen[loopLen] || 1;
+
+  function arcDistance(i, j) {
+    const lo = Math.min(i, j);
+    const hi = Math.max(i, j);
+    const d = prefixLen[hi] - prefixLen[lo];
+    return Math.min(d, totalArcLen - d);
+  }
+
+  function isSameLocalSection(i, j) {
+    if (i === j) return true;
+    const delta = Math.min(Math.abs(j - i), loopLen - Math.abs(j - i));
+    if (delta <= strictLocalSkip) return true;
+    if (delta >= localSkip) return false;
+
+    const p = splinePts[i].pt;
+    const q = splinePts[j].pt;
+    const chord = Math.hypot(q.x - p.x, q.y - p.y);
+    const arc = arcDistance(i, j);
+
+    if (arc <= 1e-6) return true;
+
+    // Same local curve section keeps a healthy chord/arc ratio.
+    // Tight loop-backs have a tiny chord compared with the travelled arc length,
+    // so they should be treated as FOREIGN even if their indices are still nearby.
+    return (chord / arc) > 0.55;
+  }
 
   // Query: distance from world point (wx,wy) to nearest FOREIGN centreline point.
   // "Foreign" means spline-index-far enough that it's a different track section.
@@ -599,8 +636,7 @@ function _getBarrierGeo() {
         if (!cell) continue;
         for (let k = 0; k < cell.length; k++) {
           const j = cell[k];
-          const delta = Math.min(Math.abs(j - selfIdx), loopLen - Math.abs(j - selfIdx));
-          if (delta < localSkip) continue; // same section — skip
+          if (isSameLocalSection(selfIdx, j)) continue; // same local section — skip
           const q = splinePts[j].pt;
           const d = Math.hypot(wx - q.x, wy - q.y);
           if (d < minDist) minDist = d;
@@ -808,8 +844,7 @@ function _getBarrierGeo() {
               const o = cell[k];
               // Skip self and same local section (not a foreign overlap).
               if (o.side === sideSelf && o.idx === i) continue;
-              const di = Math.min(Math.abs(o.idx - i), loopLen - Math.abs(o.idx - i));
-              if (di < localSkip && o.side === sideSelf) continue;
+              if (isSameLocalSection(i, o.idx)) continue;
               const dx = o.x - self.x, dy = o.y - self.y;
               const d  = Math.hypot(dx, dy);
               if (d >= BARRIER_BARRIER_MIN) continue;
