@@ -463,14 +463,32 @@ function drawTrackRoad() {
     ctx.stroke();
   });
 
-  // Kerb — alternating red/white dashes just outside the edge line
-  const kerbOffset = TRACK_HALF_WIDTH + 0.6;
-  const kerbW      = Math.max(2, 2.2 * cam.zoom);
-  const dashLen    = Math.max(6, 14 * cam.zoom);
+  // Kerb — alternating red/white dashes just outside the edge line.
+  // Use the SAFE per-point offsets from _getBarrierGeo so the kerbs squeeze
+  // inward gracefully whenever a foreign track section is too close, rather
+  // than overlapping the foreign road (the bug visible on tight Interlagos
+  // hairpins / parallel back-to-back sections).
+  // _getBarrierGeo() builds its arrays against getCachedSpline(20), so we
+  // use the SAME density here for kerbs to keep array sizes aligned.
+  let _safeKerbGeo = null;
+  try { _safeKerbGeo = _getBarrierGeo(); } catch (_) { _safeKerbGeo = null; }
+  const kerbSpline = getCachedSpline(20);
+  const kerbDefault = TRACK_HALF_WIDTH + 0.6;
+  const kerbW       = Math.max(2, 2.2 * cam.zoom);
+  const dashLen     = Math.max(6, 14 * cam.zoom);
   ctx.lineWidth = kerbW;
   ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
   [-1, 1].forEach(side => {
-    const poly = buildOffsetScreenPolyline(splinePts, side, kerbOffset);
+    let poly;
+    const safe = _safeKerbGeo && _safeKerbGeo[side] && _safeKerbGeo[side].kerbOffsets;
+    if (safe && kerbSpline.length >= 2 && safe.length === kerbSpline.length - 1) {
+      // Geo arrays cover indices 0..n-2 (the closing duplicate is dropped).
+      // Pad to kerbSpline.length so the closed loop wraps cleanly.
+      const padded = safe.concat([safe[0]]);
+      poly = buildOffsetScreenPolylineVarying(kerbSpline, side, padded);
+    } else {
+      poly = buildOffsetScreenPolyline(splinePts, side, kerbDefault);
+    }
     ctx.setLineDash([dashLen, dashLen]);
     ctx.lineDashOffset = 0;
     ctx.strokeStyle = 'rgba(215,25,25,0.92)';
@@ -816,9 +834,57 @@ function _getBarrierGeo() {
     innerR[i] = { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
   }
 
+  // ── Step 6: per-point safe KERB offsets ─────────────────────────────────
+  //
+  // The kerbs (red/white dashed strip just outside the road) are normally
+  // drawn at a fixed offset of TRACK_HALF_WIDTH + 0.6 = 7.6 wu from the
+  // centreline. On track sections that loop back near themselves (e.g.
+  // hairpins, parallel straights) the kerbs from two different sections
+  // physically overlap each other. We compute, for every spline point, the
+  // largest kerb offset that won't intrude on any foreign road, then smooth
+  // the result so the kerb width tapers gracefully rather than snapping.
+  const KERB_OFFSET   = TRACK_HALF_WIDTH + 0.6;  // 7.6 default
+  const KERB_HALFW    = 0.6;                     // visual half-width of the kerb stripe
+  const KERB_MIN      = TRACK_HALF_WIDTH + 0.1;  // minimum: hugs the road edge
+  // An offset is "safe" if foreign centreline is at least
+  // (TRACK_HALF_WIDTH + KERB_HALFW + small margin) away.
+  const KERB_NEED     = TRACK_HALF_WIDTH + KERB_HALFW + 0.4;
+  const rawKerbL = new Float64Array(n - 1);
+  const rawKerbR = new Float64Array(n - 1);
+  for (let i = 0; i < n - 1; i++) {
+    const p = splinePts[i].pt;
+    const calcKerb = (nx, ny) => {
+      const probe = p.x + nx * KERB_OFFSET, pry = p.y + ny * KERB_OFFSET;
+      if (nearestForeignCentre(probe, pry, i) >= KERB_NEED) return KERB_OFFSET;
+      let lo = KERB_MIN, hi = KERB_OFFSET;
+      for (let iter = 0; iter < 10; iter++) {
+        const mid = (lo + hi) * 0.5;
+        if (nearestForeignCentre(p.x + nx * mid, p.y + ny * mid, i) < KERB_NEED) hi = mid;
+        else lo = mid;
+      }
+      return lo;
+    };
+    rawKerbL[i] = calcKerb(normalsL[i].x, normalsL[i].y);
+    rawKerbR[i] = calcKerb(normalsR[i].x, normalsR[i].y);
+  }
+  // Smooth with the same Gaussian kernel used for inner barriers so the
+  // kerb tapers smoothly rather than snapping at the conflict boundary.
+  const kerbL = new Float64Array(n - 1);
+  const kerbR = new Float64Array(n - 1);
+  for (let i = 0; i < n - 1; i++) {
+    let sL = 0, sR = 0;
+    for (const { k, w } of gaussKernel) {
+      const j = ((i + k) % (n - 1) + (n - 1)) % (n - 1);
+      sL += rawKerbL[j] * w;
+      sR += rawKerbR[j] * w;
+    }
+    kerbL[i] = Math.max(KERB_MIN, Math.min(KERB_OFFSET, sL / kSum));
+    kerbR[i] = Math.max(KERB_MIN, Math.min(KERB_OFFSET, sR / kSum));
+  }
+
   const geo = {
-    '-1': { innerWorld: innerL, outerWorld: outerL },
-     '1': { innerWorld: innerR, outerWorld: outerR }
+    '-1': { innerWorld: innerL, outerWorld: outerL, kerbOffsets: Array.from(kerbL) },
+     '1': { innerWorld: innerR, outerWorld: outerR, kerbOffsets: Array.from(kerbR) }
   };
   _cachedBarrierWorldGeo = geo;
   return geo;
@@ -956,8 +1022,26 @@ function getSplineSegmentPoints(pts, from, to) {
   return from <= to ? pts.filter(p=>p.seg>=from&&p.seg<=to)
                     : [...pts.filter(p=>p.seg>=from),...pts.filter(p=>p.seg<=to)];
 }
+// Varying-offset polyline. `offsets[i]` is the desired distance from the
+// centreline at spline-point i (closed loop). Used by drawTrackRoad to draw
+// kerbs that taper inward in tight back-to-back sections so they don't
+// overlap kerbs from a foreign track section.
 function buildOffsetScreenPolylineVarying(pts, sideNum, offsets) {
-  return buildOffsetScreenPolyline(pts, sideNum, offsets[Math.floor(offsets.length/2)] || 0);
+  const n = pts.length;
+  if (n < 2) return [];
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n].pt;
+    const next = pts[(i + 1) % n].pt;
+    const dx = next.x - prev.x, dy = next.y - prev.y;
+    const l  = Math.hypot(dx, dy) || 1;
+    let nx = -dy / l, ny = dx / l;
+    if (sideNum === 1) { nx = -nx; ny = -ny; }
+    const off = offsets[Math.min(offsets.length - 1, i)] || 0;
+    const p   = pts[i].pt;
+    out[i] = worldToScreen(p.x + nx * off, p.y + ny * off);
+  }
+  return out;
 }
 function buildTransitionOffsets(count, near, far, trans) {
   return Array.from({length:count},()=>far);
