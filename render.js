@@ -643,26 +643,34 @@ function _buildTrackRaster() {
   }
 
   [-1, 1].forEach(side => {
-    const { innerWorld, outerWorld, overlapFlags } = geo[side];
+    const { innerWorld, outerWorld, overlapFlags, outerOverlapFlags } = geo[side];
     const outer = outerWorld.concat([outerWorld[0]]);
     const inner = innerWorld.concat([innerWorld[0]]);
 
-    drawCtx.lineWidth = 3.5;
-    drawCtx.strokeStyle = 'rgba(20,20,20,0.5)';
-    _worldPath(drawCtx, outer);
-    drawCtx.stroke();
-
-    drawCtx.lineWidth = 2.5;
-    drawCtx.strokeStyle = 'rgba(170,185,200,1.0)';
-    _worldPath(drawCtx, outer);
-    drawCtx.stroke();
-
-    drawCtx.lineWidth = 1.0;
-    drawCtx.strokeStyle = 'rgba(235,245,255,0.7)';
-    _worldPath(drawCtx, outer);
-    drawCtx.stroke();
-
     const m = inner.length - 1;
+    for (let i = 0; i < m; i++) {
+      const flagged = outerOverlapFlags && (outerOverlapFlags[i % outerOverlapFlags.length] || outerOverlapFlags[(i + 1) % outerOverlapFlags.length]);
+      const shadowColor = flagged ? 'rgba(180,0,120,0.55)' : 'rgba(20,20,20,0.5)';
+      const baseColor = flagged ? 'rgba(255,20,180,0.95)' : 'rgba(170,185,200,1.0)';
+      const hlColor = flagged ? 'rgba(255,140,225,0.72)' : 'rgba(235,245,255,0.7)';
+      const seg = [outer[i], outer[i + 1]];
+
+      drawCtx.lineWidth = 3.5;
+      drawCtx.strokeStyle = shadowColor;
+      _worldPath(drawCtx, seg);
+      drawCtx.stroke();
+
+      drawCtx.lineWidth = 2.5;
+      drawCtx.strokeStyle = baseColor;
+      _worldPath(drawCtx, seg);
+      drawCtx.stroke();
+
+      drawCtx.lineWidth = 1.0;
+      drawCtx.strokeStyle = hlColor;
+      _worldPath(drawCtx, seg);
+      drawCtx.stroke();
+    }
+
     for (let i = 0; i < m; i++) {
       const flagged = overlapFlags && (overlapFlags[i % overlapFlags.length] || overlapFlags[(i + 1) % overlapFlags.length]);
       const shadowColor = flagged ? 'rgba(180,0,120,0.5)' : 'rgba(20,20,20,0.35)';
@@ -1016,6 +1024,8 @@ function _getBarrierGeo() {
   // ── Step 3: outer barrier — per-point binary-search clamp ────────────────
   const OUTER_MIN_CLEARANCE = TRACK_HALF_WIDTH + 2;
   const outerL = [], outerR = [];
+  const finalOuterOffL = new Float64Array(n - 1);
+  const finalOuterOffR = new Float64Array(n - 1);
   for (let i = 0; i < n - 1; i++) {
     const p = splinePts[i].pt;
     const calcOuter = (nx, ny) => {
@@ -1031,6 +1041,8 @@ function _getBarrierGeo() {
     };
     const offL = calcOuter(normalsL[i].x, normalsL[i].y);
     const offR = calcOuter(normalsR[i].x, normalsR[i].y);
+    finalOuterOffL[i] = offL;
+    finalOuterOffR[i] = offR;
     outerL.push({ x: p.x + normalsL[i].x * offL, y: p.y + normalsL[i].y * offL });
     outerR.push({ x: p.x + normalsR[i].x * offR, y: p.y + normalsR[i].y * offR });
   }
@@ -1160,10 +1172,14 @@ function _getBarrierGeo() {
   const BARRIER_BARRIER_MIN = 1.6;       // smallest tolerated gap between two
                                          // foreign barrier walls (world units)
   const BARRIER_ROAD_MIN    = INNER_MIN; // never let a barrier cross a road
+  const OUTER_BARRIER_MIN   = 2.2;       // visible outer wall needs a little more room
+  const OUTER_ROAD_MIN      = innerOffset + 1.0;
   const PAIR_PASSES         = 4;
   const RELAX               = 0.55;      // mutual shrink amount per pass
   const overlapFlagL = new Uint8Array(n - 1);
   const overlapFlagR = new Uint8Array(n - 1);
+  const outerOverlapFlagL = new Uint8Array(n - 1);
+  const outerOverlapFlagR = new Uint8Array(n - 1);
 
   // Helper to evaluate the world position from current offsets.
   function worldL(i) {
@@ -1173,6 +1189,14 @@ function _getBarrierGeo() {
   function worldR(i) {
     const p = splinePts[i].pt;
     return { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
+  }
+  function worldOuterL(i) {
+    const p = splinePts[i].pt;
+    return { x: p.x + normalsL[i].x * finalOuterOffL[i], y: p.y + normalsL[i].y * finalOuterOffL[i] };
+  }
+  function worldOuterR(i) {
+    const p = splinePts[i].pt;
+    return { x: p.x + normalsR[i].x * finalOuterOffR[i], y: p.y + normalsR[i].y * finalOuterOffR[i] };
   }
 
   for (let pass = 0; pass < PAIR_PASSES; pass++) {
@@ -1420,11 +1444,223 @@ function _getBarrierGeo() {
 
   runCrossBarrierIntersectPass();
 
+  function runOuterProximityPass() {
+    const OUTER_PAIR_PASSES = 6;
+    const OUTER_RELAX = 0.60;
+
+    for (let pass = 0; pass < OUTER_PAIR_PASSES; pass++) {
+      const PCELL = Math.max(OUTER_BARRIER_MIN * 2, 8);
+      const bGrid = new Map();
+      function gAdd(x, y, payload) {
+        const key = Math.floor(x / PCELL) + ',' + Math.floor(y / PCELL);
+        if (!bGrid.has(key)) bGrid.set(key, []);
+        bGrid.get(key).push(payload);
+      }
+      for (let i = 0; i < n - 1; i++) {
+        const wl = worldOuterL(i), wr = worldOuterR(i);
+        gAdd(wl.x, wl.y, { side: -1, idx: i, x: wl.x, y: wl.y });
+        gAdd(wr.x, wr.y, { side:  1, idx: i, x: wr.x, y: wr.y });
+      }
+
+      let anyChange = false;
+      function flagOuterOverlap(side, idx) {
+        const arr = side < 0 ? outerOverlapFlagL : outerOverlapFlagR;
+        if (idx >= 0 && idx < arr.length) arr[idx] = 1;
+        if (arr.length > 0) arr[(idx + 1) % arr.length] = 1;
+      }
+      function shrinkOuter(side, idx, amount) {
+        if (side < 0) {
+          const next = Math.max(OUTER_ROAD_MIN, finalOuterOffL[idx] - amount);
+          if (next !== finalOuterOffL[idx]) { finalOuterOffL[idx] = next; anyChange = true; }
+        } else {
+          const next = Math.max(OUTER_ROAD_MIN, finalOuterOffR[idx] - amount);
+          if (next !== finalOuterOffR[idx]) { finalOuterOffR[idx] = next; anyChange = true; }
+        }
+      }
+
+      for (let i = 0; i < n - 1; i++) {
+        for (const sideSelf of [-1, 1]) {
+          const self = sideSelf < 0 ? worldOuterL(i) : worldOuterR(i);
+          const cx0 = Math.floor(self.x / PCELL), cy0 = Math.floor(self.y / PCELL);
+          for (let dcx = -1; dcx <= 1; dcx++) {
+            for (let dcy = -1; dcy <= 1; dcy++) {
+              const cell = bGrid.get((cx0 + dcx) + ',' + (cy0 + dcy));
+              if (!cell) continue;
+              for (let k = 0; k < cell.length; k++) {
+                const o = cell[k];
+                if (o.side === sideSelf && o.idx === i) continue;
+                if (isSameLocalSection(i, o.idx)) continue;
+                const dx = o.x - self.x, dy = o.y - self.y;
+                const d  = Math.hypot(dx, dy);
+                if (d >= OUTER_BARRIER_MIN) continue;
+                const overlap = (OUTER_BARRIER_MIN - d);
+                const amt = overlap * OUTER_RELAX * 0.5;
+                flagOuterOverlap(sideSelf, i);
+                flagOuterOverlap(o.side, o.idx);
+                shrinkOuter(sideSelf, i, amt);
+                shrinkOuter(o.side, o.idx, amt);
+              }
+            }
+          }
+        }
+      }
+
+      if (!anyChange) break;
+    }
+  }
+
+  function runOuterSelfIntersectPass(finalOff, normals, flags) {
+    const m = n - 1;
+    const CELL_SI = Math.max(BARRIER_OUTER * 0.9, 24);
+    const SHRINK_SELF = 0.9;
+    const SELF_PASSES = 6;
+    const SELF_SKIP   = Math.max(4, Math.round(segsPerWp * 1.5));
+
+    for (let pass = 0; pass < SELF_PASSES; pass++) {
+      const px = new Float64Array(m + 1), py = new Float64Array(m + 1);
+      for (let i = 0; i <= m; i++) {
+        const ii = i % m;
+        const cp = splinePts[ii].pt;
+        px[i] = cp.x + normals[ii].x * finalOff[ii];
+        py[i] = cp.y + normals[ii].y * finalOff[ii];
+      }
+
+      const grid = new Map();
+      function addSeg(i) {
+        const x0 = Math.min(px[i], px[i+1]), x1 = Math.max(px[i], px[i+1]);
+        const y0 = Math.min(py[i], py[i+1]), y1 = Math.max(py[i], py[i+1]);
+        const c0x = Math.floor(x0 / CELL_SI), c1x = Math.floor(x1 / CELL_SI);
+        const c0y = Math.floor(y0 / CELL_SI), c1y = Math.floor(y1 / CELL_SI);
+        for (let cx = c0x; cx <= c1x; cx++) {
+          for (let cy = c0y; cy <= c1y; cy++) {
+            const key = cx + ',' + cy;
+            if (!grid.has(key)) grid.set(key, []);
+            grid.get(key).push(i);
+          }
+        }
+      }
+      for (let i = 0; i < m; i++) addSeg(i);
+
+      let anyHit = false;
+      const checked = new Set();
+      for (let i = 0; i < m; i++) {
+        const x0 = Math.min(px[i], px[i+1]), x1 = Math.max(px[i], px[i+1]);
+        const y0 = Math.min(py[i], py[i+1]), y1 = Math.max(py[i], py[i+1]);
+        const c0x = Math.floor(x0 / CELL_SI), c1x = Math.floor(x1 / CELL_SI);
+        const c0y = Math.floor(y0 / CELL_SI), c1y = Math.floor(y1 / CELL_SI);
+        for (let cx = c0x; cx <= c1x; cx++) {
+          for (let cy = c0y; cy <= c1y; cy++) {
+            const cell = grid.get(cx + ',' + cy);
+            if (!cell) continue;
+            for (let ki = 0; ki < cell.length; ki++) {
+              const j = cell[ki];
+              if (j <= i + SELF_SKIP) continue;
+              const loopDelta = Math.min(Math.abs(j - i), m - Math.abs(j - i));
+              if (loopDelta < SELF_SKIP) continue;
+              const pairKey = i < j ? i * 100000 + j : j * 100000 + i;
+              if (checked.has(pairKey)) continue;
+              checked.add(pairKey);
+              if (!seg2dIntersect(px[i], py[i], px[i+1], py[i+1],
+                                  px[j], py[j], px[j+1], py[j+1])) continue;
+              flags[i] = 1; flags[j] = 1;
+              flags[(i + 1) % m] = 1; flags[(j + 1) % m] = 1;
+              finalOff[i]           = Math.max(OUTER_ROAD_MIN, finalOff[i]           - SHRINK_SELF);
+              finalOff[(i + 1) % m] = Math.max(OUTER_ROAD_MIN, finalOff[(i + 1) % m] - SHRINK_SELF);
+              finalOff[j]           = Math.max(OUTER_ROAD_MIN, finalOff[j]           - SHRINK_SELF);
+              finalOff[(j + 1) % m] = Math.max(OUTER_ROAD_MIN, finalOff[(j + 1) % m] - SHRINK_SELF);
+              anyHit = true;
+            }
+          }
+        }
+      }
+      if (!anyHit) break;
+    }
+  }
+
+  function runCrossOuterIntersectPass() {
+    const m = n - 1;
+    const CELL_X = Math.max(BARRIER_OUTER * 0.9, 24);
+    const CROSS_PASSES = 6;
+    const SHRINK_CROSS = 1.0;
+
+    for (let pass = 0; pass < CROSS_PASSES; pass++) {
+      const pxL = new Float64Array(m + 1), pyL = new Float64Array(m + 1);
+      const pxR = new Float64Array(m + 1), pyR = new Float64Array(m + 1);
+      for (let i = 0; i <= m; i++) {
+        const ii = i % m;
+        const cp = splinePts[ii].pt;
+        pxL[i] = cp.x + normalsL[ii].x * finalOuterOffL[ii];
+        pyL[i] = cp.y + normalsL[ii].y * finalOuterOffL[ii];
+        pxR[i] = cp.x + normalsR[ii].x * finalOuterOffR[ii];
+        pyR[i] = cp.y + normalsR[ii].y * finalOuterOffR[ii];
+      }
+
+      const grid = new Map();
+      function addRightSeg(i) {
+        const x0 = Math.min(pxR[i], pxR[i + 1]), x1 = Math.max(pxR[i], pxR[i + 1]);
+        const y0 = Math.min(pyR[i], pyR[i + 1]), y1 = Math.max(pyR[i], pyR[i + 1]);
+        const c0x = Math.floor(x0 / CELL_X), c1x = Math.floor(x1 / CELL_X);
+        const c0y = Math.floor(y0 / CELL_X), c1y = Math.floor(y1 / CELL_X);
+        for (let cx = c0x; cx <= c1x; cx++) {
+          for (let cy = c0y; cy <= c1y; cy++) {
+            const key = cx + ',' + cy;
+            if (!grid.has(key)) grid.set(key, []);
+            grid.get(key).push(i);
+          }
+        }
+      }
+      for (let i = 0; i < m; i++) addRightSeg(i);
+
+      let anyHit = false;
+      const checked = new Set();
+      for (let i = 0; i < m; i++) {
+        const x0 = Math.min(pxL[i], pxL[i + 1]), x1 = Math.max(pxL[i], pxL[i + 1]);
+        const y0 = Math.min(pyL[i], pyL[i + 1]), y1 = Math.max(pyL[i], pyL[i + 1]);
+        const c0x = Math.floor(x0 / CELL_X), c1x = Math.floor(x1 / CELL_X);
+        const c0y = Math.floor(y0 / CELL_X), c1y = Math.floor(y1 / CELL_X);
+        for (let cx = c0x; cx <= c1x; cx++) {
+          for (let cy = c0y; cy <= c1y; cy++) {
+            const cell = grid.get(cx + ',' + cy);
+            if (!cell) continue;
+            for (let ki = 0; ki < cell.length; ki++) {
+              const j = cell[ki];
+              if (isSameLocalSection(i, j)) continue;
+              const pairKey = i < j ? i * 100000 + j : j * 100000 + i;
+              if (checked.has(pairKey)) continue;
+              checked.add(pairKey);
+              if (!seg2dIntersect(pxL[i], pyL[i], pxL[i + 1], pyL[i + 1],
+                                  pxR[j], pyR[j], pxR[j + 1], pyR[j + 1])) continue;
+
+              outerOverlapFlagL[i] = 1;
+              outerOverlapFlagL[(i + 1) % m] = 1;
+              outerOverlapFlagR[j] = 1;
+              outerOverlapFlagR[(j + 1) % m] = 1;
+
+              finalOuterOffL[i] = Math.max(OUTER_ROAD_MIN, finalOuterOffL[i] - SHRINK_CROSS);
+              finalOuterOffL[(i + 1) % m] = Math.max(OUTER_ROAD_MIN, finalOuterOffL[(i + 1) % m] - SHRINK_CROSS);
+              finalOuterOffR[j] = Math.max(OUTER_ROAD_MIN, finalOuterOffR[j] - SHRINK_CROSS);
+              finalOuterOffR[(j + 1) % m] = Math.max(OUTER_ROAD_MIN, finalOuterOffR[(j + 1) % m] - SHRINK_CROSS);
+              anyHit = true;
+            }
+          }
+        }
+      }
+      if (!anyHit) break;
+    }
+  }
+
+  runOuterProximityPass();
+  runOuterSelfIntersectPass(finalOuterOffL, normalsL, outerOverlapFlagL);
+  runOuterSelfIntersectPass(finalOuterOffR, normalsR, outerOverlapFlagR);
+  runCrossOuterIntersectPass();
+
   // Rebuild once more from the self-intersection-corrected offsets.
   for (let i = 0; i < n - 1; i++) {
     const p = splinePts[i].pt;
     innerL[i] = { x: p.x + normalsL[i].x * finalOffL[i], y: p.y + normalsL[i].y * finalOffL[i] };
     innerR[i] = { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
+    outerL[i] = { x: p.x + normalsL[i].x * finalOuterOffL[i], y: p.y + normalsL[i].y * finalOuterOffL[i] };
+    outerR[i] = { x: p.x + normalsR[i].x * finalOuterOffR[i], y: p.y + normalsR[i].y * finalOuterOffR[i] };
   }
 
   // ── Step 6: per-point safe KERB offsets ─────────────────────────────────
@@ -1476,8 +1712,8 @@ function _getBarrierGeo() {
   }
 
   const geo = {
-    '-1': { innerWorld: innerL, outerWorld: outerL, kerbOffsets: Array.from(kerbL), overlapFlags: overlapFlagL },
-     '1': { innerWorld: innerR, outerWorld: outerR, kerbOffsets: Array.from(kerbR), overlapFlags: overlapFlagR }
+    '-1': { innerWorld: innerL, outerWorld: outerL, kerbOffsets: Array.from(kerbL), overlapFlags: overlapFlagL, outerOverlapFlags: outerOverlapFlagL },
+     '1': { innerWorld: innerR, outerWorld: outerR, kerbOffsets: Array.from(kerbR), overlapFlags: overlapFlagR, outerOverlapFlags: outerOverlapFlagR }
   };
   _cachedBarrierWorldGeo = geo;
   return geo;
