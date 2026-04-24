@@ -1162,6 +1162,8 @@ function _getBarrierGeo() {
   const BARRIER_ROAD_MIN    = INNER_MIN; // never let a barrier cross a road
   const PAIR_PASSES         = 4;
   const RELAX               = 0.55;      // mutual shrink amount per pass
+  const overlapFlagL = new Uint8Array(n - 1);
+  const overlapFlagR = new Uint8Array(n - 1);
 
   // Helper to evaluate the world position from current offsets.
   function worldL(i) {
@@ -1189,6 +1191,11 @@ function _getBarrierGeo() {
     }
 
     let anyChange = false;
+    function flagOverlap(side, idx) {
+      const arr = side < 0 ? overlapFlagL : overlapFlagR;
+      if (idx >= 0 && idx < arr.length) arr[idx] = 1;
+      if (arr.length > 0) arr[(idx + 1) % arr.length] = 1;
+    }
     function shrink(side, idx, amount) {
       if (side < 0) {
         const next = Math.max(BARRIER_ROAD_MIN, finalOffL[idx] - amount);
@@ -1218,6 +1225,8 @@ function _getBarrierGeo() {
               // Two foreign barrier points are touching → mutually shrink both.
               const overlap = (BARRIER_BARRIER_MIN - d);
               const amt     = overlap * RELAX * 0.5;
+              flagOverlap(sideSelf, i);
+              flagOverlap(o.side, o.idx);
               shrink(sideSelf, i, amt);
               shrink(o.side,   o.idx, amt);
             }
@@ -1249,8 +1258,6 @@ function _getBarrierGeo() {
   //   - Flag those indices as overlapping so drawBarrierLines can colour them pink.
   //
   // Uses a coarse spatial grid for O(n) average performance.
-  const overlapFlagL = new Uint8Array(n - 1);
-  const overlapFlagR = new Uint8Array(n - 1);
 
   function seg2dIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
     // Returns true if segment AB intersects segment CD (excluding shared endpoints).
@@ -1338,6 +1345,80 @@ function _getBarrierGeo() {
 
   runSelfIntersectPass(splinePts, finalOffL, normalsL, overlapFlagL);
   runSelfIntersectPass(splinePts, finalOffR, normalsR, overlapFlagR);
+
+  function runCrossBarrierIntersectPass() {
+    const m = n - 1;
+    const CELL_X = Math.max(BARRIER_INNER * 1.5, 20);
+    const CROSS_PASSES = 6;
+    const SHRINK_CROSS = 0.75;
+
+    for (let pass = 0; pass < CROSS_PASSES; pass++) {
+      const pxL = new Float64Array(m + 1), pyL = new Float64Array(m + 1);
+      const pxR = new Float64Array(m + 1), pyR = new Float64Array(m + 1);
+      for (let i = 0; i <= m; i++) {
+        const ii = i % m;
+        const cp = splinePts[ii].pt;
+        pxL[i] = cp.x + normalsL[ii].x * finalOffL[ii];
+        pyL[i] = cp.y + normalsL[ii].y * finalOffL[ii];
+        pxR[i] = cp.x + normalsR[ii].x * finalOffR[ii];
+        pyR[i] = cp.y + normalsR[ii].y * finalOffR[ii];
+      }
+
+      const grid = new Map();
+      function addRightSeg(i) {
+        const x0 = Math.min(pxR[i], pxR[i + 1]), x1 = Math.max(pxR[i], pxR[i + 1]);
+        const y0 = Math.min(pyR[i], pyR[i + 1]), y1 = Math.max(pyR[i], pyR[i + 1]);
+        const c0x = Math.floor(x0 / CELL_X), c1x = Math.floor(x1 / CELL_X);
+        const c0y = Math.floor(y0 / CELL_X), c1y = Math.floor(y1 / CELL_X);
+        for (let cx = c0x; cx <= c1x; cx++) {
+          for (let cy = c0y; cy <= c1y; cy++) {
+            const key = cx + ',' + cy;
+            if (!grid.has(key)) grid.set(key, []);
+            grid.get(key).push(i);
+          }
+        }
+      }
+      for (let i = 0; i < m; i++) addRightSeg(i);
+
+      let anyHit = false;
+      const checked = new Set();
+      for (let i = 0; i < m; i++) {
+        const x0 = Math.min(pxL[i], pxL[i + 1]), x1 = Math.max(pxL[i], pxL[i + 1]);
+        const y0 = Math.min(pyL[i], pyL[i + 1]), y1 = Math.max(pyL[i], pyL[i + 1]);
+        const c0x = Math.floor(x0 / CELL_X), c1x = Math.floor(x1 / CELL_X);
+        const c0y = Math.floor(y0 / CELL_X), c1y = Math.floor(y1 / CELL_X);
+        for (let cx = c0x; cx <= c1x; cx++) {
+          for (let cy = c0y; cy <= c1y; cy++) {
+            const cell = grid.get(cx + ',' + cy);
+            if (!cell) continue;
+            for (let ki = 0; ki < cell.length; ki++) {
+              const j = cell[ki];
+              if (isSameLocalSection(i, j)) continue;
+              const pairKey = i < j ? i * 100000 + j : j * 100000 + i;
+              if (checked.has(pairKey)) continue;
+              checked.add(pairKey);
+              if (!seg2dIntersect(pxL[i], pyL[i], pxL[i + 1], pyL[i + 1],
+                                  pxR[j], pyR[j], pxR[j + 1], pyR[j + 1])) continue;
+
+              overlapFlagL[i] = 1;
+              overlapFlagL[(i + 1) % m] = 1;
+              overlapFlagR[j] = 1;
+              overlapFlagR[(j + 1) % m] = 1;
+
+              finalOffL[i] = Math.max(INNER_MIN, finalOffL[i] - SHRINK_CROSS);
+              finalOffL[(i + 1) % m] = Math.max(INNER_MIN, finalOffL[(i + 1) % m] - SHRINK_CROSS);
+              finalOffR[j] = Math.max(INNER_MIN, finalOffR[j] - SHRINK_CROSS);
+              finalOffR[(j + 1) % m] = Math.max(INNER_MIN, finalOffR[(j + 1) % m] - SHRINK_CROSS);
+              anyHit = true;
+            }
+          }
+        }
+      }
+      if (!anyHit) break;
+    }
+  }
+
+  runCrossBarrierIntersectPass();
 
   // Rebuild once more from the self-intersection-corrected offsets.
   for (let i = 0; i < n - 1; i++) {

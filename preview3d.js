@@ -99,8 +99,20 @@ function open3DPreview() {
   if (waypoints.length < 3) { showToast('Need at least 3 waypoints for 3D view'); return; }
   if (typeof THREE === 'undefined') { showToast('3D engine still loading — try again in a moment'); return; }
   preview3dActive = true;
-  document.getElementById('preview3d-overlay').style.display = 'flex';
-  document.getElementById('btn-3d-toggle').classList.add('active-3d');
+  const _p3dOverlay = document.getElementById('preview3d-overlay'); if (_p3dOverlay) _p3dOverlay.style.display = 'flex';
+  const _p3dBtn = document.getElementById('btn-3d-toggle'); if (_p3dBtn) _p3dBtn.classList.add('active-3d');
+  if (!_p3dBtn && document.body && !document.getElementById('btn-3d-toggle')) {
+    const _p3dBtnStub = document.createElement('span');
+    _p3dBtnStub.id = 'btn-3d-toggle';
+    _p3dBtnStub.style.display = 'none';
+    document.body.appendChild(_p3dBtnStub);
+  }
+  if (document.body && !document.getElementById('tool-hud')) {
+    const _p3dHudStub = document.createElement('span');
+    _p3dHudStub.id = 'tool-hud';
+    _p3dHudStub.style.display = 'none';
+    document.body.appendChild(_p3dHudStub);
+  }
   document.getElementById('btn-3d-toggle').textContent = '← 2D View';
   document.getElementById('tool-hud').textContent = '3D Preview  ·  Left stick = look  ·  Right stick = move  ·  Q = exit';
   build3DScene();
