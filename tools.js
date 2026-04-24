@@ -17,8 +17,8 @@ function findBestStartFinishWaypoint() { return 0; }
 function editBarrierSide(i) {}
 function deleteBarrier(i) { barrierSegments.splice(i,1); markDirty(); }
 function deleteWP(i) { waypoints.splice(i,1); markDirty(); }
-function clearWaypoints() { if (!confirm('Clear all waypoints?')) return; waypoints=[]; barrierSegments=[]; markDirty(); }
-function clearAll() { if (!confirm('Reset everything?')) return; waypoints=[]; paintLayers=[]; undoStack=[]; bgImage=null; barrierSegments=[]; markDirty(); }
+function clearWaypoints() { if (!confirm('Clear all waypoints?')) return; waypoints=[]; barrierSegments=[]; if(typeof resetRenderCaches==='function') resetRenderCaches(); markDirty(); }
+function clearAll() { if (!confirm('Reset everything?')) return; waypoints=[]; paintLayers=[]; undoStack=[]; bgImage=null; barrierSegments=[]; if(typeof resetRenderCaches==='function') resetRenderCaches(); markDirty(); }
 function updateWPList() { const el=document.getElementById('stat-wp'); if(el) el.textContent=waypoints.length; }
 function updateBarrierList() {}
 function mobileDeleteLast() {}

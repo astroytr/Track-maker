@@ -1,6 +1,7 @@
 // ═══════════════════════════════════════════════════
 // INIT — Circuit Forge
 // ═══════════════════════════════════════════════════
+if (typeof resetRenderCaches === 'function') resetRenderCaches();
 render();
 
 // Auto-hide pinch hint
@@ -23,3 +24,12 @@ function _doRender() {
   _renderScheduled = false;
   if (_renderDirty) { _renderDirty = false; render(); }
 }
+
+window.addEventListener('pagehide', () => {
+  if (typeof resetRenderCaches === 'function') resetRenderCaches();
+});
+
+window.addEventListener('pageshow', e => {
+  if (e.persisted && typeof resetRenderCaches === 'function') resetRenderCaches();
+  markDirty();
+});

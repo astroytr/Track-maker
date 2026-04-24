@@ -36,6 +36,7 @@ let _bgCamKey = '', _wpCacheKey = '';
 let _cachedBarrierWorldGeo = null;
 let _cachedBarrierGeo = null;
 let _barrierGeoCamZoom = -1;
+let _trackRasterCache = null;
 
 // ── Track geometry constants (world units ≈ 0.93 m) ──
 const TRACK_HALF_WIDTH = 7;   // half of 14 m road
@@ -130,6 +131,19 @@ function _invalidateSplineCache() {
   _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
   _cachedBarrierWorldGeo = null;
   _cachedBarrierGeo = null;
+  _trackRasterCache = null;
+}
+
+function resetRenderCaches() {
+  _bgCamKey = '';
+  _wpCacheKey = '';
+  _barrierGeoCamZoom = -1;
+  _trackRasterCache = null;
+  _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
+  _cachedBarrierWorldGeo = null;
+  _cachedBarrierGeo = null;
+  _windSignCache = 0;
+  _windSignWpKey = '';
 }
 
 function getCachedSpline(segs) {
@@ -168,7 +182,9 @@ function simplifyWaypoints(eps) {
   if (simplified.length>1&&simplified[simplified.length-1].x===simplified[0].x) simplified.pop();
   if (simplified.length<3){showToast('Tolerance too high');return;}
   waypoints=simplified; startingPointIdx=0; selectedWP=-1;
-  updateWPList(); render();
+  updateWPList();
+  _invalidateSplineCache();
+  if (typeof markDirty === 'function') markDirty(); else render();
   showToast(`Simplified: ${before} → ${waypoints.length} waypoints`);
 }
 
@@ -348,9 +364,108 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
 }
 
 // ── Polyline path helper ─────────────────────────────
+function buildOffsetWorldPolyline(pts, sideNum, offset) {
+  const n = pts.length;
+  if (n < 2) return [];
+
+  const normals = new Array(n);
+
+  function dot(ax, ay, bx, by) {
+    return ax * bx + ay * by;
+  }
+
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n].pt;
+    const next = pts[(i + 1) % n].pt;
+    const dx = next.x - prev.x;
+    const dy = next.y - prev.y;
+    const l = Math.hypot(dx, dy) || 1;
+
+    let nx = -dy / l;
+    let ny = dx / l;
+
+    if (sideNum === 1) {
+      nx = -nx;
+      ny = -ny;
+    }
+
+    normals[i] = { x: nx, y: ny };
+  }
+
+  for (let i = 1; i < n; i++) {
+    const p = normals[i - 1];
+    const c = normals[i];
+    const d = dot(p.x, p.y, c.x, c.y);
+
+    if (d < 0) {
+      c.x = -c.x;
+      c.y = -c.y;
+    } else if (d < 0.6) {
+      c.x = p.x * 0.6 + c.x * 0.4;
+      c.y = p.y * 0.6 + c.y * 0.4;
+      const l = Math.hypot(c.x, c.y) || 1;
+      c.x /= l;
+      c.y /= l;
+    }
+  }
+
+  if (n > 1) {
+    normals[n - 1] = { x: normals[n - 2].x, y: normals[n - 2].y };
+  }
+
+  const result = [];
+  const MITER_LIMIT = 3.0;
+
+  for (let i = 0; i < n; i++) {
+    const p = pts[i].pt;
+
+    if (i === 0 || i === n - 1) {
+      const nx = normals[i].x;
+      const ny = normals[i].y;
+      result.push({ x: p.x + nx * offset, y: p.y + ny * offset });
+      continue;
+    }
+
+    const n0 = normals[i - 1];
+    const n1 = normals[i];
+    const mx = n0.x + n1.x;
+    const my = n0.y + n1.y;
+    const len = Math.hypot(mx, my) || 1;
+    const mxn = mx / len;
+    const myn = my / len;
+    const sideCheck = dot(mxn, myn, n1.x, n1.y);
+
+    if (sideCheck < 0.1) {
+      result.push({ x: p.x + n1.x * offset, y: p.y + n1.y * offset });
+      continue;
+    }
+
+    const denom = Math.max(1e-4, sideCheck);
+    let miterLen = offset / denom;
+    const maxLen = offset * MITER_LIMIT;
+    if (Math.abs(miterLen) > maxLen) {
+      miterLen = Math.sign(miterLen) * maxLen;
+    }
+
+    const MIN_OFFSET = offset * 0.6;
+    if (Math.abs(miterLen) < MIN_OFFSET) {
+      miterLen = Math.sign(miterLen) * MIN_OFFSET;
+    }
+
+    result.push({ x: p.x + mxn * miterLen, y: p.y + myn * miterLen });
+  }
+
+  return result;
+}
+
 function _polyPath(ctx, poly) {
   ctx.beginPath();
   poly.forEach((p, i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
+}
+
+function _worldPath(drawCtx, poly) {
+  drawCtx.beginPath();
+  poly.forEach((p, i) => i === 0 ? drawCtx.moveTo(p.x, p.y) : drawCtx.lineTo(p.x, p.y));
 }
 
 // ═══════════════════════════════════════════════════
@@ -374,13 +489,278 @@ function _redrawBg(W, H) {
 function _getWpKey() {
   const n = waypoints.length;
   if (n===0) return '0';
-  const s = waypoints[0].x+waypoints[0].y+waypoints[Math.floor(n/2)].x+waypoints[Math.floor(n/2)].y+waypoints[n-1].x+waypoints[n-1].y;
-  return `${n}_${s}`;
+  let h = 2166136261 >>> 0;
+  function mix(v) {
+    h ^= (v >>> 0);
+    h = Math.imul(h, 16777619);
+    h >>>= 0;
+  }
+  mix(n);
+  mix(startingPointIdx || 0);
+  for (let i = 0; i < n; i++) {
+    mix(Math.round(waypoints[i].x * 100));
+    mix(Math.round(waypoints[i].y * 100));
+  }
+  return `${n}_${h.toString(16)}`;
 }
 
 // ═══════════════════════════════════════════════════
 // MAIN RENDER
 // ═══════════════════════════════════════════════════
+function _getTrackRasterTargetPpu(boundsW, boundsH) {
+  const dpr = window.devicePixelRatio || 1;
+  const need = Math.max(2, cam.zoom * dpr * 1.1);
+  let target = need <= 2 ? 2 : (need <= 4 ? 4 : 8);
+
+  const maxDim = 4096;
+  const maxArea = 9_000_000;
+  const dimCap = maxDim / Math.max(1, boundsW, boundsH);
+  const areaCap = Math.sqrt(maxArea / Math.max(1, boundsW * boundsH));
+  target = Math.min(target, dimCap, areaCap);
+
+  return Math.max(0.75, target);
+}
+
+function _getTrackRasterBounds(roadSpline, geo) {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+
+  function includePoint(p) {
+    if (!p) return;
+    if (p.x < minX) minX = p.x;
+    if (p.y < minY) minY = p.y;
+    if (p.x > maxX) maxX = p.x;
+    if (p.y > maxY) maxY = p.y;
+  }
+
+  roadSpline.forEach(item => includePoint(item.pt));
+  if (geo) {
+    [-1, 1].forEach(side => {
+      const sideGeo = geo[side];
+      if (!sideGeo) return;
+      sideGeo.outerWorld.forEach(includePoint);
+      sideGeo.innerWorld.forEach(includePoint);
+    });
+  }
+
+  if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null;
+
+  const pad = Math.max(BARRIER_OUTER + 10, TRACK_HALF_WIDTH + 14);
+  return {
+    x: minX - pad,
+    y: minY - pad,
+    w: Math.max(1, (maxX - minX) + pad * 2),
+    h: Math.max(1, (maxY - minY) + pad * 2)
+  };
+}
+
+function _buildTrackRaster() {
+  const roadSpline = getCachedSpline(16);
+  const kerbSpline = getCachedSpline(20);
+  const geo = _getBarrierGeo();
+  if (roadSpline.length < 2 || !geo) return null;
+
+  const bounds = _getTrackRasterBounds(roadSpline, geo);
+  if (!bounds) return null;
+
+  const ppu = _getTrackRasterTargetPpu(bounds.w, bounds.h);
+  const width = Math.max(1, Math.ceil(bounds.w * ppu));
+  const height = Math.max(1, Math.ceil(bounds.h * ppu));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const drawCtx = canvas.getContext('2d');
+  if (!drawCtx) return null;
+
+  drawCtx.setTransform(1, 0, 0, 1, 0, 0);
+  drawCtx.clearRect(0, 0, width, height);
+  drawCtx.setTransform(ppu, 0, 0, ppu, -bounds.x * ppu, -bounds.y * ppu);
+  drawCtx.imageSmoothingEnabled = true;
+  drawCtx.lineCap = 'round';
+  drawCtx.lineJoin = 'round';
+
+  const roadWorld = roadSpline.map(p => p.pt);
+
+  drawCtx.strokeStyle = 'rgba(48,50,54,0.97)';
+  drawCtx.lineWidth = TRACK_HALF_WIDTH * 2;
+  _worldPath(drawCtx, roadWorld);
+  drawCtx.closePath();
+  drawCtx.stroke();
+
+  const edgeOffset = TRACK_HALF_WIDTH - 0.4;
+  drawCtx.lineWidth = 0.8;
+  [-1, 1].forEach(side => {
+    drawCtx.strokeStyle = 'rgba(255,255,255,0.7)';
+    _worldPath(drawCtx, buildOffsetWorldPolyline(roadSpline, side, edgeOffset));
+    drawCtx.stroke();
+  });
+
+  const kerbDefault = TRACK_HALF_WIDTH + 0.6;
+  drawCtx.lineWidth = 2.2;
+  drawCtx.lineCap = 'butt';
+  drawCtx.lineJoin = 'miter';
+  [-1, 1].forEach(side => {
+    let poly;
+    const safe = geo[side] && geo[side].kerbOffsets;
+    if (safe && kerbSpline.length >= 2 && safe.length === kerbSpline.length - 1) {
+      poly = buildOffsetWorldPolylineVarying(kerbSpline, side, safe.concat([safe[0]]));
+    } else {
+      poly = buildOffsetWorldPolyline(roadSpline, side, kerbDefault);
+    }
+    drawCtx.setLineDash([14, 14]);
+    drawCtx.lineDashOffset = 0;
+    drawCtx.strokeStyle = 'rgba(215,25,25,0.92)';
+    _worldPath(drawCtx, poly);
+    drawCtx.stroke();
+    drawCtx.lineDashOffset = 14;
+    drawCtx.strokeStyle = 'rgba(245,245,245,0.92)';
+    _worldPath(drawCtx, poly);
+    drawCtx.stroke();
+  });
+  drawCtx.setLineDash([]);
+  drawCtx.lineDashOffset = 0;
+  drawCtx.lineCap = 'round';
+  drawCtx.lineJoin = 'round';
+
+  if (startingPointIdx < waypoints.length) {
+    const spl = roadSpline.length;
+    const i1  = Math.min(startingPointIdx * 16, spl - 1);
+    const i2  = Math.min(i1 + 1, spl - 1);
+    if (i2 > i1) {
+      const sfPt = waypoints[startingPointIdx];
+      const dx = roadSpline[i2].pt.x - roadSpline[i1].pt.x;
+      const dy = roadSpline[i2].pt.y - roadSpline[i1].pt.y;
+      const len = Math.hypot(dx, dy) || 1;
+      const nx = -dy / len, ny = dx / len;
+      const halfW = TRACK_HALF_WIDTH;
+      drawCtx.strokeStyle = 'rgba(255,255,255,0.95)';
+      drawCtx.lineWidth = 3.5;
+      drawCtx.beginPath();
+      drawCtx.moveTo(sfPt.x - nx * halfW, sfPt.y - ny * halfW);
+      drawCtx.lineTo(sfPt.x + nx * halfW, sfPt.y + ny * halfW);
+      drawCtx.stroke();
+    }
+  }
+
+  [-1, 1].forEach(side => {
+    const { innerWorld, outerWorld, overlapFlags } = geo[side];
+    const outer = outerWorld.concat([outerWorld[0]]);
+    const inner = innerWorld.concat([innerWorld[0]]);
+
+    drawCtx.lineWidth = 3.5;
+    drawCtx.strokeStyle = 'rgba(20,20,20,0.5)';
+    _worldPath(drawCtx, outer);
+    drawCtx.stroke();
+
+    drawCtx.lineWidth = 2.5;
+    drawCtx.strokeStyle = 'rgba(170,185,200,1.0)';
+    _worldPath(drawCtx, outer);
+    drawCtx.stroke();
+
+    drawCtx.lineWidth = 1.0;
+    drawCtx.strokeStyle = 'rgba(235,245,255,0.7)';
+    _worldPath(drawCtx, outer);
+    drawCtx.stroke();
+
+    const m = inner.length - 1;
+    for (let i = 0; i < m; i++) {
+      const flagged = overlapFlags && (overlapFlags[i % overlapFlags.length] || overlapFlags[(i + 1) % overlapFlags.length]);
+      const shadowColor = flagged ? 'rgba(180,0,120,0.5)' : 'rgba(20,20,20,0.35)';
+      const baseColor = flagged ? 'rgba(255,20,180,0.9)' : 'rgba(160,175,190,0.85)';
+      const hlColor = flagged ? 'rgba(255,120,220,0.6)' : 'rgba(220,235,255,0.45)';
+      const seg = [inner[i], inner[i + 1]];
+
+      drawCtx.lineWidth = 2.0;
+      drawCtx.strokeStyle = shadowColor;
+      _worldPath(drawCtx, seg);
+      drawCtx.stroke();
+
+      drawCtx.lineWidth = 1.5;
+      drawCtx.strokeStyle = baseColor;
+      _worldPath(drawCtx, seg);
+      drawCtx.stroke();
+
+      drawCtx.lineWidth = 0.8;
+      drawCtx.strokeStyle = hlColor;
+      _worldPath(drawCtx, seg);
+      drawCtx.stroke();
+    }
+  });
+
+  drawCtx.strokeStyle = 'rgba(232,255,71,0.18)';
+  drawCtx.lineWidth = 1;
+  drawCtx.setLineDash([4, 8]);
+  _worldPath(drawCtx, roadWorld);
+  drawCtx.closePath();
+  drawCtx.stroke();
+  drawCtx.setLineDash([]);
+
+  return { key: _getWpKey(), bounds, ppu, canvas };
+}
+
+function _ensureTrackRaster() {
+  if (waypoints.length < 2) return null;
+  const key = _getWpKey();
+  if (_trackRasterCache && _trackRasterCache.key === key) {
+    const targetPpu = _getTrackRasterTargetPpu(_trackRasterCache.bounds.w, _trackRasterCache.bounds.h);
+    if (_trackRasterCache.ppu + 1e-6 >= targetPpu) {
+      return _trackRasterCache;
+    }
+  }
+
+  const roadSpline = getCachedSpline(16);
+  if (roadSpline.length < 2) return null;
+  const geo = _getBarrierGeo();
+  if (!geo) return null;
+  const bounds = _getTrackRasterBounds(roadSpline, geo);
+  if (!bounds) return null;
+
+  try {
+    _trackRasterCache = _buildTrackRaster();
+  } catch (err) {
+    console.error('track raster build failed', err);
+    _trackRasterCache = null;
+  }
+  return _trackRasterCache;
+}
+
+function _drawTrackRaster() {
+  const raster = _ensureTrackRaster();
+  if (!raster) return false;
+
+  ctx.save();
+  ctx.setTransform(
+    cam.zoom, 0, 0, cam.zoom,
+    mainCanvas.width / 2 - cam.x * cam.zoom,
+    mainCanvas.height / 2 - cam.y * cam.zoom
+  );
+  ctx.imageSmoothingEnabled = true;
+  ctx.drawImage(raster.canvas, raster.bounds.x, raster.bounds.y, raster.bounds.w, raster.bounds.h);
+  ctx.restore();
+  return true;
+}
+
+function drawWaypointDots() {
+  for (let i = 0; i < waypoints.length; i++) {
+    const wp = waypoints[i];
+    const s  = worldToScreen(wp.x, wp.y);
+    const isStart = i === startingPointIdx;
+    const r = isStart ? 8 : 5;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
+    ctx.fillStyle = isStart ? '#00ff88' : '#e8ff47';
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.fillStyle = '#000';
+    ctx.font = `bold ${Math.max(7, Math.min(10, cam.zoom * 9))}px "Barlow Condensed", sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(isStart ? 'SF' : i, s.x, s.y);
+  }
+}
+
 function render() {
   if (typeof preview3dActive !== 'undefined' && preview3dActive) return;
   const W = mainCanvas.width, H = mainCanvas.height;
@@ -400,35 +780,22 @@ function render() {
 
   // Spline cache invalidation
   const wpKey = _getWpKey();
-  if (wpKey !== _wpCacheKey) { _wpCacheKey = wpKey; _invalidateSplineCache(); }
+  if (wpKey !== _wpCacheKey) {
+    _wpCacheKey = wpKey;
+    _invalidateSplineCache();
+  }
 
   ctx.clearRect(0, 0, W, H);
 
   if (waypoints.length >= 2) {
-    drawTrackRoad();
-    drawBarrierLines();
-    drawCentreline();
+    if (!_drawTrackRaster()) {
+      drawTrackRoad();
+      drawBarrierLines();
+      drawCentreline();
+    }
   }
 
-  // Waypoint dots
-  for (let i = 0; i < waypoints.length; i++) {
-    const wp = waypoints[i];
-    const s  = worldToScreen(wp.x, wp.y);
-    const isStart = i === startingPointIdx;
-    const r = isStart ? 8 : 5;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, r, 0, Math.PI*2);
-    ctx.fillStyle = isStart ? '#00ff88' : '#e8ff47';
-    ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.fillStyle = '#000';
-    ctx.font = `bold ${Math.max(7, Math.min(10, cam.zoom*9))}px "Barlow Condensed", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(isStart ? 'SF' : i, s.x, s.y);
-  }
+  drawWaypointDots();
 }
 
 // ═══════════════════════════════════════════════════
@@ -1181,6 +1548,24 @@ function getSplineSegmentPoints(pts, from, to) {
 // centreline at spline-point i (closed loop). Used by drawTrackRoad to draw
 // kerbs that taper inward in tight back-to-back sections so they don't
 // overlap kerbs from a foreign track section.
+function buildOffsetWorldPolylineVarying(pts, sideNum, offsets) {
+  const n = pts.length;
+  if (n < 2) return [];
+  const out = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n].pt;
+    const next = pts[(i + 1) % n].pt;
+    const dx = next.x - prev.x, dy = next.y - prev.y;
+    const l  = Math.hypot(dx, dy) || 1;
+    let nx = -dy / l, ny = dx / l;
+    if (sideNum === 1) { nx = -nx; ny = -ny; }
+    const off = offsets[Math.min(offsets.length - 1, i)] || 0;
+    const p   = pts[i].pt;
+    out[i] = { x: p.x + nx * off, y: p.y + ny * off };
+  }
+  return out;
+}
+
 function buildOffsetScreenPolylineVarying(pts, sideNum, offsets) {
   const n = pts.length;
   if (n < 2) return [];
