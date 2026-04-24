@@ -701,8 +701,11 @@ function _getBarrierGeo() {
     smoothMaxOffR[i] = sR / kSum;
   }
 
-  // Pass C: build final inner points, cross-check L vs R, pull back if still overlapping
+  // Pass C: build final inner points, cross-check L vs R at the SAME index,
+  // pull back if still overlapping locally.
   const innerL = [], innerR = [];
+  const finalOffL = new Float64Array(n - 1);
+  const finalOffR = new Float64Array(n - 1);
   const MIN_GAP = TRACK_HALF_WIDTH * 2 * 0.6; // 60 % of full road width minimum gap
   for (let i = 0; i < n - 1; i++) {
     const p   = splinePts[i].pt;
@@ -715,12 +718,102 @@ function _getBarrierGeo() {
       const squeeze = MIN_GAP / gap; // > 1 means offsets are too large
       offL = Math.max(INNER_MIN, offL / squeeze);
       offR = Math.max(INNER_MIN, offR / squeeze);
-      innerL.push({ x: p.x + normalsL[i].x * offL, y: p.y + normalsL[i].y * offL });
-      innerR.push({ x: p.x + normalsR[i].x * offR, y: p.y + normalsR[i].y * offR });
-    } else {
-      innerL.push({ x: lx, y: ly });
-      innerR.push({ x: rx, y: ry });
     }
+    finalOffL[i] = offL;
+    finalOffR[i] = offR;
+    innerL.push({ x: p.x + normalsL[i].x * offL, y: p.y + normalsL[i].y * offL });
+    innerR.push({ x: p.x + normalsR[i].x * offR, y: p.y + normalsR[i].y * offR });
+  }
+
+  // ── Step 5: MUTUAL barrier-vs-barrier overlap fix ───────────────────────
+  //
+  // The earlier passes only check barriers against the foreign CENTRELINE.
+  // That misses cases where two barriers from DIFFERENT track sections sit
+  // very close to each other (eg. two parallel straights with a thin gap, or
+  // an outside hairpin barrier brushing another section's inner barrier).
+  //
+  // Here we build a spatial grid of every barrier point we just computed and
+  // iteratively pull back any pair of foreign barriers that are too close —
+  // BOTH sides shrink mutually so neither steals all the room. We also keep
+  // each barrier strictly OUTSIDE the road by clamping to INNER_MIN.
+  const BARRIER_BARRIER_MIN = 1.6;       // smallest tolerated gap between two
+                                         // foreign barrier walls (world units)
+  const BARRIER_ROAD_MIN    = INNER_MIN; // never let a barrier cross a road
+  const PAIR_PASSES         = 4;
+  const RELAX               = 0.55;      // mutual shrink amount per pass
+
+  // Helper to evaluate the world position from current offsets.
+  function worldL(i) {
+    const p = splinePts[i].pt;
+    return { x: p.x + normalsL[i].x * finalOffL[i], y: p.y + normalsL[i].y * finalOffL[i] };
+  }
+  function worldR(i) {
+    const p = splinePts[i].pt;
+    return { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
+  }
+
+  for (let pass = 0; pass < PAIR_PASSES; pass++) {
+    // (Re)build a spatial grid each pass because positions move.
+    const PCELL = Math.max(BARRIER_BARRIER_MIN * 2, 6);
+    const bGrid = new Map();
+    function gAdd(x, y, payload) {
+      const key = Math.floor(x / PCELL) + ',' + Math.floor(y / PCELL);
+      if (!bGrid.has(key)) bGrid.set(key, []);
+      bGrid.get(key).push(payload);
+    }
+    for (let i = 0; i < n - 1; i++) {
+      const wl = worldL(i), wr = worldR(i);
+      gAdd(wl.x, wl.y, { side: -1, idx: i, x: wl.x, y: wl.y });
+      gAdd(wr.x, wr.y, { side:  1, idx: i, x: wr.x, y: wr.y });
+    }
+
+    let anyChange = false;
+    function shrink(side, idx, amount) {
+      if (side < 0) {
+        const next = Math.max(BARRIER_ROAD_MIN, finalOffL[idx] - amount);
+        if (next !== finalOffL[idx]) { finalOffL[idx] = next; anyChange = true; }
+      } else {
+        const next = Math.max(BARRIER_ROAD_MIN, finalOffR[idx] - amount);
+        if (next !== finalOffR[idx]) { finalOffR[idx] = next; anyChange = true; }
+      }
+    }
+
+    for (let i = 0; i < n - 1; i++) {
+      for (const sideSelf of [-1, 1]) {
+        const self = sideSelf < 0 ? worldL(i) : worldR(i);
+        const cx0 = Math.floor(self.x / PCELL), cy0 = Math.floor(self.y / PCELL);
+        for (let dcx = -1; dcx <= 1; dcx++) {
+          for (let dcy = -1; dcy <= 1; dcy++) {
+            const cell = bGrid.get((cx0 + dcx) + ',' + (cy0 + dcy));
+            if (!cell) continue;
+            for (let k = 0; k < cell.length; k++) {
+              const o = cell[k];
+              // Skip self and same local section (not a foreign overlap).
+              if (o.side === sideSelf && o.idx === i) continue;
+              const di = Math.min(Math.abs(o.idx - i), loopLen - Math.abs(o.idx - i));
+              if (di < localSkip && o.side === sideSelf) continue;
+              const dx = o.x - self.x, dy = o.y - self.y;
+              const d  = Math.hypot(dx, dy);
+              if (d >= BARRIER_BARRIER_MIN) continue;
+              // Two foreign barrier points are touching → mutually shrink both.
+              const overlap = (BARRIER_BARRIER_MIN - d);
+              const amt     = overlap * RELAX * 0.5;
+              shrink(sideSelf, i, amt);
+              shrink(o.side,   o.idx, amt);
+            }
+          }
+        }
+      }
+    }
+
+    if (!anyChange) break;
+  }
+
+  // Rebuild inner barrier point arrays from the (possibly) updated offsets.
+  for (let i = 0; i < n - 1; i++) {
+    const p = splinePts[i].pt;
+    innerL[i] = { x: p.x + normalsL[i].x * finalOffL[i], y: p.y + normalsL[i].y * finalOffL[i] };
+    innerR[i] = { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
   }
 
   const geo = {

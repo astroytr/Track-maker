@@ -266,10 +266,26 @@ function buildExportCode() {
   const exportSegments = expMergeBarrierSegments(barrierSegments, waypoints.length);
   if (exportSegments.length > 0) {
     exportSegments.forEach((seg,bi) => {
-      const fromIdx=Math.round(seg.from/waypoints.length*spPts.length);
-      const toIdx=Math.min(Math.round(seg.to/waypoints.length*spPts.length),spPts.length-1);
-      const segPts=spPts.slice(fromIdx,toIdx+1);
-      if (segPts.length<2) return;
+      const spLen = spPts.length;
+      const wpLen = Math.max(1, waypoints.length);
+      let fromIdx = Math.round(seg.from / wpLen * spLen);
+      let toIdx   = Math.round(seg.to   / wpLen * spLen);
+      // Clamp into valid range
+      fromIdx = ((fromIdx % spLen) + spLen) % spLen;
+      toIdx   = Math.min(spLen - 1, Math.max(0, toIdx));
+      // FIX: handle wrap-around segments (where seg.to wraps past the loop start
+      // in the source data, or the rounded toIdx ends up <= fromIdx). Without
+      // this, slice(fromIdx,toIdx+1) returns an empty array and the barrier is
+      // silently dropped from the exported track.
+      let segPts;
+      if (seg.to < seg.from || toIdx < fromIdx) {
+        const tail = spPts.slice(fromIdx);
+        const head = spPts.slice(0, Math.min(spLen, toIdx + 1));
+        segPts = tail.concat(head);
+      } else {
+        segPts = spPts.slice(fromIdx, toIdx + 1);
+      }
+      if (segPts.length < 2) return;
       const cfg=EXPORT_SURF[seg.surface];
       barrierCode += `  // Barrier ${bi}: ${cfg?cfg.label:seg.surface} WP${seg.from}→${seg.to}\n`;
       barrierCode += genBarrierCode(seg, segPts) + '\n';

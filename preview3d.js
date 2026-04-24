@@ -1134,8 +1134,9 @@ function setupP3DControls(cnv) {
     if (!dragging) return;
     const dx = e.clientX - lx, dy = e.clientY - ly;
     lx = e.clientX; ly = e.clientY;
-    p3dYaw   -= dx * 0.004;
-    p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - dy * 0.004));
+    const sens = (typeof window._p3dSensitivity === 'number') ? window._p3dSensitivity : 0.45;
+    p3dYaw   -= dx * 0.004 * (sens / 0.45);
+    p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - dy * 0.004 * (sens / 0.45)));
     _applyCamera();
   });
   cnv.addEventListener('wheel', e => {
@@ -1213,6 +1214,60 @@ function setupP3DControls(cnv) {
   window._p3dJoystickLook = makeJoystick('left',  'LOOK');
   window._p3dJoystickMove = makeJoystick('right', 'MOVE');
 
+  // ── Joystick sensitivity control ───────────────────────────────────
+  // A button on the HUD opens a small slider that scales BOTH joysticks
+  // at once. Default is reduced from the old hard-coded 2.5× rate.
+  if (typeof window._p3dSensitivity !== 'number') window._p3dSensitivity = 0.45;
+
+  const sensBtn = document.createElement('button');
+  sensBtn.className = 'preview3d-exit-btn';
+  sensBtn.style.cssText += ';right:auto;left:12px;top:92px;background:rgba(0,0,0,0.55);' +
+    'font-size:11px;padding:6px 10px;';
+  sensBtn.textContent = '🎚 Sensitivity';
+
+  const sensPanel = document.createElement('div');
+  sensPanel.style.cssText = 'position:absolute;left:12px;top:128px;z-index:201;display:none;' +
+    'background:rgba(0,0,0,0.78);border:1px solid rgba(255,255,255,0.35);border-radius:8px;' +
+    'padding:10px 12px;color:#fff;font-size:12px;min-width:200px;font-family:sans-serif;';
+  const sensLabel = document.createElement('div');
+  sensLabel.style.cssText = 'margin-bottom:6px;display:flex;justify-content:space-between;';
+  const sensTitle = document.createElement('span');
+  sensTitle.textContent = 'Joystick sensitivity';
+  const sensValue = document.createElement('span');
+  sensValue.style.cssText = 'opacity:0.85;';
+  sensLabel.appendChild(sensTitle);
+  sensLabel.appendChild(sensValue);
+  sensPanel.appendChild(sensLabel);
+  const sensSlider = document.createElement('input');
+  sensSlider.type = 'range';
+  sensSlider.min = '5';   // 0.05×
+  sensSlider.max = '300'; // 3.00×
+  sensSlider.step = '5';
+  sensSlider.value = String(Math.round(window._p3dSensitivity * 100));
+  sensSlider.style.cssText = 'width:100%;touch-action:none;';
+  sensPanel.appendChild(sensSlider);
+  const sensHint = document.createElement('div');
+  sensHint.style.cssText = 'margin-top:6px;opacity:0.6;font-size:10px;';
+  sensHint.textContent = 'Affects both LOOK and MOVE joysticks';
+  sensPanel.appendChild(sensHint);
+
+  function paintSens() {
+    sensValue.textContent = window._p3dSensitivity.toFixed(2) + '×';
+  }
+  paintSens();
+  sensSlider.addEventListener('input', () => {
+    window._p3dSensitivity = Math.max(0.05, parseInt(sensSlider.value, 10) / 100);
+    paintSens();
+  });
+  sensBtn.onclick = () => {
+    const open = sensPanel.style.display !== 'none';
+    sensPanel.style.display = open ? 'none' : 'block';
+    sensBtn.style.borderColor = open ? '' : '#a78bfa';
+    sensBtn.style.color       = open ? '' : '#a78bfa';
+  };
+  joyOl.appendChild(sensBtn);
+  joyOl.appendChild(sensPanel);
+
   // ▲▼ buttons for Y-axis (altitude)
   const udWrap = document.createElement('div');
   udWrap.style.cssText = 'position:absolute;bottom:28px;right:132px;display:flex;flex-direction:column;gap:6px;z-index:200;';
@@ -1256,17 +1311,20 @@ function updateFreeRoamCamera(dt) {
   if (p3dKeys['KeyE']) p3dPos.y += s;
   if (p3dKeys['KeyQ']) p3dPos.y = Math.max(5, p3dPos.y - s);
 
+  // User-controlled sensitivity multiplier (set by the on-screen slider).
+  const sens = (typeof window._p3dSensitivity === 'number') ? window._p3dSensitivity : 0.45;
+
   // Left joystick = look
   const look = window._p3dJoystickLook;
   if (look && (look.x !== 0 || look.y !== 0)) {
-    p3dYaw   -= look.x * 2.5 * dt;
-    p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - look.y * 2.5 * dt));
+    p3dYaw   -= look.x * 2.5 * sens * dt;
+    p3dPitch  = Math.max(-1.4, Math.min(1.4, p3dPitch - look.y * 2.5 * sens * dt));
   }
 
   // Right joystick = move (fwd/back/strafe)
   const move = window._p3dJoystickMove;
   if (move && (move.x !== 0 || move.y !== 0)) {
-    const jSpd = s * 2.5;
+    const jSpd = s * 2.5 * sens;
     p3dPos.x += ( sy * (-move.y) + cy2 * move.x) * jSpd;
     p3dPos.z += (cy2 * (-move.y) - sy  * move.x) * jSpd;
   }
