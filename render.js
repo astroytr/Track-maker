@@ -544,60 +544,45 @@ function _getBarrierGeo() {
   if (splinePts.length < 2) return null;
   if (_cachedBarrierWorldGeo) return _cachedBarrierWorldGeo;
 
-  const innerOffset = BARRIER_INNER;
-  const outerOffset = BARRIER_OUTER;
-  const n = splinePts.length;
-  const loopLen = n - 1; // splinePts has closing duplicate; real loop length is n-1
+  const innerOffset = BARRIER_INNER;   // 9.0 wu — ideal inner barrier distance
+  const outerOffset = BARRIER_OUTER;   // 26.0 wu — outer perimeter wall
+  const n      = splinePts.length;
+  const loopLen = n - 1; // closing duplicate excluded
 
-  // ── Step 1: build normals for both sides ─────────────────────────────────
+  // ── Step 1: normals for both sides ───────────────────────────────────────
   const normalsL = _buildNormalsForBarrier(splinePts, -1);
   const normalsR = _buildNormalsForBarrier(splinePts,  1);
 
-  // ── Step 2: build raw inner + outer arrays for both sides (no clamping yet)
-  // These are the "ideal" positions before any collision resolution.
-  // FIX 2: stop at n-1 to exclude the closing duplicate point (pts[n-1] === pts[0]).
-  // Including it caused phantom geometry at the seam that triggered false clamping.
-  const rawL = { inner: [], outer: [] };
-  const rawR = { inner: [], outer: [] };
+  // ── Step 2: spatial grid over the centreline ─────────────────────────────
+  // Used to quickly find which other parts of the track are physically nearby,
+  // regardless of spline index distance.
+  const CELL = outerOffset * 2;
+  const centreGrid = new Map();
   for (let i = 0; i < n - 1; i++) {
     const p = splinePts[i].pt;
-    rawL.inner.push({ x: p.x + normalsL[i].x * innerOffset, y: p.y + normalsL[i].y * innerOffset });
-    rawL.outer.push({ x: p.x + normalsL[i].x * outerOffset, y: p.y + normalsL[i].y * outerOffset });
-    rawR.inner.push({ x: p.x + normalsR[i].x * innerOffset, y: p.y + normalsR[i].y * innerOffset });
-    rawR.outer.push({ x: p.x + normalsR[i].x * outerOffset, y: p.y + normalsR[i].y * outerOffset });
-  }
-
-  // ── Step 3: centreline grid + two skip radii ─────────────────────────────
-  // skipOuter: tiny — only skip immediate local curve so parallel straights fire.
-  // skipInner: larger — skip a full hairpin apex so we don't self-clamp corners.
-  const segsPerWp = Math.round(loopLen / Math.max(1, waypoints.length));
-  // FIX 3: skipOuter doubled (segsPerWp*8, loopLen*0.02) so the exclusion zone
-  // covers ~320 pts around the seam — matching the observed 319-point clamp band.
-  const skipOuter = Math.max(segsPerWp * 8,  Math.round(loopLen * 0.02));
-  const skipInner = Math.max(segsPerWp * 20, Math.round(loopLen * 0.04));
-
-  const CELL_C = outerOffset * 2;
-  const centreGrid = new Map();
-  for (let i = 0; i < n; i += 4) {
-    const p = splinePts[i].pt;
-    const key = Math.floor(p.x / CELL_C) + ',' + Math.floor(p.y / CELL_C);
+    const key = Math.floor(p.x / CELL) + ',' + Math.floor(p.y / CELL);
     if (!centreGrid.has(key)) centreGrid.set(key, []);
     centreGrid.get(key).push(i);
   }
 
-  function nearestForeignCentreDist(wx, wy, skipIdx, skipRadius) {
-    const cx0 = Math.floor(wx / CELL_C);
-    const cy0 = Math.floor(wy / CELL_C);
+  // How many spline points per waypoint — used to set local-skip radius.
+  const segsPerWp = Math.max(1, Math.round(loopLen / Math.max(1, waypoints.length)));
+  // Local skip: ignore spline points within ~3 waypoints of self (same curve section).
+  const localSkip = segsPerWp * 3;
+
+  // Query: distance from world point (wx,wy) to nearest FOREIGN centreline point.
+  // "Foreign" means spline-index-far enough that it's a different track section.
+  function nearestForeignCentre(wx, wy, selfIdx) {
+    const cx0 = Math.floor(wx / CELL), cy0 = Math.floor(wy / CELL);
     let minDist = Infinity;
-    for (let dcx = -1; dcx <= 1; dcx++) {
-      for (let dcy = -1; dcy <= 1; dcy++) {
+    for (let dcx = -2; dcx <= 2; dcx++) {
+      for (let dcy = -2; dcy <= 2; dcy++) {
         const cell = centreGrid.get((cx0 + dcx) + ',' + (cy0 + dcy));
         if (!cell) continue;
         for (let k = 0; k < cell.length; k++) {
           const j = cell[k];
-          const raw = Math.abs(j - skipIdx);
-          const delta = Math.min(raw, loopLen - raw);
-          if (delta < skipRadius) continue;
+          const delta = Math.min(Math.abs(j - selfIdx), loopLen - Math.abs(j - selfIdx));
+          if (delta < localSkip) continue; // same section — skip
           const q = splinePts[j].pt;
           const d = Math.hypot(wx - q.x, wy - q.y);
           if (d < minDist) minDist = d;
@@ -607,65 +592,141 @@ function _getBarrierGeo() {
     return minDist;
   }
 
-  // ── Pass 1: clamp OUTER barriers ─────────────────────────────────────────
-  const OUTER_CLEARANCE = TRACK_HALF_WIDTH + 2;
-
-  function clampOuterOffset(px, py, nx, ny, idx) {
-    if (nearestForeignCentreDist(px + nx * outerOffset, py + ny * outerOffset,
-                                  idx, skipOuter) >= OUTER_CLEARANCE) return outerOffset;
-    let lo = innerOffset + 1, hi = outerOffset;
-    for (let iter = 0; iter < 10; iter++) {
-      const mid = (lo + hi) * 0.5;
-      if (nearestForeignCentreDist(px + nx * mid, py + ny * mid, idx, skipOuter) < OUTER_CLEARANCE)
-        hi = mid; else lo = mid;
-    }
-    return lo;
-  }
-
-  // FIX 2 (cont): all geometry loops stop at n-1, excluding the closing duplicate.
+  // ── Step 3: outer barrier — per-point binary-search clamp ────────────────
+  const OUTER_MIN_CLEARANCE = TRACK_HALF_WIDTH + 2;
   const outerL = [], outerR = [];
   for (let i = 0; i < n - 1; i++) {
     const p = splinePts[i].pt;
-    const offL = clampOuterOffset(p.x, p.y, normalsL[i].x, normalsL[i].y, i);
-    const offR = clampOuterOffset(p.x, p.y, normalsR[i].x, normalsR[i].y, i);
+    const calcOuter = (nx, ny) => {
+      const wx = p.x + nx * outerOffset, wy = p.y + ny * outerOffset;
+      if (nearestForeignCentre(wx, wy, i) >= OUTER_MIN_CLEARANCE) return outerOffset;
+      let lo = innerOffset + 1, hi = outerOffset;
+      for (let iter = 0; iter < 12; iter++) {
+        const mid = (lo + hi) * 0.5;
+        if (nearestForeignCentre(p.x + nx * mid, p.y + ny * mid, i) < OUTER_MIN_CLEARANCE)
+          hi = mid; else lo = mid;
+      }
+      return lo;
+    };
+    const offL = calcOuter(normalsL[i].x, normalsL[i].y);
+    const offR = calcOuter(normalsR[i].x, normalsR[i].y);
     outerL.push({ x: p.x + normalsL[i].x * offL, y: p.y + normalsL[i].y * offL });
     outerR.push({ x: p.x + normalsR[i].x * offR, y: p.y + normalsR[i].y * offR });
   }
 
-  // ── Pass 2: clamp INNER barriers ─────────────────────────────────────────
-  // Each inner barrier point must stay >= TRACK_HALF_WIDTH+1 from any foreign
-  // centreline. Uses skipInner so hairpin self-sections are excluded.
-  // Binary-search pulls the offset DOWN from BARRIER_INNER toward INNER_MIN.
-  const INNER_CLEARANCE = TRACK_HALF_WIDTH + 1;
-  const INNER_MIN = TRACK_HALF_WIDTH + 0.5;
+  // ── Step 4: inner barrier — smooth envelope squeeze ───────────────────────
+  //
+  // THE CORE FIX for Interlagos-style tight sections:
+  //
+  // Problem with the old approach (per-point binary search):
+  //   Each point independently snaps inward the moment it detects a conflict.
+  //   This creates a hard kink at the squeeze entry and exit — a sudden jump
+  //   inward then back out, with no smooth transition.
+  //
+  // New approach — 3-pass pipeline:
+  //
+  //   Pass A: Per-point binary search finds the raw maximum safe offset at each
+  //           point (how close the barrier CAN be without crossing foreign track).
+  //           This is a step function: full offset everywhere except the conflict
+  //           zone where it drops sharply.
+  //
+  //   Pass B: Windowed minimum then Gaussian blur smooths that step function
+  //           into a gentle ramp. The barrier squeezes in gradually BEFORE the
+  //           problem zone and expands gradually AFTER — exactly what you want.
+  //           Sigma controls how wide the ramp is (~4 waypoints each side by default).
+  //
+  //   Pass C: Cross-check left vs right inner barriers against each other.
+  //           If the two smoothed inner barriers are still too close to each other
+  //           (not just to the foreign centreline), both sides pull back equally
+  //           so neither crosses the midpoint between the two road edges.
 
-  function clampInnerOffset(px, py, nx, ny, idx) {
-    if (nearestForeignCentreDist(px + nx * innerOffset, py + ny * innerOffset,
-                                  idx, skipInner) >= INNER_CLEARANCE) return innerOffset;
-    let lo = INNER_MIN, hi = innerOffset;
-    for (let iter = 0; iter < 10; iter++) {
-      const mid = (lo + hi) * 0.5;
-      if (nearestForeignCentreDist(px + nx * mid, py + ny * mid, idx, skipInner) < INNER_CLEARANCE)
-        hi = mid; else lo = mid;
-    }
-    return lo;
-  }
+  const INNER_MIN   = TRACK_HALF_WIDTH + 0.3; // never closer to centreline than road edge
+  const INNER_CLEAR = TRACK_HALF_WIDTH + 1.5; // clearance from foreign centreline
 
-  const innerL = [], innerR = [];
+  // Pass A: raw per-point maximum safe offset
+  const maxOffL = new Float64Array(n - 1);
+  const maxOffR = new Float64Array(n - 1);
   for (let i = 0; i < n - 1; i++) {
     const p = splinePts[i].pt;
-    const offL = clampInnerOffset(p.x, p.y, normalsL[i].x, normalsL[i].y, i);
-    const offR = clampInnerOffset(p.x, p.y, normalsR[i].x, normalsR[i].y, i);
-    innerL.push({ x: p.x + normalsL[i].x * offL, y: p.y + normalsL[i].y * offL });
-    innerR.push({ x: p.x + normalsR[i].x * offR, y: p.y + normalsR[i].y * offR });
+    const calcInnerMax = (nx, ny) => {
+      if (nearestForeignCentre(p.x + nx * innerOffset, p.y + ny * innerOffset, i) >= INNER_CLEAR)
+        return innerOffset;
+      let lo = INNER_MIN, hi = innerOffset;
+      for (let iter = 0; iter < 12; iter++) {
+        const mid = (lo + hi) * 0.5;
+        if (nearestForeignCentre(p.x + nx * mid, p.y + ny * mid, i) < INNER_CLEAR)
+          hi = mid; else lo = mid;
+      }
+      return lo;
+    };
+    maxOffL[i] = calcInnerMax(normalsL[i].x, normalsL[i].y);
+    maxOffR[i] = calcInnerMax(normalsR[i].x, normalsR[i].y);
   }
 
-  // ── Assemble final geo ────────────────────────────────────────────────────
+  // Pass B: windowed minimum then Gaussian blur
+  const SIGMA = Math.max(8, segsPerWp * 4); // spread ~4 waypoints each side
+  const WIN   = Math.ceil(SIGMA * 2.5);
+  const minOffL = new Float64Array(n - 1);
+  const minOffR = new Float64Array(n - 1);
+  // Windowed minimum spreads the squeeze region outward by WIN points
+  for (let i = 0; i < n - 1; i++) {
+    let mL = innerOffset, mR = innerOffset;
+    for (let k = -WIN; k <= WIN; k++) {
+      const j = ((i + k) % (n - 1) + (n - 1)) % (n - 1);
+      if (maxOffL[j] < mL) mL = maxOffL[j];
+      if (maxOffR[j] < mR) mR = maxOffR[j];
+    }
+    minOffL[i] = mL;
+    minOffR[i] = mR;
+  }
+  // Gaussian blur smooths windowed-min into a gentle ramp
+  const gaussW = Math.ceil(SIGMA * 2);
+  const gaussKernel = [];
+  let kSum = 0;
+  for (let k = -gaussW; k <= gaussW; k++) {
+    const w = Math.exp(-(k * k) / (2 * SIGMA * SIGMA));
+    gaussKernel.push({ k, w });
+    kSum += w;
+  }
+  const smoothMaxOffL = new Float64Array(n - 1);
+  const smoothMaxOffR = new Float64Array(n - 1);
+  for (let i = 0; i < n - 1; i++) {
+    let sL = 0, sR = 0;
+    for (const { k, w } of gaussKernel) {
+      const j = ((i + k) % (n - 1) + (n - 1)) % (n - 1);
+      sL += minOffL[j] * w;
+      sR += minOffR[j] * w;
+    }
+    smoothMaxOffL[i] = sL / kSum;
+    smoothMaxOffR[i] = sR / kSum;
+  }
+
+  // Pass C: build final inner points, cross-check L vs R, pull back if still overlapping
+  const innerL = [], innerR = [];
+  const MIN_GAP = TRACK_HALF_WIDTH * 2 * 0.6; // 60 % of full road width minimum gap
+  for (let i = 0; i < n - 1; i++) {
+    const p   = splinePts[i].pt;
+    let offL  = Math.max(INNER_MIN, Math.min(innerOffset, smoothMaxOffL[i]));
+    let offR  = Math.max(INNER_MIN, Math.min(innerOffset, smoothMaxOffR[i]));
+    const lx  = p.x + normalsL[i].x * offL, ly = p.y + normalsL[i].y * offL;
+    const rx  = p.x + normalsR[i].x * offR, ry = p.y + normalsR[i].y * offR;
+    const gap = Math.hypot(rx - lx, ry - ly);
+    if (gap < MIN_GAP && gap > 0) {
+      const squeeze = MIN_GAP / gap; // > 1 means offsets are too large
+      offL = Math.max(INNER_MIN, offL / squeeze);
+      offR = Math.max(INNER_MIN, offR / squeeze);
+      innerL.push({ x: p.x + normalsL[i].x * offL, y: p.y + normalsL[i].y * offL });
+      innerR.push({ x: p.x + normalsR[i].x * offR, y: p.y + normalsR[i].y * offR });
+    } else {
+      innerL.push({ x: lx, y: ly });
+      innerR.push({ x: rx, y: ry });
+    }
+  }
+
   const geo = {
     '-1': { innerWorld: innerL, outerWorld: outerL },
      '1': { innerWorld: innerR, outerWorld: outerR }
   };
-
   _cachedBarrierWorldGeo = geo;
   return geo;
 }
@@ -729,8 +790,8 @@ function drawBarrierLines() {
   [-1, 1].forEach(side => {
     const { innerWorld, outerWorld } = geo[side];
 
-    // Convert world → screen at draw time (cheap; world-space geo is cached)
-    // FIX 2: geo arrays now stop before the closing duplicate; re-close visually here.
+    const inner = innerWorld.map(p => worldToScreen(p.x, p.y));
+    inner.push(inner[0]);
     const outer = outerWorld.map(p => worldToScreen(p.x, p.y));
     outer.push(outer[0]);
 
@@ -749,6 +810,19 @@ function drawBarrierLines() {
     ctx.lineWidth = Math.max(1, 1.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.stroke();
+
+    // Inner barrier — smoothly squeezed on tight sections, no hard kinks
+    ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
+    ctx.strokeStyle = 'rgba(20,20,20,0.35)';
+    _polyPath(ctx, inner); ctx.stroke();
+
+    ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
+    ctx.strokeStyle = 'rgba(160,175,190,0.85)';
+    _polyPath(ctx, inner); ctx.stroke();
+
+    ctx.lineWidth = Math.max(0.8, 0.8 * cam.zoom);
+    ctx.strokeStyle = 'rgba(220,235,255,0.45)';
+    _polyPath(ctx, inner); ctx.stroke();
 
     ctx.restore();
   });
