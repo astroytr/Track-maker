@@ -731,8 +731,6 @@ function drawBarrierLines() {
 
     // Convert world → screen at draw time (cheap; world-space geo is cached)
     // FIX 2: geo arrays now stop before the closing duplicate; re-close visually here.
-    const inner = innerWorld.map(p => worldToScreen(p.x, p.y));
-    inner.push(inner[0]);
     const outer = outerWorld.map(p => worldToScreen(p.x, p.y));
     outer.push(outer[0]);
 
@@ -751,25 +749,6 @@ function drawBarrierLines() {
     ctx.lineWidth = Math.max(1, 1.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.stroke();
-
-    // Inner barrier (overlap-clamped) — shadow + silver + highlight
-    ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
-    ctx.strokeStyle = 'rgba(20,20,20,0.35)';
-    ctx.beginPath();
-    inner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-    ctx.stroke();
-
-    ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
-    ctx.strokeStyle = 'rgba(160,175,190,0.85)';
-    ctx.beginPath();
-    inner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-    ctx.stroke();
-
-    ctx.lineWidth = Math.max(0.8, 0.8 * cam.zoom);
-    ctx.strokeStyle = 'rgba(220,235,255,0.45)';
-    ctx.beginPath();
-    inner.forEach((p, i) => i === 0 ? ctx.moveTo(p.x, p.y) : ctx.lineTo(p.x, p.y));
-    ctx.stroke();
 
     ctx.restore();
   });
