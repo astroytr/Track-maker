@@ -834,6 +834,116 @@ function _getBarrierGeo() {
     innerR[i] = { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
   }
 
+  // ── Pass 5: self-intersection fix ────────────────────────────────────────
+  //
+  // Even after Passes A-C+PAIR_PASSES, a barrier polyline can still cross
+  // itself when the track curves back on itself tightly and the normal-flip
+  // logic already committed to an offset that places the barrier on the
+  // wrong side. These are the "pink overlap" points:
+  //   - Find every pair of non-adjacent segments in innerL (and innerR)
+  //     that intersect using a spatial grid.
+  //   - For each intersecting pair (i, j), shrink finalOffL[i], finalOffL[j]
+  //     (or R) by RELAX_SELF per iteration until the intersection clears.
+  //   - Flag those indices as overlapping so drawBarrierLines can colour them pink.
+  //
+  // Uses a coarse spatial grid for O(n) average performance.
+  const overlapFlagL = new Uint8Array(n - 1);
+  const overlapFlagR = new Uint8Array(n - 1);
+
+  function seg2dIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+    // Returns true if segment AB intersects segment CD (excluding shared endpoints).
+    const ex = bx - ax, ey = by - ay;
+    const fx = dx - cx, fy = dy - cy;
+    const denom = ex * fy - ey * fx;
+    if (Math.abs(denom) < 1e-10) return false;
+    const gx = cx - ax, gy = cy - ay;
+    const t = (gx * fy - gy * fx) / denom;
+    const u = (gx * ey - gy * ex) / denom;
+    return t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6;
+  }
+
+  function runSelfIntersectPass(pts, finalOff, normals, flags) {
+    const m = pts.length - 1; // number of real segments (pts has closing dup)
+    const CELL_SI = Math.max(BARRIER_INNER * 1.5, 20);
+    const SHRINK_SELF = 0.5;
+    const SELF_PASSES = 5;
+    const SELF_SKIP   = Math.max(4, Math.round(segsPerWp * 1.5));
+
+    for (let pass = 0; pass < SELF_PASSES; pass++) {
+      // Rebuild point positions from current offsets.
+      const px = new Float64Array(m + 1), py = new Float64Array(m + 1);
+      for (let i = 0; i <= m; i++) {
+        const ii = i % m;
+        const cp = splinePts[ii].pt;
+        px[i] = cp.x + normals[ii].x * finalOff[ii];
+        py[i] = cp.y + normals[ii].y * finalOff[ii];
+      }
+
+      // Spatial grid of segment bounding boxes for fast neighbour queries.
+      const grid = new Map();
+      function addSeg(i) {
+        const x0 = Math.min(px[i], px[i+1]), x1 = Math.max(px[i], px[i+1]);
+        const y0 = Math.min(py[i], py[i+1]), y1 = Math.max(py[i], py[i+1]);
+        const c0x = Math.floor(x0 / CELL_SI), c1x = Math.floor(x1 / CELL_SI);
+        const c0y = Math.floor(y0 / CELL_SI), c1y = Math.floor(y1 / CELL_SI);
+        for (let cx = c0x; cx <= c1x; cx++) {
+          for (let cy = c0y; cy <= c1y; cy++) {
+            const key = cx + ',' + cy;
+            if (!grid.has(key)) grid.set(key, []);
+            grid.get(key).push(i);
+          }
+        }
+      }
+      for (let i = 0; i < m; i++) addSeg(i);
+
+      let anyHit = false;
+      const checked = new Set();
+      for (let i = 0; i < m; i++) {
+        const x0 = Math.min(px[i], px[i+1]), x1 = Math.max(px[i], px[i+1]);
+        const y0 = Math.min(py[i], py[i+1]), y1 = Math.max(py[i], py[i+1]);
+        const c0x = Math.floor(x0 / CELL_SI), c1x = Math.floor(x1 / CELL_SI);
+        const c0y = Math.floor(y0 / CELL_SI), c1y = Math.floor(y1 / CELL_SI);
+        for (let cx = c0x; cx <= c1x; cx++) {
+          for (let cy = c0y; cy <= c1y; cy++) {
+            const cell = grid.get(cx + ',' + cy);
+            if (!cell) continue;
+            for (let ki = 0; ki < cell.length; ki++) {
+              const j = cell[ki];
+              if (j <= i + SELF_SKIP) continue;
+              const loopDelta = Math.min(Math.abs(j - i), m - Math.abs(j - i));
+              if (loopDelta < SELF_SKIP) continue;
+              const pairKey = i < j ? i * 100000 + j : j * 100000 + i;
+              if (checked.has(pairKey)) continue;
+              checked.add(pairKey);
+              if (!seg2dIntersect(px[i], py[i], px[i+1], py[i+1],
+                                  px[j], py[j], px[j+1], py[j+1])) continue;
+              // Intersection found — shrink both segments' leading endpoint offsets.
+              flags[i] = 1; flags[j] = 1;
+              flags[(i + 1) % m] = 1; flags[(j + 1) % m] = 1;
+              const shrinkAmt = SHRINK_SELF;
+              finalOff[i]           = Math.max(INNER_MIN, finalOff[i]           - shrinkAmt);
+              finalOff[(i + 1) % m] = Math.max(INNER_MIN, finalOff[(i + 1) % m] - shrinkAmt);
+              finalOff[j]           = Math.max(INNER_MIN, finalOff[j]           - shrinkAmt);
+              finalOff[(j + 1) % m] = Math.max(INNER_MIN, finalOff[(j + 1) % m] - shrinkAmt);
+              anyHit = true;
+            }
+          }
+        }
+      }
+      if (!anyHit) break;
+    }
+  }
+
+  runSelfIntersectPass(splinePts, finalOffL, normalsL, overlapFlagL);
+  runSelfIntersectPass(splinePts, finalOffR, normalsR, overlapFlagR);
+
+  // Rebuild once more from the self-intersection-corrected offsets.
+  for (let i = 0; i < n - 1; i++) {
+    const p = splinePts[i].pt;
+    innerL[i] = { x: p.x + normalsL[i].x * finalOffL[i], y: p.y + normalsL[i].y * finalOffL[i] };
+    innerR[i] = { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
+  }
+
   // ── Step 6: per-point safe KERB offsets ─────────────────────────────────
   //
   // The kerbs (red/white dashed strip just outside the road) are normally
@@ -883,8 +993,8 @@ function _getBarrierGeo() {
   }
 
   const geo = {
-    '-1': { innerWorld: innerL, outerWorld: outerL, kerbOffsets: Array.from(kerbL) },
-     '1': { innerWorld: innerR, outerWorld: outerR, kerbOffsets: Array.from(kerbR) }
+    '-1': { innerWorld: innerL, outerWorld: outerL, kerbOffsets: Array.from(kerbL), overlapFlags: overlapFlagL },
+     '1': { innerWorld: innerR, outerWorld: outerR, kerbOffsets: Array.from(kerbR), overlapFlags: overlapFlagR }
   };
   _cachedBarrierWorldGeo = geo;
   return geo;
@@ -947,7 +1057,7 @@ function drawBarrierLines() {
   if (!geo) return;
 
   [-1, 1].forEach(side => {
-    const { innerWorld, outerWorld } = geo[side];
+    const { innerWorld, outerWorld, overlapFlags } = geo[side];
 
     const inner = innerWorld.map(p => worldToScreen(p.x, p.y));
     inner.push(inner[0]);
@@ -970,18 +1080,28 @@ function drawBarrierLines() {
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.stroke();
 
-    // Inner barrier — smoothly squeezed on tight sections, no hard kinks
-    ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
-    ctx.strokeStyle = 'rgba(20,20,20,0.35)';
-    _polyPath(ctx, inner); ctx.stroke();
+    // Inner barrier — normal segments silver, overlapping segments pink
+    const m = inner.length - 1; // number of real segments
+    for (let i = 0; i < m; i++) {
+      const flagged = overlapFlags && (overlapFlags[i % overlapFlags.length] || overlapFlags[(i + 1) % overlapFlags.length]);
+      const baseColor  = flagged ? 'rgba(255,20,180,0.9)'  : 'rgba(160,175,190,0.85)';
+      const shadowColor= flagged ? 'rgba(180,0,120,0.5)'   : 'rgba(20,20,20,0.35)';
+      const hlColor    = flagged ? 'rgba(255,120,220,0.6)'  : 'rgba(220,235,255,0.45)';
 
-    ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
-    ctx.strokeStyle = 'rgba(160,175,190,0.85)';
-    _polyPath(ctx, inner); ctx.stroke();
+      const seg = [inner[i], inner[i + 1]];
 
-    ctx.lineWidth = Math.max(0.8, 0.8 * cam.zoom);
-    ctx.strokeStyle = 'rgba(220,235,255,0.45)';
-    _polyPath(ctx, inner); ctx.stroke();
+      ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
+      ctx.strokeStyle = shadowColor;
+      _polyPath(ctx, seg); ctx.stroke();
+
+      ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
+      ctx.strokeStyle = baseColor;
+      _polyPath(ctx, seg); ctx.stroke();
+
+      ctx.lineWidth = Math.max(0.8, 0.8 * cam.zoom);
+      ctx.strokeStyle = hlColor;
+      _polyPath(ctx, seg); ctx.stroke();
+    }
 
     ctx.restore();
   });
