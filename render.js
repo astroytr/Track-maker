@@ -353,52 +353,66 @@ function _polyPath(ctx, poly) {
   poly.forEach((p, i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
 }
 
-// ── Self-intersection clipper ────────────────────────
-// Removes loops from an offset polyline (closed) by detecting where
-// non-adjacent segments cross and cutting out the looping section.
-// Works in screen-space (called just before drawing).
+// ── Self-intersection clipper with rounded corner ────
+// Removes loops from a closed offset polyline. At each cut point, instead
+// of leaving a sharp vertex, inserts a small quadratic-bezier arc so the
+// barrier curves smoothly around tight hairpin corners.
 function _clipSelfIntersections(poly) {
   if (poly.length < 4) return poly;
 
-  // Segment intersection — returns t along seg AB, or -1 if no hit
   function segIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
     const ex = bx - ax, ey = by - ay;
     const fx = dx - cx, fy = dy - cy;
     const det = ex * fy - ey * fx;
-    if (Math.abs(det) < 1e-9) return -1;
+    if (Math.abs(det) < 1e-9) return null;
     const gx = cx - ax, gy = cy - ay;
     const t = (gx * fy - gy * fx) / det;
     const u = (gx * ey - gy * ex) / det;
-    if (t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6) return t;
-    return -1;
+    if (t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6)
+      return { t, u };
+    return null;
   }
 
-  // We iterate until no more intersections are found (handles nested loops).
-  // Max 8 passes to prevent infinite loop on degenerate geometry.
+  // Quadratic bezier arc bridging the cut. Backs off along each arm so the
+  // sharp corner becomes a smooth curve. Radius is in screen pixels.
+  function roundedBridge(pBefore, ix, iy, pAfter) {
+    const radius = Math.max(18, 28 * cam.zoom);
+    const r = Math.min(radius,
+      Math.hypot(pBefore.x - ix, pBefore.y - iy) * 0.48,
+      Math.hypot(pAfter.x  - ix, pAfter.y  - iy) * 0.48
+    );
+    const d0 = Math.hypot(pBefore.x - ix, pBefore.y - iy) || 1;
+    const d1 = Math.hypot(pAfter.x  - ix, pAfter.y  - iy) || 1;
+    const p0 = { x: ix + (pBefore.x - ix) / d0 * r, y: iy + (pBefore.y - iy) / d0 * r };
+    const p1 = { x: ix + (pAfter.x  - ix) / d1 * r, y: iy + (pAfter.y  - iy) / d1 * r };
+    const STEPS = 10;
+    const arc = [];
+    for (let k = 0; k <= STEPS; k++) {
+      const t = k / STEPS, mt = 1 - t;
+      arc.push({
+        x: mt * mt * p0.x + 2 * mt * t * ix + t * t * p1.x,
+        y: mt * mt * p0.y + 2 * mt * t * iy + t * t * p1.y
+      });
+    }
+    return arc;
+  }
+
   let pts = poly.slice();
   for (let pass = 0; pass < 8; pass++) {
     let found = false;
     const n = pts.length;
     outer:
     for (let i = 0; i < n - 1; i++) {
-      const ax = pts[i].x,   ay = pts[i].y;
+      const ax = pts[i].x, ay = pts[i].y;
       const bx = pts[i+1].x, by = pts[i+1].y;
-      // Skip adjacent segments (share an endpoint) — start j at i+2
       for (let j = i + 2; j < n - 1; j++) {
-        // Also skip the wrap-around pair (last seg vs first seg)
         if (i === 0 && j === n - 2) continue;
-        const cx = pts[j].x,   cy = pts[j].y;
-        const dx = pts[j+1].x, dy = pts[j+1].y;
-        const t = segIntersect(ax, ay, bx, by, cx, cy, dx, dy);
-        if (t < 0) continue;
-        // Intersection point
-        const ix = ax + t * (bx - ax);
-        const iy = ay + t * (by - ay);
-        // Cut: keep pts[0..i], intersection, pts[j+1..end]
-        // This removes the loop between i+1 and j.
-        pts = pts.slice(0, i + 1)
-          .concat([{ x: ix, y: iy }])
-          .concat(pts.slice(j + 1));
+        const hit = segIntersect(ax, ay, bx, by, pts[j].x, pts[j].y, pts[j+1].x, pts[j+1].y);
+        if (!hit) continue;
+        const ix = ax + hit.t * (bx - ax);
+        const iy = ay + hit.t * (by - ay);
+        const bridge = roundedBridge(pts[i], ix, iy, pts[j + 1]);
+        pts = pts.slice(0, i + 1).concat(bridge).concat(pts.slice(j + 1));
         found = true;
         break outer;
       }
@@ -790,7 +804,7 @@ function _getBarrierGeo() {
   // rather than jumping at conflict boundaries. We do a windowed-MIN first
   // (so the squeeze region is conservatively wide) then a small box-blur
   // (so the resulting curve is C0/C1 smooth).
-  const SMOOTH_WIN = Math.max(4, segsPerWp * 2);     // ~2 waypoints
+  const SMOOTH_WIN = Math.max(6, segsPerWp * 3);     // ~3 waypoints
   function windowedMin(src) {
     const out = new Float64Array(src.length);
     for (let i = 0; i < src.length; i++) {
@@ -815,8 +829,9 @@ function _getBarrierGeo() {
     }
     return out;
   }
-  const smoothL = boxBlur(windowedMin(freeL), Math.max(2, Math.floor(segsPerWp)));
-  const smoothR = boxBlur(windowedMin(freeR), Math.max(2, Math.floor(segsPerWp)));
+  const blurR = Math.max(3, Math.floor(segsPerWp * 1.5));
+  const smoothL = boxBlur(boxBlur(boxBlur(windowedMin(freeL), blurR), blurR), Math.max(2, Math.floor(segsPerWp)));
+  const smoothR = boxBlur(boxBlur(boxBlur(windowedMin(freeR), blurR), blurR), Math.max(2, Math.floor(segsPerWp)));
 
   // ── Build per-point barrier offsets and world points ────────────────────
   const innerL = new Array(loopLen), innerR = new Array(loopLen);
