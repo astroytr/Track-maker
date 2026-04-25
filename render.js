@@ -36,7 +36,6 @@ let _bgCamKey = '', _wpCacheKey = '';
 let _cachedBarrierWorldGeo = null;
 let _cachedBarrierGeo = null;
 let _barrierGeoCamZoom = -1;
-let _trackRasterCache = null;
 
 // ── Track geometry constants (world units ≈ 0.93 m) ──
 const TRACK_HALF_WIDTH = 7;   // half of 14 m road
@@ -131,19 +130,6 @@ function _invalidateSplineCache() {
   _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
   _cachedBarrierWorldGeo = null;
   _cachedBarrierGeo = null;
-  _trackRasterCache = null;
-}
-
-function resetRenderCaches() {
-  _bgCamKey = '';
-  _wpCacheKey = '';
-  _barrierGeoCamZoom = -1;
-  _trackRasterCache = null;
-  _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
-  _cachedBarrierWorldGeo = null;
-  _cachedBarrierGeo = null;
-  _windSignCache = 0;
-  _windSignWpKey = '';
 }
 
 function getCachedSpline(segs) {
@@ -182,9 +168,7 @@ function simplifyWaypoints(eps) {
   if (simplified.length>1&&simplified[simplified.length-1].x===simplified[0].x) simplified.pop();
   if (simplified.length<3){showToast('Tolerance too high');return;}
   waypoints=simplified; startingPointIdx=0; selectedWP=-1;
-  updateWPList();
-  _invalidateSplineCache();
-  if (typeof markDirty === 'function') markDirty(); else render();
+  updateWPList(); render();
   showToast(`Simplified: ${before} → ${waypoints.length} waypoints`);
 }
 
@@ -364,108 +348,9 @@ function buildOffsetScreenPolyline(pts, sideNum, offset) {
 }
 
 // ── Polyline path helper ─────────────────────────────
-function buildOffsetWorldPolyline(pts, sideNum, offset) {
-  const n = pts.length;
-  if (n < 2) return [];
-
-  const normals = new Array(n);
-
-  function dot(ax, ay, bx, by) {
-    return ax * bx + ay * by;
-  }
-
-  for (let i = 0; i < n; i++) {
-    const prev = pts[(i - 1 + n) % n].pt;
-    const next = pts[(i + 1) % n].pt;
-    const dx = next.x - prev.x;
-    const dy = next.y - prev.y;
-    const l = Math.hypot(dx, dy) || 1;
-
-    let nx = -dy / l;
-    let ny = dx / l;
-
-    if (sideNum === 1) {
-      nx = -nx;
-      ny = -ny;
-    }
-
-    normals[i] = { x: nx, y: ny };
-  }
-
-  for (let i = 1; i < n; i++) {
-    const p = normals[i - 1];
-    const c = normals[i];
-    const d = dot(p.x, p.y, c.x, c.y);
-
-    if (d < 0) {
-      c.x = -c.x;
-      c.y = -c.y;
-    } else if (d < 0.6) {
-      c.x = p.x * 0.6 + c.x * 0.4;
-      c.y = p.y * 0.6 + c.y * 0.4;
-      const l = Math.hypot(c.x, c.y) || 1;
-      c.x /= l;
-      c.y /= l;
-    }
-  }
-
-  if (n > 1) {
-    normals[n - 1] = { x: normals[n - 2].x, y: normals[n - 2].y };
-  }
-
-  const result = [];
-  const MITER_LIMIT = 3.0;
-
-  for (let i = 0; i < n; i++) {
-    const p = pts[i].pt;
-
-    if (i === 0 || i === n - 1) {
-      const nx = normals[i].x;
-      const ny = normals[i].y;
-      result.push({ x: p.x + nx * offset, y: p.y + ny * offset });
-      continue;
-    }
-
-    const n0 = normals[i - 1];
-    const n1 = normals[i];
-    const mx = n0.x + n1.x;
-    const my = n0.y + n1.y;
-    const len = Math.hypot(mx, my) || 1;
-    const mxn = mx / len;
-    const myn = my / len;
-    const sideCheck = dot(mxn, myn, n1.x, n1.y);
-
-    if (sideCheck < 0.1) {
-      result.push({ x: p.x + n1.x * offset, y: p.y + n1.y * offset });
-      continue;
-    }
-
-    const denom = Math.max(1e-4, sideCheck);
-    let miterLen = offset / denom;
-    const maxLen = offset * MITER_LIMIT;
-    if (Math.abs(miterLen) > maxLen) {
-      miterLen = Math.sign(miterLen) * maxLen;
-    }
-
-    const MIN_OFFSET = offset * 0.6;
-    if (Math.abs(miterLen) < MIN_OFFSET) {
-      miterLen = Math.sign(miterLen) * MIN_OFFSET;
-    }
-
-    result.push({ x: p.x + mxn * miterLen, y: p.y + myn * miterLen });
-  }
-
-  return result;
-}
-
 function _polyPath(ctx, poly) {
   ctx.beginPath();
   poly.forEach((p, i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
-}
-
-function _worldPath(drawCtx, poly) {
-  drawCtx.beginPath();
-  poly.forEach((p, i) => i === 0 ? drawCtx.moveTo(p.x, p.y) : drawCtx.lineTo(p.x, p.y));
 }
 
 // ═══════════════════════════════════════════════════
@@ -489,289 +374,20 @@ function _redrawBg(W, H) {
 function _getWpKey() {
   const n = waypoints.length;
   if (n===0) return '0';
-  let h = 2166136261 >>> 0;
-  function mix(v) {
-    h ^= (v >>> 0);
-    h = Math.imul(h, 16777619);
-    h >>>= 0;
-  }
-  mix(n);
-  mix(startingPointIdx || 0);
-  for (let i = 0; i < n; i++) {
-    mix(Math.round(waypoints[i].x * 100));
-    mix(Math.round(waypoints[i].y * 100));
-  }
-  return `${n}_${h.toString(16)}`;
+  const s = waypoints[0].x+waypoints[0].y+waypoints[Math.floor(n/2)].x+waypoints[Math.floor(n/2)].y+waypoints[n-1].x+waypoints[n-1].y;
+  return `${n}_${s}`;
 }
 
 // ═══════════════════════════════════════════════════
 // MAIN RENDER
 // ═══════════════════════════════════════════════════
-function _getTrackRasterTargetPpu(boundsW, boundsH) {
-  const dpr = window.devicePixelRatio || 1;
-  const need = Math.max(2, cam.zoom * dpr * 1.1);
-  let target = need <= 2 ? 2 : (need <= 4 ? 4 : 8);
-
-  const maxDim = 4096;
-  const maxArea = 9_000_000;
-  const dimCap = maxDim / Math.max(1, boundsW, boundsH);
-  const areaCap = Math.sqrt(maxArea / Math.max(1, boundsW * boundsH));
-  target = Math.min(target, dimCap, areaCap);
-
-  return Math.max(0.75, target);
-}
-
-function _getTrackRasterBounds(roadSpline, geo) {
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-
-  function includePoint(p) {
-    if (!p) return;
-    if (p.x < minX) minX = p.x;
-    if (p.y < minY) minY = p.y;
-    if (p.x > maxX) maxX = p.x;
-    if (p.y > maxY) maxY = p.y;
-  }
-
-  roadSpline.forEach(item => includePoint(item.pt));
-  if (geo) {
-    [-1, 1].forEach(side => {
-      const sideGeo = geo[side];
-      if (!sideGeo) return;
-      sideGeo.outerWorld.forEach(includePoint);
-      sideGeo.innerWorld.forEach(includePoint);
-    });
-  }
-
-  if (!isFinite(minX) || !isFinite(minY) || !isFinite(maxX) || !isFinite(maxY)) return null;
-
-  const pad = Math.max(BARRIER_OUTER + 10, TRACK_HALF_WIDTH + 14);
-  return {
-    x: minX - pad,
-    y: minY - pad,
-    w: Math.max(1, (maxX - minX) + pad * 2),
-    h: Math.max(1, (maxY - minY) + pad * 2)
-  };
-}
-
-function _buildTrackRaster() {
-  const roadSpline = getCachedSpline(16);
-  const kerbSpline = getCachedSpline(20);
-  const geo = _getBarrierGeo();
-  if (roadSpline.length < 2 || !geo) return null;
-
-  const bounds = _getTrackRasterBounds(roadSpline, geo);
-  if (!bounds) return null;
-
-  const ppu = _getTrackRasterTargetPpu(bounds.w, bounds.h);
-  const width = Math.max(1, Math.ceil(bounds.w * ppu));
-  const height = Math.max(1, Math.ceil(bounds.h * ppu));
-
-  const canvas = document.createElement('canvas');
-  canvas.width = width;
-  canvas.height = height;
-  const drawCtx = canvas.getContext('2d');
-  if (!drawCtx) return null;
-
-  drawCtx.setTransform(1, 0, 0, 1, 0, 0);
-  drawCtx.clearRect(0, 0, width, height);
-  drawCtx.setTransform(ppu, 0, 0, ppu, -bounds.x * ppu, -bounds.y * ppu);
-  drawCtx.imageSmoothingEnabled = true;
-  drawCtx.lineCap = 'round';
-  drawCtx.lineJoin = 'round';
-
-  const roadWorld = roadSpline.map(p => p.pt);
-
-  drawCtx.strokeStyle = 'rgba(48,50,54,0.97)';
-  drawCtx.lineWidth = TRACK_HALF_WIDTH * 2;
-  _worldPath(drawCtx, roadWorld);
-  drawCtx.closePath();
-  drawCtx.stroke();
-
-  const edgeOffset = TRACK_HALF_WIDTH - 0.4;
-  drawCtx.lineWidth = 0.8;
-  [-1, 1].forEach(side => {
-    drawCtx.strokeStyle = 'rgba(255,255,255,0.7)';
-    _worldPath(drawCtx, buildOffsetWorldPolyline(roadSpline, side, edgeOffset));
-    drawCtx.stroke();
-  });
-
-  const kerbDefault = TRACK_HALF_WIDTH + 0.6;
-  drawCtx.lineWidth = 2.2;
-  drawCtx.lineCap = 'butt';
-  drawCtx.lineJoin = 'miter';
-  [-1, 1].forEach(side => {
-    let poly;
-    const safe = geo[side] && geo[side].kerbOffsets;
-    if (safe && kerbSpline.length >= 2 && safe.length === kerbSpline.length - 1) {
-      poly = buildOffsetWorldPolylineVarying(kerbSpline, side, safe.concat([safe[0]]));
-    } else {
-      poly = buildOffsetWorldPolyline(roadSpline, side, kerbDefault);
-    }
-    drawCtx.setLineDash([14, 14]);
-    drawCtx.lineDashOffset = 0;
-    drawCtx.strokeStyle = 'rgba(215,25,25,0.92)';
-    _worldPath(drawCtx, poly);
-    drawCtx.stroke();
-    drawCtx.lineDashOffset = 14;
-    drawCtx.strokeStyle = 'rgba(245,245,245,0.92)';
-    _worldPath(drawCtx, poly);
-    drawCtx.stroke();
-  });
-  drawCtx.setLineDash([]);
-  drawCtx.lineDashOffset = 0;
-  drawCtx.lineCap = 'round';
-  drawCtx.lineJoin = 'round';
-
-  if (startingPointIdx < waypoints.length) {
-    const spl = roadSpline.length;
-    const i1  = Math.min(startingPointIdx * 16, spl - 1);
-    const i2  = Math.min(i1 + 1, spl - 1);
-    if (i2 > i1) {
-      const sfPt = waypoints[startingPointIdx];
-      const dx = roadSpline[i2].pt.x - roadSpline[i1].pt.x;
-      const dy = roadSpline[i2].pt.y - roadSpline[i1].pt.y;
-      const len = Math.hypot(dx, dy) || 1;
-      const nx = -dy / len, ny = dx / len;
-      const halfW = TRACK_HALF_WIDTH;
-      drawCtx.strokeStyle = 'rgba(255,255,255,0.95)';
-      drawCtx.lineWidth = 3.5;
-      drawCtx.beginPath();
-      drawCtx.moveTo(sfPt.x - nx * halfW, sfPt.y - ny * halfW);
-      drawCtx.lineTo(sfPt.x + nx * halfW, sfPt.y + ny * halfW);
-      drawCtx.stroke();
-    }
-  }
-
-  [-1, 1].forEach(side => {
-    const { innerWorld, outerWorld, overlapFlags, outerOverlapFlags } = geo[side];
-    const outer = outerWorld.concat([outerWorld[0]]);
-    const inner = innerWorld.concat([innerWorld[0]]);
-
-    const m = inner.length - 1;
-    for (let i = 0; i < m; i++) {
-      const flagged = outerOverlapFlags && (outerOverlapFlags[i % outerOverlapFlags.length] || outerOverlapFlags[(i + 1) % outerOverlapFlags.length]);
-      const shadowColor = flagged ? 'rgba(180,0,120,0.55)' : 'rgba(20,20,20,0.5)';
-      const baseColor = flagged ? 'rgba(255,20,180,0.95)' : 'rgba(170,185,200,1.0)';
-      const hlColor = flagged ? 'rgba(255,140,225,0.72)' : 'rgba(235,245,255,0.7)';
-      const seg = [outer[i], outer[i + 1]];
-
-      drawCtx.lineWidth = 3.5;
-      drawCtx.strokeStyle = shadowColor;
-      _worldPath(drawCtx, seg);
-      drawCtx.stroke();
-
-      drawCtx.lineWidth = 2.5;
-      drawCtx.strokeStyle = baseColor;
-      _worldPath(drawCtx, seg);
-      drawCtx.stroke();
-
-      drawCtx.lineWidth = 1.0;
-      drawCtx.strokeStyle = hlColor;
-      _worldPath(drawCtx, seg);
-      drawCtx.stroke();
-    }
-
-    for (let i = 0; i < m; i++) {
-      const flagged = overlapFlags && (overlapFlags[i % overlapFlags.length] || overlapFlags[(i + 1) % overlapFlags.length]);
-      const shadowColor = flagged ? 'rgba(180,0,120,0.5)' : 'rgba(20,20,20,0.35)';
-      const baseColor = flagged ? 'rgba(255,20,180,0.9)' : 'rgba(160,175,190,0.85)';
-      const hlColor = flagged ? 'rgba(255,120,220,0.6)' : 'rgba(220,235,255,0.45)';
-      const seg = [inner[i], inner[i + 1]];
-
-      drawCtx.lineWidth = 2.0;
-      drawCtx.strokeStyle = shadowColor;
-      _worldPath(drawCtx, seg);
-      drawCtx.stroke();
-
-      drawCtx.lineWidth = 1.5;
-      drawCtx.strokeStyle = baseColor;
-      _worldPath(drawCtx, seg);
-      drawCtx.stroke();
-
-      drawCtx.lineWidth = 0.8;
-      drawCtx.strokeStyle = hlColor;
-      _worldPath(drawCtx, seg);
-      drawCtx.stroke();
-    }
-  });
-
-  drawCtx.strokeStyle = 'rgba(232,255,71,0.18)';
-  drawCtx.lineWidth = 1;
-  drawCtx.setLineDash([4, 8]);
-  _worldPath(drawCtx, roadWorld);
-  drawCtx.closePath();
-  drawCtx.stroke();
-  drawCtx.setLineDash([]);
-
-  return { key: _getWpKey(), bounds, ppu, canvas };
-}
-
-function _ensureTrackRaster() {
-  if (waypoints.length < 2) return null;
-  const key = _getWpKey();
-  if (_trackRasterCache && _trackRasterCache.key === key) {
-    const targetPpu = _getTrackRasterTargetPpu(_trackRasterCache.bounds.w, _trackRasterCache.bounds.h);
-    if (_trackRasterCache.ppu + 1e-6 >= targetPpu) {
-      return _trackRasterCache;
-    }
-  }
-
-  const roadSpline = getCachedSpline(16);
-  if (roadSpline.length < 2) return null;
-  const geo = _getBarrierGeo();
-  if (!geo) return null;
-  const bounds = _getTrackRasterBounds(roadSpline, geo);
-  if (!bounds) return null;
-
-  try {
-    _trackRasterCache = _buildTrackRaster();
-  } catch (err) {
-    console.error('track raster build failed', err);
-    _trackRasterCache = null;
-  }
-  return _trackRasterCache;
-}
-
-function _drawTrackRaster() {
-  const raster = _ensureTrackRaster();
-  if (!raster) return false;
-
-  ctx.save();
-  ctx.setTransform(
-    cam.zoom, 0, 0, cam.zoom,
-    mainCanvas.width / 2 - cam.x * cam.zoom,
-    mainCanvas.height / 2 - cam.y * cam.zoom
-  );
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(raster.canvas, raster.bounds.x, raster.bounds.y, raster.bounds.w, raster.bounds.h);
-  ctx.restore();
-  return true;
-}
-
-function drawWaypointDots() {
-  for (let i = 0; i < waypoints.length; i++) {
-    const wp = waypoints[i];
-    const s  = worldToScreen(wp.x, wp.y);
-    const isStart = i === startingPointIdx;
-    const r = isStart ? 8 : 5;
-    ctx.beginPath();
-    ctx.arc(s.x, s.y, r, 0, Math.PI * 2);
-    ctx.fillStyle = isStart ? '#00ff88' : '#e8ff47';
-    ctx.fill();
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-    ctx.fillStyle = '#000';
-    ctx.font = `bold ${Math.max(7, Math.min(10, cam.zoom * 9))}px "Barlow Condensed", sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(isStart ? 'SF' : i, s.x, s.y);
-  }
-}
-
 function render() {
   if (typeof preview3dActive !== 'undefined' && preview3dActive) return;
   const W = mainCanvas.width, H = mainCanvas.height;
+  // Drop down to a lighter render path while the user is actively pinching,
+  // panning or wheel-zooming. We restore full detail in the settle render
+  // fired ~140ms after the gesture ends (see init.js).
+  const fast = !!window._interacting;
 
   // Background — only redraw on camera change
   const bgKey = `${cam.x.toFixed(2)}_${cam.y.toFixed(2)}_${cam.zoom.toFixed(4)}_${W}_${H}`;
@@ -788,22 +404,52 @@ function render() {
 
   // Spline cache invalidation
   const wpKey = _getWpKey();
-  if (wpKey !== _wpCacheKey) {
-    _wpCacheKey = wpKey;
-    _invalidateSplineCache();
-  }
+  if (wpKey !== _wpCacheKey) { _wpCacheKey = wpKey; _invalidateSplineCache(); }
 
   ctx.clearRect(0, 0, W, H);
 
   if (waypoints.length >= 2) {
-    if (!_drawTrackRaster()) {
-      drawTrackRoad();
-      drawBarrierLines();
-      drawCentreline();
-    }
+    drawTrackRoad();
+    drawBarrierLines();
+    drawCentreline();
   }
 
-  drawWaypointDots();
+  // Waypoint dots. Two performance shortcuts here:
+  //  - In fast mode (active gesture) we skip per-dot text labels — fillText
+  //    is the most expensive call in this loop and 800 of them per frame
+  //    will tank a phone.
+  //  - When the dots are tiny on screen (zoomed out) we also drop labels
+  //    and shrink the strokes — they're unreadable anyway and just smear
+  //    into a yellow blob.
+  const tooSmallForLabels = cam.zoom < 0.55;
+  const skipLabels        = fast || tooSmallForLabels;
+  const labelFont = skipLabels
+    ? null
+    : `bold ${Math.max(7, Math.min(10, cam.zoom*9))}px "Barlow Condensed", sans-serif`;
+  if (labelFont) { ctx.font = labelFont; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; }
+  for (let i = 0; i < waypoints.length; i++) {
+    const wp = waypoints[i];
+    const s  = worldToScreen(wp.x, wp.y);
+    const isStart = i === startingPointIdx;
+    const r = isStart ? 8 : 5;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, r, 0, Math.PI*2);
+    ctx.fillStyle = isStart ? '#00ff88' : '#e8ff47';
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    if (!skipLabels || isStart) {
+      // Always keep the SF label readable since it's the start marker the
+      // user is most likely to be looking for, even mid-gesture.
+      if (skipLabels) {
+        ctx.font = `bold ${Math.max(8, Math.min(11, cam.zoom*9))}px "Barlow Condensed", sans-serif`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      }
+      ctx.fillStyle = '#000';
+      ctx.fillText(isStart ? 'SF' : i, s.x, s.y);
+    }
+  }
 }
 
 // ═══════════════════════════════════════════════════
@@ -845,6 +491,11 @@ function drawTrackRoad() {
   // hairpins / parallel back-to-back sections).
   // _getBarrierGeo() builds its arrays against getCachedSpline(20), so we
   // use the SAME density here for kerbs to keep array sizes aligned.
+  // PERF: in fast (gesture) mode we draw a single thin solid red line
+  // instead of the dashed two-pass kerb — this halves the stroke work and,
+  // more importantly, avoids ctx.setLineDash which forces canvas to
+  // re-tessellate the polyline every frame.
+  const fastDraw = !!window._interacting;
   let _safeKerbGeo = null;
   try { _safeKerbGeo = _getBarrierGeo(); } catch (_) { _safeKerbGeo = null; }
   const kerbSpline = getCachedSpline(20);
@@ -864,13 +515,19 @@ function drawTrackRoad() {
     } else {
       poly = buildOffsetScreenPolyline(splinePts, side, kerbDefault);
     }
-    ctx.setLineDash([dashLen, dashLen]);
-    ctx.lineDashOffset = 0;
-    ctx.strokeStyle = 'rgba(215,25,25,0.92)';
-    _polyPath(ctx, poly); ctx.stroke();
-    ctx.lineDashOffset = dashLen;
-    ctx.strokeStyle = 'rgba(245,245,245,0.92)';
-    _polyPath(ctx, poly); ctx.stroke();
+    if (fastDraw) {
+      // Quick single-stroke kerb hint while interacting.
+      ctx.strokeStyle = 'rgba(215,25,25,0.85)';
+      _polyPath(ctx, poly); ctx.stroke();
+    } else {
+      ctx.setLineDash([dashLen, dashLen]);
+      ctx.lineDashOffset = 0;
+      ctx.strokeStyle = 'rgba(215,25,25,0.92)';
+      _polyPath(ctx, poly); ctx.stroke();
+      ctx.lineDashOffset = dashLen;
+      ctx.strokeStyle = 'rgba(245,245,245,0.92)';
+      _polyPath(ctx, poly); ctx.stroke();
+    }
   });
   ctx.setLineDash([]); ctx.lineDashOffset = 0;
 
@@ -932,788 +589,212 @@ function _buildSideClipPath(splinePts, side, innerClipOffset, outerClipOffset) {
   ctx.closePath();
 }
 
+// ═══════════════════════════════════════════════════
+// BARRIER GEOMETRY  v8.0 — full rewrite, ray-cast based
+// ═══════════════════════════════════════════════════
+//
+// The geometric idea is simple:
+//
+//   For each point P on the centreline, on each side, shoot a ray
+//   perpendicular to the road. Find the distance D to the next piece of
+//   road in that direction (skipping nearby segments that belong to the
+//   same section). All three barriers — kerb, inner, outer — must lie
+//   within D/2 of P, otherwise they'd cross into another section's lane.
+//
+// One simple cap formula handles every case:
+//
+//   cap = D / 2 - SAFETY_GAP / 2
+//   kerbOff  = clamp(cap, KERB_MIN,  KERB_IDEAL)
+//   innerOff = clamp(cap, INNER_MIN, INNER_IDEAL)
+//   outerOff = clamp(cap, OUTER_MIN, OUTER_IDEAL)
+//
+// Where D = ∞ on a wide-open straight (so all barriers sit at their ideal
+// offsets) and D = ~14 wu in a tight back-to-back section (so all three
+// barriers symmetrically squeeze inward and meet the foreign section's
+// barriers halfway, with SAFETY_GAP between them).
+//
+// This replaces the old 6-step pipeline (per-point binary search, windowed
+// minimum, Gaussian blur, mutual barrier-vs-barrier squeeze, separate kerb
+// pass) with a single ray-cast plus a small smoothing window. It is both
+// faster and more geometrically correct: the result naturally extends the
+// barrier outward where there is room, retracts where there isn't, and
+// never overlaps a foreign section regardless of how tight the fold is.
 function _getBarrierGeo() {
   const splinePts = getCachedSpline(20);
   if (splinePts.length < 2) return null;
   if (_cachedBarrierWorldGeo) return _cachedBarrierWorldGeo;
 
-  const innerOffset = BARRIER_INNER;   // 9.0 wu — ideal inner barrier distance
-  const outerOffset = BARRIER_OUTER;   // 26.0 wu — outer perimeter wall
-  const n      = splinePts.length;
-  const loopLen = n - 1; // closing duplicate excluded
+  const n       = splinePts.length;
+  const loopLen = n - 1;                            // closing duplicate excluded
 
-  // ── Step 1: normals for both sides ───────────────────────────────────────
+  // Per-side outward normals (winding-aware so they're consistent on
+  // self-crossing tracks). Reused from the v7.x code.
   const normalsL = _buildNormalsForBarrier(splinePts, -1);
   const normalsR = _buildNormalsForBarrier(splinePts,  1);
 
-  // ── Step 2: spatial grid over the centreline ─────────────────────────────
-  // Used to quickly find which other parts of the track are physically nearby,
-  // regardless of spline index distance.
-  const CELL = outerOffset * 2;
-  const centreGrid = new Map();
-  for (let i = 0; i < n - 1; i++) {
-    const p = splinePts[i].pt;
-    const key = Math.floor(p.x / CELL) + ',' + Math.floor(p.y / CELL);
-    if (!centreGrid.has(key)) centreGrid.set(key, []);
-    centreGrid.get(key).push(i);
+  // Ideal target offsets for each barrier element.
+  const KERB_IDEAL  = TRACK_HALF_WIDTH + 0.6;       // ~7.6 wu — kerb stripe
+  const INNER_IDEAL = BARRIER_INNER;                // 9.0 wu — silver inner rail
+  const OUTER_IDEAL = BARRIER_OUTER;                // 26.0 wu — outer wall
+
+  // Hard floors. Everything must stay strictly outside the asphalt.
+  const KERB_MIN    = TRACK_HALF_WIDTH + 0.1;       // hugs the road edge
+  const INNER_MIN   = TRACK_HALF_WIDTH + 0.3;
+  const OUTER_MIN   = TRACK_HALF_WIDTH + 0.5;
+
+  // Gap kept between two adjacent sections' barriers when they meet halfway.
+  const SAFETY_GAP  = 1.5;
+  // Maximum ray length we bother probing. A barrier > OUTER_IDEAL away
+  // never affects the result, so cap the ray here for performance.
+  const RAY_MAX     = OUTER_IDEAL * 2 + SAFETY_GAP + 1;
+
+  // ── Build a spatial grid of centreline SEGMENTS for fast ray queries ────
+  // Each segment (sp[i], sp[i+1]) is registered in every cell its bounding
+  // box overlaps. Cell size matches OUTER_IDEAL so any segment within range
+  // is at most one cell away from the probe.
+  const CELL = OUTER_IDEAL;
+  const segGrid = new Map();
+  function gridKey(cx, cy) { return cx + ',' + cy; }
+  function gridAdd(cx, cy, segIdx) {
+    const k = gridKey(cx, cy);
+    let bucket = segGrid.get(k);
+    if (!bucket) { bucket = []; segGrid.set(k, bucket); }
+    bucket.push(segIdx);
   }
-
-  // How many spline points per waypoint — used to set local-skip radius.
-  const segsPerWp = Math.max(1, Math.round(loopLen / Math.max(1, waypoints.length)));
-  // Local skip: ignore spline points within ~3 waypoints of self (same curve section).
-  const localSkip = segsPerWp * 3;
-  const strictLocalSkip = Math.max(2, segsPerWp);
-
-  // Arc-length map lets us distinguish "really the same nearby curve section"
-  // from a different track section that only happens to come physically close.
-  const prefixLen = new Float64Array(loopLen + 1);
   for (let i = 0; i < loopLen; i++) {
-    const a = splinePts[i].pt;
-    const b = splinePts[(i + 1) % loopLen].pt;
-    prefixLen[i + 1] = prefixLen[i] + Math.hypot(b.x - a.x, b.y - a.y);
-  }
-  const totalArcLen = prefixLen[loopLen] || 1;
-
-  function arcDistance(i, j) {
-    const lo = Math.min(i, j);
-    const hi = Math.max(i, j);
-    const d = prefixLen[hi] - prefixLen[lo];
-    return Math.min(d, totalArcLen - d);
+    const a = splinePts[i].pt, b = splinePts[(i + 1) % loopLen].pt;
+    const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x);
+    const y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+    const cx0 = Math.floor(x0 / CELL), cx1 = Math.floor(x1 / CELL);
+    const cy0 = Math.floor(y0 / CELL), cy1 = Math.floor(y1 / CELL);
+    for (let cx = cx0; cx <= cx1; cx++) {
+      for (let cy = cy0; cy <= cy1; cy++) gridAdd(cx, cy, i);
+    }
   }
 
-  function isSameLocalSection(i, j) {
-    if (i === j) return true;
-    const delta = Math.min(Math.abs(j - i), loopLen - Math.abs(j - i));
-    if (delta <= strictLocalSkip) return true;
-    if (delta >= localSkip) return false;
+  // Ignore segments within SKIP_SEGS of the probe — those belong to the
+  // same physical road section as the probe and would just give the
+  // "ray hits its own neighbour" trivial answer.
+  const segsPerWp = Math.max(1, Math.round(loopLen / Math.max(1, waypoints.length)));
+  const SKIP_SEGS = Math.max(8, segsPerWp); // ~1 waypoint of arc on either side
 
-    const p = splinePts[i].pt;
-    const q = splinePts[j].pt;
-    const chord = Math.hypot(q.x - p.x, q.y - p.y);
-    const arc = arcDistance(i, j);
-
-    if (arc <= 1e-6) return true;
-
-    // Same local curve section keeps a healthy chord/arc ratio.
-    // Tight loop-backs have a tiny chord compared with the travelled arc length,
-    // so they should be treated as FOREIGN even if their indices are still nearby.
-    return (chord / arc) > 0.55;
-  }
-
-  // Query: distance from world point (wx,wy) to nearest FOREIGN centreline point.
-  // "Foreign" means spline-index-far enough that it's a different track section.
-  function nearestForeignCentre(wx, wy, selfIdx) {
-    const cx0 = Math.floor(wx / CELL), cy0 = Math.floor(wy / CELL);
-    let minDist = Infinity;
-    for (let dcx = -2; dcx <= 2; dcx++) {
-      for (let dcy = -2; dcy <= 2; dcy++) {
-        const cell = centreGrid.get((cx0 + dcx) + ',' + (cy0 + dcy));
-        if (!cell) continue;
-        for (let k = 0; k < cell.length; k++) {
-          const j = cell[k];
-          if (isSameLocalSection(selfIdx, j)) continue; // same local section — skip
-          const q = splinePts[j].pt;
-          const d = Math.hypot(wx - q.x, wy - q.y);
-          if (d < minDist) minDist = d;
+  // Cast a ray from p along (nx, ny) and return the smallest positive t at
+  // which the ray hits any non-adjacent centreline segment. Returns RAY_MAX
+  // when nothing is hit within range.
+  function rayHit(p, nx, ny, selfSeg) {
+    let bestT = RAY_MAX;
+    // Walk the cells the ray passes through in steps of CELL/2. Cheap DDA.
+    const steps = Math.ceil(RAY_MAX / (CELL * 0.5));
+    const visited = new Set();
+    for (let s = 0; s <= steps; s++) {
+      const t   = (s / steps) * RAY_MAX;
+      if (t > bestT) break;
+      const qx  = p.x + nx * t, qy = p.y + ny * t;
+      const cx  = Math.floor(qx / CELL), cy = Math.floor(qy / CELL);
+      // Probe the 3×3 cell neighbourhood at this step.
+      for (let dcx = -1; dcx <= 1; dcx++) {
+        for (let dcy = -1; dcy <= 1; dcy++) {
+          const k = gridKey(cx + dcx, cy + dcy);
+          if (visited.has(k)) continue;
+          visited.add(k);
+          const bucket = segGrid.get(k);
+          if (!bucket) continue;
+          for (let bi = 0; bi < bucket.length; bi++) {
+            const j = bucket[bi];
+            // Skip same-section segments.
+            const di = Math.min(Math.abs(j - selfSeg), loopLen - Math.abs(j - selfSeg));
+            if (di < SKIP_SEGS) continue;
+            const a = splinePts[j].pt, b = splinePts[(j + 1) % loopLen].pt;
+            // Intersect ray (p + t*n, t>0) with segment (a + u*(b-a), 0≤u≤1).
+            const ex = b.x - a.x, ey = b.y - a.y;
+            const det = nx * (-ey) - ny * (-ex);
+            if (Math.abs(det) < 1e-9) continue; // parallel
+            const px = a.x - p.x, py = a.y - p.y;
+            const tt = (px * (-ey) - py * (-ex)) / det;
+            if (tt <= 0 || tt >= bestT) continue;
+            const uu = (nx * py - ny * px) / det;
+            if (uu < 0 || uu > 1) continue;
+            bestT = tt;
+          }
         }
       }
     }
-    return minDist;
+    return bestT;
   }
 
-  // ── Step 3: outer barrier — per-point binary-search clamp ────────────────
-  const OUTER_MIN_CLEARANCE = TRACK_HALF_WIDTH + 2;
-  const outerL = [], outerR = [];
-  const finalOuterOffL = new Float64Array(n - 1);
-  const finalOuterOffR = new Float64Array(n - 1);
-  for (let i = 0; i < n - 1; i++) {
+  // ── Per-point free distance via ray-cast ────────────────────────────────
+  const freeL = new Float64Array(loopLen);
+  const freeR = new Float64Array(loopLen);
+  for (let i = 0; i < loopLen; i++) {
     const p = splinePts[i].pt;
-    const calcOuter = (nx, ny) => {
-      const wx = p.x + nx * outerOffset, wy = p.y + ny * outerOffset;
-      if (nearestForeignCentre(wx, wy, i) >= OUTER_MIN_CLEARANCE) return outerOffset;
-      let lo = innerOffset + 1, hi = outerOffset;
-      for (let iter = 0; iter < 12; iter++) {
-        const mid = (lo + hi) * 0.5;
-        if (nearestForeignCentre(p.x + nx * mid, p.y + ny * mid, i) < OUTER_MIN_CLEARANCE)
-          hi = mid; else lo = mid;
+    freeL[i] = rayHit(p, normalsL[i].x, normalsL[i].y, i);
+    freeR[i] = rayHit(p, normalsR[i].x, normalsR[i].y, i);
+  }
+
+  // ── Smooth the free-distance arrays so the barrier tapers in/out gently
+  // rather than jumping at conflict boundaries. We do a windowed-MIN first
+  // (so the squeeze region is conservatively wide) then a small box-blur
+  // (so the resulting curve is C0/C1 smooth).
+  const SMOOTH_WIN = Math.max(4, segsPerWp * 2);     // ~2 waypoints
+  function windowedMin(src) {
+    const out = new Float64Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      let m = src[i];
+      for (let k = -SMOOTH_WIN; k <= SMOOTH_WIN; k++) {
+        const j = ((i + k) % src.length + src.length) % src.length;
+        if (src[j] < m) m = src[j];
       }
-      return lo;
+      out[i] = m;
+    }
+    return out;
+  }
+  function boxBlur(src, radius) {
+    const out = new Float64Array(src.length);
+    const w = radius * 2 + 1;
+    for (let i = 0; i < src.length; i++) {
+      let s = 0;
+      for (let k = -radius; k <= radius; k++) {
+        s += src[((i + k) % src.length + src.length) % src.length];
+      }
+      out[i] = s / w;
+    }
+    return out;
+  }
+  const smoothL = boxBlur(windowedMin(freeL), Math.max(2, Math.floor(segsPerWp)));
+  const smoothR = boxBlur(windowedMin(freeR), Math.max(2, Math.floor(segsPerWp)));
+
+  // ── Build per-point barrier offsets and world points ────────────────────
+  const innerL = new Array(loopLen), innerR = new Array(loopLen);
+  const outerL = new Array(loopLen), outerR = new Array(loopLen);
+  const kerbL  = new Float64Array(loopLen);
+  const kerbR  = new Float64Array(loopLen);
+
+  function offsetsFor(free) {
+    // The cap is half the free distance minus half the safety gap, so two
+    // facing sections each contribute equally and meet with SAFETY_GAP
+    // between their outermost points.
+    const cap = free / 2 - SAFETY_GAP / 2;
+    return {
+      kerb:  Math.max(KERB_MIN,  Math.min(KERB_IDEAL,  cap)),
+      inner: Math.max(INNER_MIN, Math.min(INNER_IDEAL, cap)),
+      outer: Math.max(OUTER_MIN, Math.min(OUTER_IDEAL, cap)),
     };
-    const offL = calcOuter(normalsL[i].x, normalsL[i].y);
-    const offR = calcOuter(normalsR[i].x, normalsR[i].y);
-    finalOuterOffL[i] = offL;
-    finalOuterOffR[i] = offR;
-    outerL.push({ x: p.x + normalsL[i].x * offL, y: p.y + normalsL[i].y * offL });
-    outerR.push({ x: p.x + normalsR[i].x * offR, y: p.y + normalsR[i].y * offR });
   }
 
-  // ── Step 4: inner barrier — smooth envelope squeeze ───────────────────────
-  //
-  // THE CORE FIX for Interlagos-style tight sections:
-  //
-  // Problem with the old approach (per-point binary search):
-  //   Each point independently snaps inward the moment it detects a conflict.
-  //   This creates a hard kink at the squeeze entry and exit — a sudden jump
-  //   inward then back out, with no smooth transition.
-  //
-  // New approach — 3-pass pipeline:
-  //
-  //   Pass A: Per-point binary search finds the raw maximum safe offset at each
-  //           point (how close the barrier CAN be without crossing foreign track).
-  //           This is a step function: full offset everywhere except the conflict
-  //           zone where it drops sharply.
-  //
-  //   Pass B: Windowed minimum then Gaussian blur smooths that step function
-  //           into a gentle ramp. The barrier squeezes in gradually BEFORE the
-  //           problem zone and expands gradually AFTER — exactly what you want.
-  //           Sigma controls how wide the ramp is (~4 waypoints each side by default).
-  //
-  //   Pass C: Cross-check left vs right inner barriers against each other.
-  //           If the two smoothed inner barriers are still too close to each other
-  //           (not just to the foreign centreline), both sides pull back equally
-  //           so neither crosses the midpoint between the two road edges.
-
-  const INNER_MIN   = TRACK_HALF_WIDTH + 0.3; // never closer to centreline than road edge
-  const INNER_CLEAR = TRACK_HALF_WIDTH + 1.5; // clearance from foreign centreline
-
-  // Pass A: raw per-point maximum safe offset
-  const maxOffL = new Float64Array(n - 1);
-  const maxOffR = new Float64Array(n - 1);
-  for (let i = 0; i < n - 1; i++) {
+  for (let i = 0; i < loopLen; i++) {
     const p = splinePts[i].pt;
-    const calcInnerMax = (nx, ny) => {
-      if (nearestForeignCentre(p.x + nx * innerOffset, p.y + ny * innerOffset, i) >= INNER_CLEAR)
-        return innerOffset;
-      let lo = INNER_MIN, hi = innerOffset;
-      for (let iter = 0; iter < 12; iter++) {
-        const mid = (lo + hi) * 0.5;
-        if (nearestForeignCentre(p.x + nx * mid, p.y + ny * mid, i) < INNER_CLEAR)
-          hi = mid; else lo = mid;
-      }
-      return lo;
-    };
-    maxOffL[i] = calcInnerMax(normalsL[i].x, normalsL[i].y);
-    maxOffR[i] = calcInnerMax(normalsR[i].x, normalsR[i].y);
-  }
-
-  // Pass B: windowed minimum then Gaussian blur
-  const SIGMA = Math.max(8, segsPerWp * 4); // spread ~4 waypoints each side
-  const WIN   = Math.ceil(SIGMA * 2.5);
-  const minOffL = new Float64Array(n - 1);
-  const minOffR = new Float64Array(n - 1);
-  // Windowed minimum spreads the squeeze region outward by WIN points
-  for (let i = 0; i < n - 1; i++) {
-    let mL = innerOffset, mR = innerOffset;
-    for (let k = -WIN; k <= WIN; k++) {
-      const j = ((i + k) % (n - 1) + (n - 1)) % (n - 1);
-      if (maxOffL[j] < mL) mL = maxOffL[j];
-      if (maxOffR[j] < mR) mR = maxOffR[j];
-    }
-    minOffL[i] = mL;
-    minOffR[i] = mR;
-  }
-  // Gaussian blur smooths windowed-min into a gentle ramp
-  const gaussW = Math.ceil(SIGMA * 2);
-  const gaussKernel = [];
-  let kSum = 0;
-  for (let k = -gaussW; k <= gaussW; k++) {
-    const w = Math.exp(-(k * k) / (2 * SIGMA * SIGMA));
-    gaussKernel.push({ k, w });
-    kSum += w;
-  }
-  const smoothMaxOffL = new Float64Array(n - 1);
-  const smoothMaxOffR = new Float64Array(n - 1);
-  for (let i = 0; i < n - 1; i++) {
-    let sL = 0, sR = 0;
-    for (const { k, w } of gaussKernel) {
-      const j = ((i + k) % (n - 1) + (n - 1)) % (n - 1);
-      sL += minOffL[j] * w;
-      sR += minOffR[j] * w;
-    }
-    smoothMaxOffL[i] = sL / kSum;
-    smoothMaxOffR[i] = sR / kSum;
-  }
-
-  // Pass C: build final inner points, cross-check L vs R at the SAME index,
-  // pull back if still overlapping locally.
-  const innerL = [], innerR = [];
-  const finalOffL = new Float64Array(n - 1);
-  const finalOffR = new Float64Array(n - 1);
-  const MIN_GAP = TRACK_HALF_WIDTH * 2 * 0.6; // 60 % of full road width minimum gap
-  for (let i = 0; i < n - 1; i++) {
-    const p   = splinePts[i].pt;
-    let offL  = Math.max(INNER_MIN, Math.min(innerOffset, smoothMaxOffL[i]));
-    let offR  = Math.max(INNER_MIN, Math.min(innerOffset, smoothMaxOffR[i]));
-    const lx  = p.x + normalsL[i].x * offL, ly = p.y + normalsL[i].y * offL;
-    const rx  = p.x + normalsR[i].x * offR, ry = p.y + normalsR[i].y * offR;
-    const gap = Math.hypot(rx - lx, ry - ly);
-    if (gap < MIN_GAP && gap > 0) {
-      const squeeze = MIN_GAP / gap; // > 1 means offsets are too large
-      offL = Math.max(INNER_MIN, offL / squeeze);
-      offR = Math.max(INNER_MIN, offR / squeeze);
-    }
-    finalOffL[i] = offL;
-    finalOffR[i] = offR;
-    innerL.push({ x: p.x + normalsL[i].x * offL, y: p.y + normalsL[i].y * offL });
-    innerR.push({ x: p.x + normalsR[i].x * offR, y: p.y + normalsR[i].y * offR });
-  }
-
-  // ── Step 5: MUTUAL barrier-vs-barrier overlap fix ───────────────────────
-  //
-  // The earlier passes only check barriers against the foreign CENTRELINE.
-  // That misses cases where two barriers from DIFFERENT track sections sit
-  // very close to each other (eg. two parallel straights with a thin gap, or
-  // an outside hairpin barrier brushing another section's inner barrier).
-  //
-  // Here we build a spatial grid of every barrier point we just computed and
-  // iteratively pull back any pair of foreign barriers that are too close —
-  // BOTH sides shrink mutually so neither steals all the room. We also keep
-  // each barrier strictly OUTSIDE the road by clamping to INNER_MIN.
-  const BARRIER_BARRIER_MIN = 1.6;       // smallest tolerated gap between two
-                                         // foreign barrier walls (world units)
-  const BARRIER_ROAD_MIN    = INNER_MIN; // never let a barrier cross a road
-  const OUTER_BARRIER_MIN   = 2.2;       // visible outer wall needs a little more room
-  const OUTER_ROAD_MIN      = innerOffset + 1.0;
-  const PAIR_PASSES         = 4;
-  const RELAX               = 0.55;      // mutual shrink amount per pass
-  const overlapFlagL = new Uint8Array(n - 1);
-  const overlapFlagR = new Uint8Array(n - 1);
-  const outerOverlapFlagL = new Uint8Array(n - 1);
-  const outerOverlapFlagR = new Uint8Array(n - 1);
-
-  // Helper to evaluate the world position from current offsets.
-  function worldL(i) {
-    const p = splinePts[i].pt;
-    return { x: p.x + normalsL[i].x * finalOffL[i], y: p.y + normalsL[i].y * finalOffL[i] };
-  }
-  function worldR(i) {
-    const p = splinePts[i].pt;
-    return { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
-  }
-  function worldOuterL(i) {
-    const p = splinePts[i].pt;
-    return { x: p.x + normalsL[i].x * finalOuterOffL[i], y: p.y + normalsL[i].y * finalOuterOffL[i] };
-  }
-  function worldOuterR(i) {
-    const p = splinePts[i].pt;
-    return { x: p.x + normalsR[i].x * finalOuterOffR[i], y: p.y + normalsR[i].y * finalOuterOffR[i] };
-  }
-
-  for (let pass = 0; pass < PAIR_PASSES; pass++) {
-    // (Re)build a spatial grid each pass because positions move.
-    const PCELL = Math.max(BARRIER_BARRIER_MIN * 2, 6);
-    const bGrid = new Map();
-    function gAdd(x, y, payload) {
-      const key = Math.floor(x / PCELL) + ',' + Math.floor(y / PCELL);
-      if (!bGrid.has(key)) bGrid.set(key, []);
-      bGrid.get(key).push(payload);
-    }
-    for (let i = 0; i < n - 1; i++) {
-      const wl = worldL(i), wr = worldR(i);
-      gAdd(wl.x, wl.y, { side: -1, idx: i, x: wl.x, y: wl.y });
-      gAdd(wr.x, wr.y, { side:  1, idx: i, x: wr.x, y: wr.y });
-    }
-
-    let anyChange = false;
-    function flagOverlap(side, idx) {
-      const arr = side < 0 ? overlapFlagL : overlapFlagR;
-      if (idx >= 0 && idx < arr.length) arr[idx] = 1;
-      if (arr.length > 0) arr[(idx + 1) % arr.length] = 1;
-    }
-    function shrink(side, idx, amount) {
-      if (side < 0) {
-        const next = Math.max(BARRIER_ROAD_MIN, finalOffL[idx] - amount);
-        if (next !== finalOffL[idx]) { finalOffL[idx] = next; anyChange = true; }
-      } else {
-        const next = Math.max(BARRIER_ROAD_MIN, finalOffR[idx] - amount);
-        if (next !== finalOffR[idx]) { finalOffR[idx] = next; anyChange = true; }
-      }
-    }
-
-    for (let i = 0; i < n - 1; i++) {
-      for (const sideSelf of [-1, 1]) {
-        const self = sideSelf < 0 ? worldL(i) : worldR(i);
-        const cx0 = Math.floor(self.x / PCELL), cy0 = Math.floor(self.y / PCELL);
-        for (let dcx = -1; dcx <= 1; dcx++) {
-          for (let dcy = -1; dcy <= 1; dcy++) {
-            const cell = bGrid.get((cx0 + dcx) + ',' + (cy0 + dcy));
-            if (!cell) continue;
-            for (let k = 0; k < cell.length; k++) {
-              const o = cell[k];
-              // Skip self and same local section (not a foreign overlap).
-              if (o.side === sideSelf && o.idx === i) continue;
-              if (isSameLocalSection(i, o.idx)) continue;
-              const dx = o.x - self.x, dy = o.y - self.y;
-              const d  = Math.hypot(dx, dy);
-              if (d >= BARRIER_BARRIER_MIN) continue;
-              // Two foreign barrier points are touching → mutually shrink both.
-              const overlap = (BARRIER_BARRIER_MIN - d);
-              const amt     = overlap * RELAX * 0.5;
-              flagOverlap(sideSelf, i);
-              flagOverlap(o.side, o.idx);
-              shrink(sideSelf, i, amt);
-              shrink(o.side,   o.idx, amt);
-            }
-          }
-        }
-      }
-    }
-
-    if (!anyChange) break;
-  }
-
-  // Rebuild inner barrier point arrays from the (possibly) updated offsets.
-  for (let i = 0; i < n - 1; i++) {
-    const p = splinePts[i].pt;
-    innerL[i] = { x: p.x + normalsL[i].x * finalOffL[i], y: p.y + normalsL[i].y * finalOffL[i] };
-    innerR[i] = { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
-  }
-
-  // ── Pass 5: self-intersection fix ────────────────────────────────────────
-  //
-  // Even after Passes A-C+PAIR_PASSES, a barrier polyline can still cross
-  // itself when the track curves back on itself tightly and the normal-flip
-  // logic already committed to an offset that places the barrier on the
-  // wrong side. These are the "pink overlap" points:
-  //   - Find every pair of non-adjacent segments in innerL (and innerR)
-  //     that intersect using a spatial grid.
-  //   - For each intersecting pair (i, j), shrink finalOffL[i], finalOffL[j]
-  //     (or R) by RELAX_SELF per iteration until the intersection clears.
-  //   - Flag those indices as overlapping so drawBarrierLines can colour them pink.
-  //
-  // Uses a coarse spatial grid for O(n) average performance.
-
-  function seg2dIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
-    // Returns true if segment AB intersects segment CD (excluding shared endpoints).
-    const ex = bx - ax, ey = by - ay;
-    const fx = dx - cx, fy = dy - cy;
-    const denom = ex * fy - ey * fx;
-    if (Math.abs(denom) < 1e-10) return false;
-    const gx = cx - ax, gy = cy - ay;
-    const t = (gx * fy - gy * fx) / denom;
-    const u = (gx * ey - gy * ex) / denom;
-    return t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6;
-  }
-
-  function runSelfIntersectPass(pts, finalOff, normals, flags) {
-    const m = pts.length - 1; // number of real segments (pts has closing dup)
-    const CELL_SI = Math.max(BARRIER_INNER * 1.5, 20);
-    const SHRINK_SELF = 0.5;
-    const SELF_PASSES = 5;
-    const SELF_SKIP   = Math.max(4, Math.round(segsPerWp * 1.5));
-
-    for (let pass = 0; pass < SELF_PASSES; pass++) {
-      // Rebuild point positions from current offsets.
-      const px = new Float64Array(m + 1), py = new Float64Array(m + 1);
-      for (let i = 0; i <= m; i++) {
-        const ii = i % m;
-        const cp = splinePts[ii].pt;
-        px[i] = cp.x + normals[ii].x * finalOff[ii];
-        py[i] = cp.y + normals[ii].y * finalOff[ii];
-      }
-
-      // Spatial grid of segment bounding boxes for fast neighbour queries.
-      const grid = new Map();
-      function addSeg(i) {
-        const x0 = Math.min(px[i], px[i+1]), x1 = Math.max(px[i], px[i+1]);
-        const y0 = Math.min(py[i], py[i+1]), y1 = Math.max(py[i], py[i+1]);
-        const c0x = Math.floor(x0 / CELL_SI), c1x = Math.floor(x1 / CELL_SI);
-        const c0y = Math.floor(y0 / CELL_SI), c1y = Math.floor(y1 / CELL_SI);
-        for (let cx = c0x; cx <= c1x; cx++) {
-          for (let cy = c0y; cy <= c1y; cy++) {
-            const key = cx + ',' + cy;
-            if (!grid.has(key)) grid.set(key, []);
-            grid.get(key).push(i);
-          }
-        }
-      }
-      for (let i = 0; i < m; i++) addSeg(i);
-
-      let anyHit = false;
-      const checked = new Set();
-      for (let i = 0; i < m; i++) {
-        const x0 = Math.min(px[i], px[i+1]), x1 = Math.max(px[i], px[i+1]);
-        const y0 = Math.min(py[i], py[i+1]), y1 = Math.max(py[i], py[i+1]);
-        const c0x = Math.floor(x0 / CELL_SI), c1x = Math.floor(x1 / CELL_SI);
-        const c0y = Math.floor(y0 / CELL_SI), c1y = Math.floor(y1 / CELL_SI);
-        for (let cx = c0x; cx <= c1x; cx++) {
-          for (let cy = c0y; cy <= c1y; cy++) {
-            const cell = grid.get(cx + ',' + cy);
-            if (!cell) continue;
-            for (let ki = 0; ki < cell.length; ki++) {
-              const j = cell[ki];
-              if (j <= i + SELF_SKIP) continue;
-              const loopDelta = Math.min(Math.abs(j - i), m - Math.abs(j - i));
-              if (loopDelta < SELF_SKIP) continue;
-              const pairKey = i < j ? i * 100000 + j : j * 100000 + i;
-              if (checked.has(pairKey)) continue;
-              checked.add(pairKey);
-              if (!seg2dIntersect(px[i], py[i], px[i+1], py[i+1],
-                                  px[j], py[j], px[j+1], py[j+1])) continue;
-              // Intersection found — shrink both segments' leading endpoint offsets.
-              flags[i] = 1; flags[j] = 1;
-              flags[(i + 1) % m] = 1; flags[(j + 1) % m] = 1;
-              const shrinkAmt = SHRINK_SELF;
-              finalOff[i]           = Math.max(INNER_MIN, finalOff[i]           - shrinkAmt);
-              finalOff[(i + 1) % m] = Math.max(INNER_MIN, finalOff[(i + 1) % m] - shrinkAmt);
-              finalOff[j]           = Math.max(INNER_MIN, finalOff[j]           - shrinkAmt);
-              finalOff[(j + 1) % m] = Math.max(INNER_MIN, finalOff[(j + 1) % m] - shrinkAmt);
-              anyHit = true;
-            }
-          }
-        }
-      }
-      if (!anyHit) break;
-    }
-  }
-
-  runSelfIntersectPass(splinePts, finalOffL, normalsL, overlapFlagL);
-  runSelfIntersectPass(splinePts, finalOffR, normalsR, overlapFlagR);
-
-  function runCrossBarrierIntersectPass() {
-    const m = n - 1;
-    const CELL_X = Math.max(BARRIER_INNER * 1.5, 20);
-    const CROSS_PASSES = 6;
-    const SHRINK_CROSS = 0.75;
-
-    for (let pass = 0; pass < CROSS_PASSES; pass++) {
-      const pxL = new Float64Array(m + 1), pyL = new Float64Array(m + 1);
-      const pxR = new Float64Array(m + 1), pyR = new Float64Array(m + 1);
-      for (let i = 0; i <= m; i++) {
-        const ii = i % m;
-        const cp = splinePts[ii].pt;
-        pxL[i] = cp.x + normalsL[ii].x * finalOffL[ii];
-        pyL[i] = cp.y + normalsL[ii].y * finalOffL[ii];
-        pxR[i] = cp.x + normalsR[ii].x * finalOffR[ii];
-        pyR[i] = cp.y + normalsR[ii].y * finalOffR[ii];
-      }
-
-      const grid = new Map();
-      function addRightSeg(i) {
-        const x0 = Math.min(pxR[i], pxR[i + 1]), x1 = Math.max(pxR[i], pxR[i + 1]);
-        const y0 = Math.min(pyR[i], pyR[i + 1]), y1 = Math.max(pyR[i], pyR[i + 1]);
-        const c0x = Math.floor(x0 / CELL_X), c1x = Math.floor(x1 / CELL_X);
-        const c0y = Math.floor(y0 / CELL_X), c1y = Math.floor(y1 / CELL_X);
-        for (let cx = c0x; cx <= c1x; cx++) {
-          for (let cy = c0y; cy <= c1y; cy++) {
-            const key = cx + ',' + cy;
-            if (!grid.has(key)) grid.set(key, []);
-            grid.get(key).push(i);
-          }
-        }
-      }
-      for (let i = 0; i < m; i++) addRightSeg(i);
-
-      let anyHit = false;
-      const checked = new Set();
-      for (let i = 0; i < m; i++) {
-        const x0 = Math.min(pxL[i], pxL[i + 1]), x1 = Math.max(pxL[i], pxL[i + 1]);
-        const y0 = Math.min(pyL[i], pyL[i + 1]), y1 = Math.max(pyL[i], pyL[i + 1]);
-        const c0x = Math.floor(x0 / CELL_X), c1x = Math.floor(x1 / CELL_X);
-        const c0y = Math.floor(y0 / CELL_X), c1y = Math.floor(y1 / CELL_X);
-        for (let cx = c0x; cx <= c1x; cx++) {
-          for (let cy = c0y; cy <= c1y; cy++) {
-            const cell = grid.get(cx + ',' + cy);
-            if (!cell) continue;
-            for (let ki = 0; ki < cell.length; ki++) {
-              const j = cell[ki];
-              if (isSameLocalSection(i, j)) continue;
-              const pairKey = i < j ? i * 100000 + j : j * 100000 + i;
-              if (checked.has(pairKey)) continue;
-              checked.add(pairKey);
-              if (!seg2dIntersect(pxL[i], pyL[i], pxL[i + 1], pyL[i + 1],
-                                  pxR[j], pyR[j], pxR[j + 1], pyR[j + 1])) continue;
-
-              overlapFlagL[i] = 1;
-              overlapFlagL[(i + 1) % m] = 1;
-              overlapFlagR[j] = 1;
-              overlapFlagR[(j + 1) % m] = 1;
-
-              finalOffL[i] = Math.max(INNER_MIN, finalOffL[i] - SHRINK_CROSS);
-              finalOffL[(i + 1) % m] = Math.max(INNER_MIN, finalOffL[(i + 1) % m] - SHRINK_CROSS);
-              finalOffR[j] = Math.max(INNER_MIN, finalOffR[j] - SHRINK_CROSS);
-              finalOffR[(j + 1) % m] = Math.max(INNER_MIN, finalOffR[(j + 1) % m] - SHRINK_CROSS);
-              anyHit = true;
-            }
-          }
-        }
-      }
-      if (!anyHit) break;
-    }
-  }
-
-  runCrossBarrierIntersectPass();
-
-  function runOuterProximityPass() {
-    const OUTER_PAIR_PASSES = 6;
-    const OUTER_RELAX = 0.60;
-
-    for (let pass = 0; pass < OUTER_PAIR_PASSES; pass++) {
-      const PCELL = Math.max(OUTER_BARRIER_MIN * 2, 8);
-      const bGrid = new Map();
-      function gAdd(x, y, payload) {
-        const key = Math.floor(x / PCELL) + ',' + Math.floor(y / PCELL);
-        if (!bGrid.has(key)) bGrid.set(key, []);
-        bGrid.get(key).push(payload);
-      }
-      for (let i = 0; i < n - 1; i++) {
-        const wl = worldOuterL(i), wr = worldOuterR(i);
-        gAdd(wl.x, wl.y, { side: -1, idx: i, x: wl.x, y: wl.y });
-        gAdd(wr.x, wr.y, { side:  1, idx: i, x: wr.x, y: wr.y });
-      }
-
-      let anyChange = false;
-      function flagOuterOverlap(side, idx) {
-        const arr = side < 0 ? outerOverlapFlagL : outerOverlapFlagR;
-        if (idx >= 0 && idx < arr.length) arr[idx] = 1;
-        if (arr.length > 0) arr[(idx + 1) % arr.length] = 1;
-      }
-      function shrinkOuter(side, idx, amount) {
-        if (side < 0) {
-          const next = Math.max(OUTER_ROAD_MIN, finalOuterOffL[idx] - amount);
-          if (next !== finalOuterOffL[idx]) { finalOuterOffL[idx] = next; anyChange = true; }
-        } else {
-          const next = Math.max(OUTER_ROAD_MIN, finalOuterOffR[idx] - amount);
-          if (next !== finalOuterOffR[idx]) { finalOuterOffR[idx] = next; anyChange = true; }
-        }
-      }
-
-      for (let i = 0; i < n - 1; i++) {
-        for (const sideSelf of [-1, 1]) {
-          const self = sideSelf < 0 ? worldOuterL(i) : worldOuterR(i);
-          const cx0 = Math.floor(self.x / PCELL), cy0 = Math.floor(self.y / PCELL);
-          for (let dcx = -1; dcx <= 1; dcx++) {
-            for (let dcy = -1; dcy <= 1; dcy++) {
-              const cell = bGrid.get((cx0 + dcx) + ',' + (cy0 + dcy));
-              if (!cell) continue;
-              for (let k = 0; k < cell.length; k++) {
-                const o = cell[k];
-                if (o.side === sideSelf && o.idx === i) continue;
-                if (isSameLocalSection(i, o.idx)) continue;
-                const dx = o.x - self.x, dy = o.y - self.y;
-                const d  = Math.hypot(dx, dy);
-                if (d >= OUTER_BARRIER_MIN) continue;
-                const overlap = (OUTER_BARRIER_MIN - d);
-                const amt = overlap * OUTER_RELAX * 0.5;
-                flagOuterOverlap(sideSelf, i);
-                flagOuterOverlap(o.side, o.idx);
-                shrinkOuter(sideSelf, i, amt);
-                shrinkOuter(o.side, o.idx, amt);
-              }
-            }
-          }
-        }
-      }
-
-      if (!anyChange) break;
-    }
-  }
-
-  function runOuterSelfIntersectPass(finalOff, normals, flags) {
-    const m = n - 1;
-    const CELL_SI = Math.max(BARRIER_OUTER * 0.9, 24);
-    const SHRINK_SELF = 0.9;
-    const SELF_PASSES = 6;
-    const SELF_SKIP   = Math.max(4, Math.round(segsPerWp * 1.5));
-
-    for (let pass = 0; pass < SELF_PASSES; pass++) {
-      const px = new Float64Array(m + 1), py = new Float64Array(m + 1);
-      for (let i = 0; i <= m; i++) {
-        const ii = i % m;
-        const cp = splinePts[ii].pt;
-        px[i] = cp.x + normals[ii].x * finalOff[ii];
-        py[i] = cp.y + normals[ii].y * finalOff[ii];
-      }
-
-      const grid = new Map();
-      function addSeg(i) {
-        const x0 = Math.min(px[i], px[i+1]), x1 = Math.max(px[i], px[i+1]);
-        const y0 = Math.min(py[i], py[i+1]), y1 = Math.max(py[i], py[i+1]);
-        const c0x = Math.floor(x0 / CELL_SI), c1x = Math.floor(x1 / CELL_SI);
-        const c0y = Math.floor(y0 / CELL_SI), c1y = Math.floor(y1 / CELL_SI);
-        for (let cx = c0x; cx <= c1x; cx++) {
-          for (let cy = c0y; cy <= c1y; cy++) {
-            const key = cx + ',' + cy;
-            if (!grid.has(key)) grid.set(key, []);
-            grid.get(key).push(i);
-          }
-        }
-      }
-      for (let i = 0; i < m; i++) addSeg(i);
-
-      let anyHit = false;
-      const checked = new Set();
-      for (let i = 0; i < m; i++) {
-        const x0 = Math.min(px[i], px[i+1]), x1 = Math.max(px[i], px[i+1]);
-        const y0 = Math.min(py[i], py[i+1]), y1 = Math.max(py[i], py[i+1]);
-        const c0x = Math.floor(x0 / CELL_SI), c1x = Math.floor(x1 / CELL_SI);
-        const c0y = Math.floor(y0 / CELL_SI), c1y = Math.floor(y1 / CELL_SI);
-        for (let cx = c0x; cx <= c1x; cx++) {
-          for (let cy = c0y; cy <= c1y; cy++) {
-            const cell = grid.get(cx + ',' + cy);
-            if (!cell) continue;
-            for (let ki = 0; ki < cell.length; ki++) {
-              const j = cell[ki];
-              if (j <= i + SELF_SKIP) continue;
-              const loopDelta = Math.min(Math.abs(j - i), m - Math.abs(j - i));
-              if (loopDelta < SELF_SKIP) continue;
-              const pairKey = i < j ? i * 100000 + j : j * 100000 + i;
-              if (checked.has(pairKey)) continue;
-              checked.add(pairKey);
-              if (!seg2dIntersect(px[i], py[i], px[i+1], py[i+1],
-                                  px[j], py[j], px[j+1], py[j+1])) continue;
-              flags[i] = 1; flags[j] = 1;
-              flags[(i + 1) % m] = 1; flags[(j + 1) % m] = 1;
-              finalOff[i]           = Math.max(OUTER_ROAD_MIN, finalOff[i]           - SHRINK_SELF);
-              finalOff[(i + 1) % m] = Math.max(OUTER_ROAD_MIN, finalOff[(i + 1) % m] - SHRINK_SELF);
-              finalOff[j]           = Math.max(OUTER_ROAD_MIN, finalOff[j]           - SHRINK_SELF);
-              finalOff[(j + 1) % m] = Math.max(OUTER_ROAD_MIN, finalOff[(j + 1) % m] - SHRINK_SELF);
-              anyHit = true;
-            }
-          }
-        }
-      }
-      if (!anyHit) break;
-    }
-  }
-
-  function runCrossOuterIntersectPass() {
-    const m = n - 1;
-    const CELL_X = Math.max(BARRIER_OUTER * 0.9, 24);
-    const CROSS_PASSES = 6;
-    const SHRINK_CROSS = 1.0;
-
-    for (let pass = 0; pass < CROSS_PASSES; pass++) {
-      const pxL = new Float64Array(m + 1), pyL = new Float64Array(m + 1);
-      const pxR = new Float64Array(m + 1), pyR = new Float64Array(m + 1);
-      for (let i = 0; i <= m; i++) {
-        const ii = i % m;
-        const cp = splinePts[ii].pt;
-        pxL[i] = cp.x + normalsL[ii].x * finalOuterOffL[ii];
-        pyL[i] = cp.y + normalsL[ii].y * finalOuterOffL[ii];
-        pxR[i] = cp.x + normalsR[ii].x * finalOuterOffR[ii];
-        pyR[i] = cp.y + normalsR[ii].y * finalOuterOffR[ii];
-      }
-
-      const grid = new Map();
-      function addRightSeg(i) {
-        const x0 = Math.min(pxR[i], pxR[i + 1]), x1 = Math.max(pxR[i], pxR[i + 1]);
-        const y0 = Math.min(pyR[i], pyR[i + 1]), y1 = Math.max(pyR[i], pyR[i + 1]);
-        const c0x = Math.floor(x0 / CELL_X), c1x = Math.floor(x1 / CELL_X);
-        const c0y = Math.floor(y0 / CELL_X), c1y = Math.floor(y1 / CELL_X);
-        for (let cx = c0x; cx <= c1x; cx++) {
-          for (let cy = c0y; cy <= c1y; cy++) {
-            const key = cx + ',' + cy;
-            if (!grid.has(key)) grid.set(key, []);
-            grid.get(key).push(i);
-          }
-        }
-      }
-      for (let i = 0; i < m; i++) addRightSeg(i);
-
-      let anyHit = false;
-      const checked = new Set();
-      for (let i = 0; i < m; i++) {
-        const x0 = Math.min(pxL[i], pxL[i + 1]), x1 = Math.max(pxL[i], pxL[i + 1]);
-        const y0 = Math.min(pyL[i], pyL[i + 1]), y1 = Math.max(pyL[i], pyL[i + 1]);
-        const c0x = Math.floor(x0 / CELL_X), c1x = Math.floor(x1 / CELL_X);
-        const c0y = Math.floor(y0 / CELL_X), c1y = Math.floor(y1 / CELL_X);
-        for (let cx = c0x; cx <= c1x; cx++) {
-          for (let cy = c0y; cy <= c1y; cy++) {
-            const cell = grid.get(cx + ',' + cy);
-            if (!cell) continue;
-            for (let ki = 0; ki < cell.length; ki++) {
-              const j = cell[ki];
-              if (isSameLocalSection(i, j)) continue;
-              const pairKey = i < j ? i * 100000 + j : j * 100000 + i;
-              if (checked.has(pairKey)) continue;
-              checked.add(pairKey);
-              if (!seg2dIntersect(pxL[i], pyL[i], pxL[i + 1], pyL[i + 1],
-                                  pxR[j], pyR[j], pxR[j + 1], pyR[j + 1])) continue;
-
-              outerOverlapFlagL[i] = 1;
-              outerOverlapFlagL[(i + 1) % m] = 1;
-              outerOverlapFlagR[j] = 1;
-              outerOverlapFlagR[(j + 1) % m] = 1;
-
-              finalOuterOffL[i] = Math.max(OUTER_ROAD_MIN, finalOuterOffL[i] - SHRINK_CROSS);
-              finalOuterOffL[(i + 1) % m] = Math.max(OUTER_ROAD_MIN, finalOuterOffL[(i + 1) % m] - SHRINK_CROSS);
-              finalOuterOffR[j] = Math.max(OUTER_ROAD_MIN, finalOuterOffR[j] - SHRINK_CROSS);
-              finalOuterOffR[(j + 1) % m] = Math.max(OUTER_ROAD_MIN, finalOuterOffR[(j + 1) % m] - SHRINK_CROSS);
-              anyHit = true;
-            }
-          }
-        }
-      }
-      if (!anyHit) break;
-    }
-  }
-
-  runOuterProximityPass();
-  runOuterSelfIntersectPass(finalOuterOffL, normalsL, outerOverlapFlagL);
-  runOuterSelfIntersectPass(finalOuterOffR, normalsR, outerOverlapFlagR);
-  runCrossOuterIntersectPass();
-
-  // Rebuild once more from the self-intersection-corrected offsets.
-  for (let i = 0; i < n - 1; i++) {
-    const p = splinePts[i].pt;
-    innerL[i] = { x: p.x + normalsL[i].x * finalOffL[i], y: p.y + normalsL[i].y * finalOffL[i] };
-    innerR[i] = { x: p.x + normalsR[i].x * finalOffR[i], y: p.y + normalsR[i].y * finalOffR[i] };
-    outerL[i] = { x: p.x + normalsL[i].x * finalOuterOffL[i], y: p.y + normalsL[i].y * finalOuterOffL[i] };
-    outerR[i] = { x: p.x + normalsR[i].x * finalOuterOffR[i], y: p.y + normalsR[i].y * finalOuterOffR[i] };
-  }
-
-  // ── Step 6: per-point safe KERB offsets ─────────────────────────────────
-  //
-  // The kerbs (red/white dashed strip just outside the road) are normally
-  // drawn at a fixed offset of TRACK_HALF_WIDTH + 0.6 = 7.6 wu from the
-  // centreline. On track sections that loop back near themselves (e.g.
-  // hairpins, parallel straights) the kerbs from two different sections
-  // physically overlap each other. We compute, for every spline point, the
-  // largest kerb offset that won't intrude on any foreign road, then smooth
-  // the result so the kerb width tapers gracefully rather than snapping.
-  const KERB_OFFSET   = TRACK_HALF_WIDTH + 0.6;  // 7.6 default
-  const KERB_HALFW    = 0.6;                     // visual half-width of the kerb stripe
-  const KERB_MIN      = TRACK_HALF_WIDTH + 0.1;  // minimum: hugs the road edge
-  // An offset is "safe" if foreign centreline is at least
-  // (TRACK_HALF_WIDTH + KERB_HALFW + small margin) away.
-  const KERB_NEED     = TRACK_HALF_WIDTH + KERB_HALFW + 0.4;
-  const rawKerbL = new Float64Array(n - 1);
-  const rawKerbR = new Float64Array(n - 1);
-  for (let i = 0; i < n - 1; i++) {
-    const p = splinePts[i].pt;
-    const calcKerb = (nx, ny) => {
-      const probe = p.x + nx * KERB_OFFSET, pry = p.y + ny * KERB_OFFSET;
-      if (nearestForeignCentre(probe, pry, i) >= KERB_NEED) return KERB_OFFSET;
-      let lo = KERB_MIN, hi = KERB_OFFSET;
-      for (let iter = 0; iter < 10; iter++) {
-        const mid = (lo + hi) * 0.5;
-        if (nearestForeignCentre(p.x + nx * mid, p.y + ny * mid, i) < KERB_NEED) hi = mid;
-        else lo = mid;
-      }
-      return lo;
-    };
-    rawKerbL[i] = calcKerb(normalsL[i].x, normalsL[i].y);
-    rawKerbR[i] = calcKerb(normalsR[i].x, normalsR[i].y);
-  }
-  // Smooth with the same Gaussian kernel used for inner barriers so the
-  // kerb tapers smoothly rather than snapping at the conflict boundary.
-  const kerbL = new Float64Array(n - 1);
-  const kerbR = new Float64Array(n - 1);
-  for (let i = 0; i < n - 1; i++) {
-    let sL = 0, sR = 0;
-    for (const { k, w } of gaussKernel) {
-      const j = ((i + k) % (n - 1) + (n - 1)) % (n - 1);
-      sL += rawKerbL[j] * w;
-      sR += rawKerbR[j] * w;
-    }
-    kerbL[i] = Math.max(KERB_MIN, Math.min(KERB_OFFSET, sL / kSum));
-    kerbR[i] = Math.max(KERB_MIN, Math.min(KERB_OFFSET, sR / kSum));
+    const oL = offsetsFor(smoothL[i]);
+    const oR = offsetsFor(smoothR[i]);
+    kerbL[i] = oL.kerb; kerbR[i] = oR.kerb;
+    innerL[i] = { x: p.x + normalsL[i].x * oL.inner, y: p.y + normalsL[i].y * oL.inner };
+    innerR[i] = { x: p.x + normalsR[i].x * oR.inner, y: p.y + normalsR[i].y * oR.inner };
+    outerL[i] = { x: p.x + normalsL[i].x * oL.outer, y: p.y + normalsL[i].y * oL.outer };
+    outerR[i] = { x: p.x + normalsR[i].x * oR.outer, y: p.y + normalsR[i].y * oR.outer };
   }
 
   const geo = {
-    '-1': { innerWorld: innerL, outerWorld: outerL, kerbOffsets: Array.from(kerbL), overlapFlags: overlapFlagL, outerOverlapFlags: outerOverlapFlagL },
-     '1': { innerWorld: innerR, outerWorld: outerR, kerbOffsets: Array.from(kerbR), overlapFlags: overlapFlagR, outerOverlapFlags: outerOverlapFlagR }
+    '-1': { innerWorld: innerL, outerWorld: outerL, kerbOffsets: Array.from(kerbL) },
+     '1': { innerWorld: innerR, outerWorld: outerR, kerbOffsets: Array.from(kerbR) }
   };
   _cachedBarrierWorldGeo = geo;
   return geo;
@@ -1776,7 +857,7 @@ function drawBarrierLines() {
   if (!geo) return;
 
   [-1, 1].forEach(side => {
-    const { innerWorld, outerWorld, overlapFlags } = geo[side];
+    const { innerWorld, outerWorld } = geo[side];
 
     const inner = innerWorld.map(p => worldToScreen(p.x, p.y));
     inner.push(inner[0]);
@@ -1799,28 +880,18 @@ function drawBarrierLines() {
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.stroke();
 
-    // Inner barrier — normal segments silver, overlapping segments pink
-    const m = inner.length - 1; // number of real segments
-    for (let i = 0; i < m; i++) {
-      const flagged = overlapFlags && (overlapFlags[i % overlapFlags.length] || overlapFlags[(i + 1) % overlapFlags.length]);
-      const baseColor  = flagged ? 'rgba(255,20,180,0.9)'  : 'rgba(160,175,190,0.85)';
-      const shadowColor= flagged ? 'rgba(180,0,120,0.5)'   : 'rgba(20,20,20,0.35)';
-      const hlColor    = flagged ? 'rgba(255,120,220,0.6)'  : 'rgba(220,235,255,0.45)';
+    // Inner barrier — smoothly squeezed on tight sections, no hard kinks
+    ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
+    ctx.strokeStyle = 'rgba(20,20,20,0.35)';
+    _polyPath(ctx, inner); ctx.stroke();
 
-      const seg = [inner[i], inner[i + 1]];
+    ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
+    ctx.strokeStyle = 'rgba(160,175,190,0.85)';
+    _polyPath(ctx, inner); ctx.stroke();
 
-      ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
-      ctx.strokeStyle = shadowColor;
-      _polyPath(ctx, seg); ctx.stroke();
-
-      ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
-      ctx.strokeStyle = baseColor;
-      _polyPath(ctx, seg); ctx.stroke();
-
-      ctx.lineWidth = Math.max(0.8, 0.8 * cam.zoom);
-      ctx.strokeStyle = hlColor;
-      _polyPath(ctx, seg); ctx.stroke();
-    }
+    ctx.lineWidth = Math.max(0.8, 0.8 * cam.zoom);
+    ctx.strokeStyle = 'rgba(220,235,255,0.45)';
+    _polyPath(ctx, inner); ctx.stroke();
 
     ctx.restore();
   });
@@ -1865,24 +936,6 @@ function getSplineSegmentPoints(pts, from, to) {
 // centreline at spline-point i (closed loop). Used by drawTrackRoad to draw
 // kerbs that taper inward in tight back-to-back sections so they don't
 // overlap kerbs from a foreign track section.
-function buildOffsetWorldPolylineVarying(pts, sideNum, offsets) {
-  const n = pts.length;
-  if (n < 2) return [];
-  const out = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const prev = pts[(i - 1 + n) % n].pt;
-    const next = pts[(i + 1) % n].pt;
-    const dx = next.x - prev.x, dy = next.y - prev.y;
-    const l  = Math.hypot(dx, dy) || 1;
-    let nx = -dy / l, ny = dx / l;
-    if (sideNum === 1) { nx = -nx; ny = -ny; }
-    const off = offsets[Math.min(offsets.length - 1, i)] || 0;
-    const p   = pts[i].pt;
-    out[i] = { x: p.x + nx * off, y: p.y + ny * off };
-  }
-  return out;
-}
-
 function buildOffsetScreenPolylineVarying(pts, sideNum, offsets) {
   const n = pts.length;
   if (n < 2) return [];

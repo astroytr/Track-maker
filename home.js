@@ -55,8 +55,7 @@ function loadStoredTrack(storageKey) {
     if (barrierSegments.length === 0 && waypoints.length >= 4 && typeof autoPlaceTrackFeatures === 'function') {
       autoPlaceTrackFeatures(waypoints);
     }
-    if (typeof resetRenderCaches === 'function') resetRenderCaches();
-    if (typeof markDirty === 'function') markDirty(); else render();
+    render();
     closeHomeScreen();
     showToast('Track loaded!');
   } catch(e) {
@@ -210,7 +209,6 @@ function confirmNewTrack() {
   // Reset canvas state
   waypoints = []; paintLayers = []; barrierSegments = [];
   startingPointIdx = 0; selectedWP = -1;
-  if (typeof resetRenderCaches === 'function') resetRenderCaches();
 
   // Pre-fill the track name fields used by export/save
   const nameEl = document.getElementById('track-name');
@@ -224,7 +222,7 @@ function confirmNewTrack() {
 
   updateWPList();
   if (typeof updateBarrierList === 'function') updateBarrierList();
-  if (typeof markDirty === 'function') markDirty(); else render();
+  render();
 
   document.getElementById('new-track-modal').style.display = 'none';
   closeHomeScreen();

@@ -396,8 +396,7 @@ async function runAIConvert() {
     window._aiLastScale = finalSc;
     updateWPList();
     autoPlaceTrackFeatures(newWPs);
-    if (typeof resetRenderCaches === 'function') resetRenderCaches();
-    if (typeof markDirty === 'function') markDirty(); else render();
+    render();
     setAIStatus(`✓ ${newWPs.length} waypoints · ${Math.round(trackWidthPx)}px → ${(WORLD_HALF_WIDTH*2).toFixed(0)}wu track width · scale ×${finalSc.toFixed(2)} · barriers auto-placed`, 'ok');
     showToast(`${newWPs.length} waypoints placed!`);
 

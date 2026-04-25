@@ -347,8 +347,11 @@ button, input, textarea { font: inherit; }
 /* ─────────────────── MODALS ─────────────────── */
 #mobile-bar, #mobile-actions, #surf-overlay { display: none; }
 
+/* Modal z-index 1200 — must sit above the topbar (600), 3D overlay (500),
+   floating mobile action bars (7-9) and the zoom HUD. Was 20, which let
+   those UI elements cover the modal header/footer on phone. */
 #export-modal, #ai-modal, #simplify-modal {
-  position: fixed; inset: 0; z-index: 20; display: none;
+  position: fixed; inset: 0; z-index: 1200; display: none;
   align-items: center; justify-content: center;
   background: rgba(0,0,0,0.7); backdrop-filter: blur(8px);
 }

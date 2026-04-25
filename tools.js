@@ -17,8 +17,8 @@ function findBestStartFinishWaypoint() { return 0; }
 function editBarrierSide(i) {}
 function deleteBarrier(i) { barrierSegments.splice(i,1); markDirty(); }
 function deleteWP(i) { waypoints.splice(i,1); markDirty(); }
-function clearWaypoints() { if (!confirm('Clear all waypoints?')) return; waypoints=[]; barrierSegments=[]; if(typeof resetRenderCaches==='function') resetRenderCaches(); markDirty(); }
-function clearAll() { if (!confirm('Reset everything?')) return; waypoints=[]; paintLayers=[]; undoStack=[]; bgImage=null; barrierSegments=[]; if(typeof resetRenderCaches==='function') resetRenderCaches(); markDirty(); }
+function clearWaypoints() { if (!confirm('Clear all waypoints?')) return; waypoints=[]; barrierSegments=[]; markDirty(); }
+function clearAll() { if (!confirm('Reset everything?')) return; waypoints=[]; paintLayers=[]; undoStack=[]; bgImage=null; barrierSegments=[]; markDirty(); }
 function updateWPList() { const el=document.getElementById('stat-wp'); if(el) el.textContent=waypoints.length; }
 function updateBarrierList() {}
 function mobileDeleteLast() {}
@@ -78,7 +78,9 @@ mainCanvas.addEventListener('mouseleave', () => { isPanning = false; });
 mainCanvas.addEventListener('wheel', e => {
   e.preventDefault();
   const pos = getCanvasPos(e.clientX, e.clientY);
+  if (typeof beginInteract === 'function') beginInteract();
   applyZoom(e.deltaY < 0 ? 1.12 : 0.89, pos.x, pos.y);
+  if (typeof endInteract === 'function') endInteract(180);
 }, { passive: false });
 
 // ── Touch (pinch-zoom + pan) ─────────────────────────
@@ -87,6 +89,7 @@ let pinchMidStart = null, pinchCamStart = null;
 
 mainCanvas.addEventListener('touchstart', e => {
   e.preventDefault(); hidePinchHint();
+  if (typeof beginInteract === 'function') beginInteract();
   Array.from(e.changedTouches).forEach(t => { touches[t.identifier] = getCanvasPos(t.clientX, t.clientY); });
   const ids = Object.keys(touches);
   if (ids.length === 2) {
@@ -130,7 +133,11 @@ mainCanvas.addEventListener('touchend', e => {
   e.preventDefault();
   Array.from(e.changedTouches).forEach(t => delete touches[t.identifier]);
   const remaining = Object.keys(touches).length;
-  if (remaining === 0) { isPanning = false; }
+  if (remaining === 0) {
+    isPanning = false;
+    // All fingers off — settle back to high-detail render after a short pause.
+    if (typeof endInteract === 'function') endInteract(140);
+  }
   else if (remaining === 1) {
     const id = Object.keys(touches)[0];
     panStart = { x: touches[id].x, y: touches[id].y, camX: cam.x, camY: cam.y };
@@ -141,6 +148,7 @@ mainCanvas.addEventListener('touchend', e => {
 mainCanvas.addEventListener('touchcancel', e => {
   Array.from(e.changedTouches).forEach(t => delete touches[t.identifier]);
   isPanning = false;
+  if (typeof endInteract === 'function') endInteract(140);
 }, { passive: false });
 
 // ── Keyboard (zoom only) ─────────────────────────────
