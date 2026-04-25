@@ -110,15 +110,14 @@ function _buildWorldOffsetPoly(pts, sideNum, offset) {
 }
 
 // World-space varying-offset poly, cached.
-// Uses miter bisector (same as _buildWorldOffsetPoly) so the kerb line stays
-// convex on the inside of tight corners instead of collapsing inward.
+// Uses miter bisector so the kerb stays convex on inner corners (no concave dip).
 function _getWorldOffsetPolyVarying(pts, sideNum, offsets) {
   const oh = (offsets[0]||0).toFixed(2)+'_'+(offsets[Math.floor(offsets.length/2)]||0).toFixed(2)+'_'+(offsets[offsets.length-1]||0).toFixed(2);
   const k = `vary_${sideNum}_${pts.length}_${oh}`;
   if (_worldPolyCache.has(k)) return _worldPolyCache.get(k);
   const n = pts.length;
 
-  // Build per-point normals with sign-propagation (same as _buildWorldOffsetPoly)
+  // Per-point normals with sign-propagation
   const normals = new Array(n);
   for (let i = 0; i < n; i++) {
     const prev = pts[(i - 1 + n) % n].pt, next = pts[(i + 1) % n].pt;
@@ -150,13 +149,12 @@ function _getWorldOffsetPolyVarying(pts, sideNum, offsets) {
     }
     const n0 = normals[i - 1], n1 = normals[i];
     const mx = n0.x + n1.x, my = n0.y + n1.y;
-    const len = Math.hypot(mx, my) || 1;
-    const mxn = mx / len, myn = my / len;
+    const mlen = Math.hypot(mx, my) || 1;
+    const mxn = mx / mlen, myn = my / mlen;
     const sideCheck = mxn * n1.x + myn * n1.y;
     if (sideCheck < 0.1) { out.push({ x: p.x + n1.x * off, y: p.y + n1.y * off }); continue; }
-    const denom = Math.max(1e-4, sideCheck);
-    let miterLen = off / denom;
-    // Clamp: never shorter than the plain offset (prevents concave dip on inner corners)
+    let miterLen = off / Math.max(1e-4, sideCheck);
+    // Never shorter than plain offset — this prevents the inward-bowing concave shape
     if (miterLen < off) miterLen = off;
     if (miterLen > off * MITER_LIMIT) miterLen = off * MITER_LIMIT;
     out.push({ x: p.x + mxn * miterLen, y: p.y + myn * miterLen });
@@ -202,8 +200,9 @@ function _clipSelfIntersectionsWorld(poly) {
     return null;
   }
   function bridge(pBefore, ix, iy, pAfter) {
-    // Small arc in world space — radius in world units
-    const radius = 3.0;
+    // Rounded arc in world space. Radius in world units (~0.93 m each).
+    // 8 wu ≈ 7.5 m — enough to visibly round a hairpin barrier apex.
+    const radius = 8.0;
     const r = Math.min(radius,
       Math.hypot(pBefore.x-ix, pBefore.y-iy)*0.48,
       Math.hypot(pAfter.x-ix,  pAfter.y-iy)*0.48);
@@ -212,8 +211,8 @@ function _clipSelfIntersectionsWorld(poly) {
     const p0 = { x: ix+(pBefore.x-ix)/d0*r, y: iy+(pBefore.y-iy)/d0*r };
     const p1 = { x: ix+(pAfter.x-ix)/d1*r,  y: iy+(pAfter.y-iy)/d1*r  };
     const arc = [];
-    for (let k = 0; k <= 10; k++) {
-      const t = k/10, mt = 1-t;
+    for (let k = 0; k <= 20; k++) {
+      const t = k/20, mt = 1-t;
       arc.push({ x: mt*mt*p0.x+2*mt*t*ix+t*t*p1.x, y: mt*mt*p0.y+2*mt*t*iy+t*t*p1.y });
     }
     return arc;
@@ -593,8 +592,6 @@ function _clipSelfIntersections(poly) {
   // Quadratic bezier arc bridging the cut. Backs off along each arm so the
   // sharp corner becomes a smooth curve. Radius is in screen pixels.
   function roundedBridge(pBefore, ix, iy, pAfter) {
-    // Use a larger base radius and a bigger zoom-scaled component so tight
-    // hairpin barrier corners (e.g. Interlagos S1/S2) are well-rounded.
     const radius = Math.max(40, 60 * cam.zoom);
     const r = Math.min(radius,
       Math.hypot(pBefore.x - ix, pBefore.y - iy) * 0.48,
@@ -604,7 +601,6 @@ function _clipSelfIntersections(poly) {
     const d1 = Math.hypot(pAfter.x  - ix, pAfter.y  - iy) || 1;
     const p0 = { x: ix + (pBefore.x - ix) / d0 * r, y: iy + (pBefore.y - iy) / d0 * r };
     const p1 = { x: ix + (pAfter.x  - ix) / d1 * r, y: iy + (pAfter.y  - iy) / d1 * r };
-    // More steps = smoother arc at any zoom level
     const STEPS = 20;
     const arc = [];
     for (let k = 0; k <= STEPS; k++) {
@@ -1220,7 +1216,7 @@ function buildOffsetScreenPolylineVarying(pts, sideNum, offsets) {
   const n = pts.length;
   if (n < 2) return [];
 
-  // Build normals with sign-propagation to keep them consistent
+  // Per-point normals with sign-propagation (prevents concave dip on inner corners)
   const normals = new Array(n);
   for (let i = 0; i < n; i++) {
     const prev = pts[(i - 1 + n) % n].pt;
@@ -1253,12 +1249,11 @@ function buildOffsetScreenPolylineVarying(pts, sideNum, offsets) {
     }
     const n0 = normals[i - 1], n1 = normals[i];
     const mx = n0.x + n1.x, my = n0.y + n1.y;
-    const len = Math.hypot(mx, my) || 1;
-    const mxn = mx / len, myn = my / len;
+    const mlen = Math.hypot(mx, my) || 1;
+    const mxn = mx / mlen, myn = my / mlen;
     const sideCheck = mxn * n1.x + myn * n1.y;
     if (sideCheck < 0.1) { out[i] = worldToScreen(p.x + n1.x * off, p.y + n1.y * off); continue; }
-    const denom = Math.max(1e-4, sideCheck);
-    let miterLen = off / denom;
+    let miterLen = off / Math.max(1e-4, sideCheck);
     if (miterLen < off) miterLen = off;
     if (miterLen > off * MITER_LIMIT) miterLen = off * MITER_LIMIT;
     out[i] = worldToScreen(p.x + mxn * miterLen, p.y + myn * miterLen);
