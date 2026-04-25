@@ -37,74 +37,184 @@ let _cachedBarrierWorldGeo = null;
 let _cachedBarrierGeo = null;
 let _barrierGeoCamZoom = -1;
 
-// ── Screen-space polyline cache ───────────────────────
-// Keyed on cam + waypoints. pan/zoom only changes the transform, not world
-// geo, so we can reuse the mapped screen points across frames.
-let _screenPolyCache = new Map();
-let _screenPolyCamKey = '';
-let _screenPolyWpKey  = '';
+// ── World-space offset polyline cache ────────────────
+// Stores {x,y} world-space arrays keyed by (sideNum, offset, ptsLength).
+// These never change during pan/zoom — only waypoint edits invalidate them.
+// During draw we apply the transform inline (2 muls + 2 adds per point)
+// which is far cheaper than rebuilding the arrays every frame.
+let _worldPolyCache = new Map();
 
-function _getScreenPolyCacheKey() {
-  return `${cam.x.toFixed(2)}_${cam.y.toFixed(2)}_${cam.zoom.toFixed(4)}`;
+function _invalidateWorldPolyCache() {
+  _worldPolyCache.clear();
 }
 
-function _screenPolyGet(key) {
-  const camKey = _getScreenPolyCacheKey();
-  if (camKey !== _screenPolyCamKey || _screenPolyWpKey !== _wpCacheKey) {
-    _screenPolyCache.clear();
-    _screenPolyCamKey = camKey;
-    _screenPolyWpKey  = _wpCacheKey;
+// Returns a world-space {x,y}[] for a fixed offset polyline, cached.
+function _getWorldOffsetPoly(pts, sideNum, offset) {
+  const k = `${sideNum}_${offset.toFixed(3)}_${pts.length}`;
+  if (_worldPolyCache.has(k)) return _worldPolyCache.get(k);
+  // Build world-space points from buildOffsetScreenPolyline logic but
+  // without the worldToScreen call — just store raw world coords.
+  const arr = _buildWorldOffsetPoly(pts, sideNum, offset);
+  _worldPolyCache.set(k, arr);
+  return arr;
+}
+
+// World-space version of buildOffsetScreenPolyline (no worldToScreen call).
+function _buildWorldOffsetPoly(pts, sideNum, offset) {
+  const n = pts.length;
+  if (n < 2) return [];
+  const normals = new Array(n);
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n].pt;
+    const next = pts[(i + 1) % n].pt;
+    const dx = next.x - prev.x, dy = next.y - prev.y;
+    const l = Math.hypot(dx, dy) || 1;
+    let nx = -dy / l, ny = dx / l;
+    if (sideNum === 1) { nx = -nx; ny = -ny; }
+    normals[i] = { x: nx, y: ny };
   }
-  return _screenPolyCache.get(key) || null;
+  // Smooth normals
+  for (let i = 1; i < n; i++) {
+    const p = normals[i - 1], c = normals[i];
+    const d = p.x * c.x + p.y * c.y;
+    if (d < 0) { c.x = -c.x; c.y = -c.y; }
+    else if (d < 0.6) {
+      c.x = p.x * 0.6 + c.x * 0.4; c.y = p.y * 0.6 + c.y * 0.4;
+      const l = Math.hypot(c.x, c.y) || 1; c.x /= l; c.y /= l;
+    }
+  }
+  if (n > 1) normals[n - 1] = { x: normals[n - 2].x, y: normals[n - 2].y };
+  const MITER_LIMIT = 3.0;
+  const result = [];
+  for (let i = 0; i < n; i++) {
+    const p = pts[i].pt;
+    if (i === 0 || i === n - 1) {
+      result.push({ x: p.x + normals[i].x * offset, y: p.y + normals[i].y * offset });
+      continue;
+    }
+    const n0 = normals[i - 1], n1 = normals[i];
+    const mx = n0.x + n1.x, my = n0.y + n1.y;
+    const len = Math.hypot(mx, my) || 1;
+    const mxn = mx / len, myn = my / len;
+    const sideCheck = mxn * n1.x + myn * n1.y;
+    if (sideCheck < 0.1) { result.push({ x: p.x + n1.x * offset, y: p.y + n1.y * offset }); continue; }
+    const denom = Math.max(1e-4, sideCheck);
+    let miterLen = offset / denom;
+    const maxLen = offset * MITER_LIMIT;
+    if (Math.abs(miterLen) > maxLen) miterLen = Math.sign(miterLen) * maxLen;
+    const MIN_OFFSET = offset * 0.6;
+    if (Math.abs(miterLen) < MIN_OFFSET) miterLen = Math.sign(miterLen) * MIN_OFFSET;
+    result.push({ x: p.x + mxn * miterLen, y: p.y + myn * miterLen });
+  }
+  return result;
 }
 
-function _screenPolySet(key, poly) {
-  _screenPolyCache.set(key, poly);
-  return poly;
-}
-
-// Cached wrapper around buildOffsetScreenPolyline
-function _getOffsetPoly(pts, sideNum, offset) {
-  const k = `off_${sideNum}_${offset.toFixed(3)}_${pts.length}`;
-  return _screenPolyGet(k) || _screenPolySet(k, buildOffsetScreenPolyline(pts, sideNum, offset));
-}
-
-// Cached wrapper around buildOffsetScreenPolylineVarying
-function _getOffsetPolyVarying(pts, sideNum, offsets) {
-  // Use a hash of the first+mid+last offset to cheaply key the result
-  const oh = (offsets[0]||0).toFixed(2) + '_' + (offsets[Math.floor(offsets.length/2)]||0).toFixed(2) + '_' + (offsets[offsets.length-1]||0).toFixed(2);
+// World-space varying-offset poly, cached.
+function _getWorldOffsetPolyVarying(pts, sideNum, offsets) {
+  const oh = (offsets[0]||0).toFixed(2)+'_'+(offsets[Math.floor(offsets.length/2)]||0).toFixed(2)+'_'+(offsets[offsets.length-1]||0).toFixed(2);
   const k = `vary_${sideNum}_${pts.length}_${oh}`;
-  return _screenPolyGet(k) || _screenPolySet(k, buildOffsetScreenPolylineVarying(pts, sideNum, offsets));
+  if (_worldPolyCache.has(k)) return _worldPolyCache.get(k);
+  const n = pts.length;
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    const prev = pts[(i - 1 + n) % n].pt, next = pts[(i + 1) % n].pt;
+    const dx = next.x - prev.x, dy = next.y - prev.y;
+    const l = Math.hypot(dx, dy) || 1;
+    let nx = -dy / l, ny = dx / l;
+    if (sideNum === 1) { nx = -nx; ny = -ny; }
+    const off = offsets[Math.min(offsets.length - 1, i)] || 0;
+    const p = pts[i].pt;
+    out.push({ x: p.x + nx * off, y: p.y + ny * off });
+  }
+  _worldPolyCache.set(k, out);
+  return out;
 }
 
-// Cached barrier screen polys (inner/outer per side) with self-intersection clipping
-let _cachedBarrierScreenPolys = null;
-let _barrierScreenCamKey = '';
-let _barrierScreenWpKey  = '';
+// Cached world-space barrier polys with self-intersection clipping done
+// in WORLD space (once, on waypoint change only).
+let _cachedBarrierWorldPolys = null;
 
-function _getBarrierScreenPolys() {
-  const camKey = _getScreenPolyCacheKey();
-  if (camKey === _barrierScreenCamKey && _barrierScreenWpKey === _wpCacheKey && _cachedBarrierScreenPolys) {
-    return _cachedBarrierScreenPolys;
-  }
+function _getBarrierWorldPolys() {
+  if (_cachedBarrierWorldPolys) return _cachedBarrierWorldPolys;
   const geo = _getBarrierGeo();
   if (!geo) return null;
   const result = {};
   [-1, 1].forEach(side => {
     const { innerWorld, outerWorld } = geo[side];
-    const innerRaw = innerWorld.map(p => worldToScreen(p.x, p.y));
-    innerRaw.push(innerRaw[0]);
-    const outerRaw = outerWorld.map(p => worldToScreen(p.x, p.y));
-    outerRaw.push(outerRaw[0]);
+    // Close the loop
+    const iRaw = innerWorld.concat([innerWorld[0]]);
+    const oRaw = outerWorld.concat([outerWorld[0]]);
+    // Clip self-intersections in world space
     result[side] = {
-      inner: _clipSelfIntersections(innerRaw),
-      outer: _clipSelfIntersections(outerRaw)
+      inner: _clipSelfIntersectionsWorld(iRaw),
+      outer: _clipSelfIntersectionsWorld(oRaw)
     };
   });
-  _cachedBarrierScreenPolys = result;
-  _barrierScreenCamKey = camKey;
-  _barrierScreenWpKey  = _wpCacheKey;
+  _cachedBarrierWorldPolys = result;
   return result;
+}
+
+// Self-intersection clipper operating on world-space {x,y}[] arrays.
+function _clipSelfIntersectionsWorld(poly) {
+  if (poly.length < 4) return poly;
+  function segIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+    const ex = bx-ax, ey = by-ay, fx = dx-cx, fy = dy-cy;
+    const det = ex*fy - ey*fx;
+    if (Math.abs(det) < 1e-9) return null;
+    const gx = cx-ax, gy = cy-ay;
+    const t = (gx*fy - gy*fx)/det, u = (gx*ey - gy*ex)/det;
+    if (t > 1e-6 && t < 1-1e-6 && u > 1e-6 && u < 1-1e-6) return { t, u };
+    return null;
+  }
+  function bridge(pBefore, ix, iy, pAfter) {
+    // Small arc in world space — radius in world units
+    const radius = 3.0;
+    const r = Math.min(radius,
+      Math.hypot(pBefore.x-ix, pBefore.y-iy)*0.48,
+      Math.hypot(pAfter.x-ix,  pAfter.y-iy)*0.48);
+    const d0 = Math.hypot(pBefore.x-ix, pBefore.y-iy)||1;
+    const d1 = Math.hypot(pAfter.x-ix,  pAfter.y-iy)||1;
+    const p0 = { x: ix+(pBefore.x-ix)/d0*r, y: iy+(pBefore.y-iy)/d0*r };
+    const p1 = { x: ix+(pAfter.x-ix)/d1*r,  y: iy+(pAfter.y-iy)/d1*r  };
+    const arc = [];
+    for (let k = 0; k <= 10; k++) {
+      const t = k/10, mt = 1-t;
+      arc.push({ x: mt*mt*p0.x+2*mt*t*ix+t*t*p1.x, y: mt*mt*p0.y+2*mt*t*iy+t*t*p1.y });
+    }
+    return arc;
+  }
+  let pts = poly.slice();
+  for (let pass = 0; pass < 8; pass++) {
+    let found = false;
+    const n = pts.length;
+    outer: for (let i = 0; i < n-1; i++) {
+      for (let j = i+2; j < n-1; j++) {
+        if (i === 0 && j === n-2) continue;
+        const hit = segIntersect(pts[i].x,pts[i].y,pts[i+1].x,pts[i+1].y,pts[j].x,pts[j].y,pts[j+1].x,pts[j+1].y);
+        if (!hit) continue;
+        const ix = pts[i].x + hit.t*(pts[i+1].x-pts[i].x);
+        const iy = pts[i].y + hit.t*(pts[i+1].y-pts[i].y);
+        const arc = bridge(pts[i], ix, iy, pts[j+1]);
+        pts = pts.slice(0,i+1).concat(arc).concat(pts.slice(j+1));
+        found = true; break outer;
+      }
+    }
+    if (!found) break;
+  }
+  return pts;
+}
+
+// Fast inline path — applies worldToScreen transform directly in the path loop,
+// no intermediate array allocation per frame.
+function _polyPathWorld(ctx, worldPts) {
+  const W2 = mainCanvas.width / 2, H2 = mainCanvas.height / 2;
+  const z = cam.zoom, cx = cam.x, cy = cam.y;
+  ctx.beginPath();
+  for (let i = 0; i < worldPts.length; i++) {
+    const sx = (worldPts[i].x - cx) * z + W2;
+    const sy = (worldPts[i].y - cy) * z + H2;
+    i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+  }
 }
 
 // ── Track geometry constants (world units ≈ 0.93 m) ──
@@ -200,12 +310,8 @@ function _invalidateSplineCache() {
   _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
   _cachedBarrierWorldGeo = null;
   _cachedBarrierGeo = null;
-  _screenPolyCache.clear();
-  _screenPolyCamKey = '';
-  _screenPolyWpKey  = '';
-  _cachedBarrierScreenPolys = null;
-  _barrierScreenCamKey = '';
-  _barrierScreenWpKey  = '';
+  _worldPolyCache.clear();
+  _cachedBarrierWorldPolys = null;
 }
 
 function getCachedSpline(segs) {
@@ -610,10 +716,12 @@ function drawTrackRoad() {
   ctx.lineWidth   = trackW;
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.beginPath();
-  splinePts.forEach((p,i) => {
-    const s = worldToScreen(p.pt.x, p.pt.y);
-    i===0 ? ctx.moveTo(s.x,s.y) : ctx.lineTo(s.x,s.y);
-  });
+  const W2 = mainCanvas.width/2, H2 = mainCanvas.height/2, z = cam.zoom, cx2 = cam.x, cy2 = cam.y;
+  for (let i = 0; i < splinePts.length; i++) {
+    const p = splinePts[i].pt;
+    const sx = (p.x - cx2)*z + W2, sy = (p.y - cy2)*z + H2;
+    i === 0 ? ctx.moveTo(sx, sy) : ctx.lineTo(sx, sy);
+  }
   ctx.closePath();
   ctx.stroke();
 
@@ -624,8 +732,7 @@ function drawTrackRoad() {
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   [-1, 1].forEach(side => {
     ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    const poly = _getOffsetPoly(splinePts, side, edgeOffset);
-    _polyPath(ctx, poly);
+    _polyPathWorld(ctx, _getWorldOffsetPoly(splinePts, side, edgeOffset));
     ctx.stroke();
   });
 
@@ -654,22 +761,21 @@ function drawTrackRoad() {
     const safe = _safeKerbGeo && _safeKerbGeo[side] && _safeKerbGeo[side].kerbOffsets;
     if (safe && kerbSpline.length >= 2 && safe.length === kerbSpline.length - 1) {
       const padded = safe.concat([safe[0]]);
-      poly = _getOffsetPolyVarying(kerbSpline, side, padded);
+      poly = _getWorldOffsetPolyVarying(kerbSpline, side, padded);
     } else {
-      poly = _getOffsetPoly(splinePts, side, kerbDefault);
+      poly = _getWorldOffsetPoly(splinePts, side, kerbDefault);
     }
     if (fastDraw) {
-      // Quick single-stroke kerb hint while interacting.
       ctx.strokeStyle = 'rgba(215,25,25,0.85)';
-      _polyPath(ctx, poly); ctx.stroke();
+      _polyPathWorld(ctx, poly); ctx.stroke();
     } else {
       ctx.setLineDash([dashLen, dashLen]);
       ctx.lineDashOffset = 0;
       ctx.strokeStyle = 'rgba(215,25,25,0.92)';
-      _polyPath(ctx, poly); ctx.stroke();
+      _polyPathWorld(ctx, poly); ctx.stroke();
       ctx.lineDashOffset = dashLen;
       ctx.strokeStyle = 'rgba(245,245,245,0.92)';
-      _polyPath(ctx, poly); ctx.stroke();
+      _polyPathWorld(ctx, poly); ctx.stroke();
     }
   });
   ctx.setLineDash([]); ctx.lineDashOffset = 0;
@@ -996,40 +1102,38 @@ function _buildNormalsForBarrier(pts, sideNum) {
 }
 
 function drawBarrierLines() {
-  const screenPolys = _getBarrierScreenPolys();
-  if (!screenPolys) return;
+  const worldPolys = _getBarrierWorldPolys();
+  if (!worldPolys) return;
 
   [-1, 1].forEach(side => {
-    const { inner, outer } = screenPolys[side];
+    const { inner, outer } = worldPolys[side];
 
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
 
-    // Outer barrier — shadow + silver + highlight
     ctx.lineWidth = Math.max(4, 3.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.5)';
-    _polyPath(ctx, outer); ctx.stroke();
+    _polyPathWorld(ctx, outer); ctx.stroke();
 
     ctx.lineWidth = Math.max(3, 2.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(170,185,200,1.0)';
-    _polyPath(ctx, outer); ctx.stroke();
+    _polyPathWorld(ctx, outer); ctx.stroke();
 
     ctx.lineWidth = Math.max(1, 1.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
-    _polyPath(ctx, outer); ctx.stroke();
+    _polyPathWorld(ctx, outer); ctx.stroke();
 
-    // Inner barrier
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.35)';
-    _polyPath(ctx, inner); ctx.stroke();
+    _polyPathWorld(ctx, inner); ctx.stroke();
 
     ctx.lineWidth = Math.max(1.5, 1.5 * cam.zoom);
     ctx.strokeStyle = 'rgba(160,175,190,0.85)';
-    _polyPath(ctx, inner); ctx.stroke();
+    _polyPathWorld(ctx, inner); ctx.stroke();
 
     ctx.lineWidth = Math.max(0.8, 0.8 * cam.zoom);
     ctx.strokeStyle = 'rgba(220,235,255,0.45)';
-    _polyPath(ctx, inner); ctx.stroke();
+    _polyPathWorld(ctx, inner); ctx.stroke();
 
     ctx.restore();
   });
