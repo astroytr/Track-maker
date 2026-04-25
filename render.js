@@ -353,6 +353,61 @@ function _polyPath(ctx, poly) {
   poly.forEach((p, i) => i===0 ? ctx.moveTo(p.x,p.y) : ctx.lineTo(p.x,p.y));
 }
 
+// ── Self-intersection clipper ────────────────────────
+// Removes loops from an offset polyline (closed) by detecting where
+// non-adjacent segments cross and cutting out the looping section.
+// Works in screen-space (called just before drawing).
+function _clipSelfIntersections(poly) {
+  if (poly.length < 4) return poly;
+
+  // Segment intersection — returns t along seg AB, or -1 if no hit
+  function segIntersect(ax, ay, bx, by, cx, cy, dx, dy) {
+    const ex = bx - ax, ey = by - ay;
+    const fx = dx - cx, fy = dy - cy;
+    const det = ex * fy - ey * fx;
+    if (Math.abs(det) < 1e-9) return -1;
+    const gx = cx - ax, gy = cy - ay;
+    const t = (gx * fy - gy * fx) / det;
+    const u = (gx * ey - gy * ex) / det;
+    if (t > 1e-6 && t < 1 - 1e-6 && u > 1e-6 && u < 1 - 1e-6) return t;
+    return -1;
+  }
+
+  // We iterate until no more intersections are found (handles nested loops).
+  // Max 8 passes to prevent infinite loop on degenerate geometry.
+  let pts = poly.slice();
+  for (let pass = 0; pass < 8; pass++) {
+    let found = false;
+    const n = pts.length;
+    outer:
+    for (let i = 0; i < n - 1; i++) {
+      const ax = pts[i].x,   ay = pts[i].y;
+      const bx = pts[i+1].x, by = pts[i+1].y;
+      // Skip adjacent segments (share an endpoint) — start j at i+2
+      for (let j = i + 2; j < n - 1; j++) {
+        // Also skip the wrap-around pair (last seg vs first seg)
+        if (i === 0 && j === n - 2) continue;
+        const cx = pts[j].x,   cy = pts[j].y;
+        const dx = pts[j+1].x, dy = pts[j+1].y;
+        const t = segIntersect(ax, ay, bx, by, cx, cy, dx, dy);
+        if (t < 0) continue;
+        // Intersection point
+        const ix = ax + t * (bx - ax);
+        const iy = ay + t * (by - ay);
+        // Cut: keep pts[0..i], intersection, pts[j+1..end]
+        // This removes the loop between i+1 and j.
+        pts = pts.slice(0, i + 1)
+          .concat([{ x: ix, y: iy }])
+          .concat(pts.slice(j + 1));
+        found = true;
+        break outer;
+      }
+    }
+    if (!found) break;
+  }
+  return pts;
+}
+
 // ═══════════════════════════════════════════════════
 // BACKGROUND
 // ═══════════════════════════════════════════════════
@@ -859,10 +914,12 @@ function drawBarrierLines() {
   [-1, 1].forEach(side => {
     const { innerWorld, outerWorld } = geo[side];
 
-    const inner = innerWorld.map(p => worldToScreen(p.x, p.y));
-    inner.push(inner[0]);
-    const outer = outerWorld.map(p => worldToScreen(p.x, p.y));
-    outer.push(outer[0]);
+    const innerRaw = innerWorld.map(p => worldToScreen(p.x, p.y));
+    innerRaw.push(innerRaw[0]);
+    const outerRaw = outerWorld.map(p => worldToScreen(p.x, p.y));
+    outerRaw.push(outerRaw[0]);
+    const inner = _clipSelfIntersections(innerRaw);
+    const outer = _clipSelfIntersections(outerRaw);
 
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
