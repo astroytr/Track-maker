@@ -37,6 +37,76 @@ let _cachedBarrierWorldGeo = null;
 let _cachedBarrierGeo = null;
 let _barrierGeoCamZoom = -1;
 
+// ── Screen-space polyline cache ───────────────────────
+// Keyed on cam + waypoints. pan/zoom only changes the transform, not world
+// geo, so we can reuse the mapped screen points across frames.
+let _screenPolyCache = new Map();
+let _screenPolyCamKey = '';
+let _screenPolyWpKey  = '';
+
+function _getScreenPolyCacheKey() {
+  return `${cam.x.toFixed(2)}_${cam.y.toFixed(2)}_${cam.zoom.toFixed(4)}`;
+}
+
+function _screenPolyGet(key) {
+  const camKey = _getScreenPolyCacheKey();
+  if (camKey !== _screenPolyCamKey || _screenPolyWpKey !== _wpCacheKey) {
+    _screenPolyCache.clear();
+    _screenPolyCamKey = camKey;
+    _screenPolyWpKey  = _wpCacheKey;
+  }
+  return _screenPolyCache.get(key) || null;
+}
+
+function _screenPolySet(key, poly) {
+  _screenPolyCache.set(key, poly);
+  return poly;
+}
+
+// Cached wrapper around buildOffsetScreenPolyline
+function _getOffsetPoly(pts, sideNum, offset) {
+  const k = `off_${sideNum}_${offset.toFixed(3)}_${pts.length}`;
+  return _screenPolyGet(k) || _screenPolySet(k, buildOffsetScreenPolyline(pts, sideNum, offset));
+}
+
+// Cached wrapper around buildOffsetScreenPolylineVarying
+function _getOffsetPolyVarying(pts, sideNum, offsets) {
+  // Use a hash of the first+mid+last offset to cheaply key the result
+  const oh = (offsets[0]||0).toFixed(2) + '_' + (offsets[Math.floor(offsets.length/2)]||0).toFixed(2) + '_' + (offsets[offsets.length-1]||0).toFixed(2);
+  const k = `vary_${sideNum}_${pts.length}_${oh}`;
+  return _screenPolyGet(k) || _screenPolySet(k, buildOffsetScreenPolylineVarying(pts, sideNum, offsets));
+}
+
+// Cached barrier screen polys (inner/outer per side) with self-intersection clipping
+let _cachedBarrierScreenPolys = null;
+let _barrierScreenCamKey = '';
+let _barrierScreenWpKey  = '';
+
+function _getBarrierScreenPolys() {
+  const camKey = _getScreenPolyCacheKey();
+  if (camKey === _barrierScreenCamKey && _barrierScreenWpKey === _wpCacheKey && _cachedBarrierScreenPolys) {
+    return _cachedBarrierScreenPolys;
+  }
+  const geo = _getBarrierGeo();
+  if (!geo) return null;
+  const result = {};
+  [-1, 1].forEach(side => {
+    const { innerWorld, outerWorld } = geo[side];
+    const innerRaw = innerWorld.map(p => worldToScreen(p.x, p.y));
+    innerRaw.push(innerRaw[0]);
+    const outerRaw = outerWorld.map(p => worldToScreen(p.x, p.y));
+    outerRaw.push(outerRaw[0]);
+    result[side] = {
+      inner: _clipSelfIntersections(innerRaw),
+      outer: _clipSelfIntersections(outerRaw)
+    };
+  });
+  _cachedBarrierScreenPolys = result;
+  _barrierScreenCamKey = camKey;
+  _barrierScreenWpKey  = _wpCacheKey;
+  return result;
+}
+
 // ── Track geometry constants (world units ≈ 0.93 m) ──
 const TRACK_HALF_WIDTH = 7;   // half of 14 m road
 const BARRIER_INNER    = 9.0; // inner barrier line — just outside the kerb
@@ -130,6 +200,12 @@ function _invalidateSplineCache() {
   _cachedSpline12 = _cachedSpline16 = _cachedSpline20 = null;
   _cachedBarrierWorldGeo = null;
   _cachedBarrierGeo = null;
+  _screenPolyCache.clear();
+  _screenPolyCamKey = '';
+  _screenPolyWpKey  = '';
+  _cachedBarrierScreenPolys = null;
+  _barrierScreenCamKey = '';
+  _barrierScreenWpKey  = '';
 }
 
 function getCachedSpline(segs) {
@@ -548,7 +624,7 @@ function drawTrackRoad() {
   ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   [-1, 1].forEach(side => {
     ctx.strokeStyle = 'rgba(255,255,255,0.7)';
-    const poly = buildOffsetScreenPolyline(splinePts, side, edgeOffset);
+    const poly = _getOffsetPoly(splinePts, side, edgeOffset);
     _polyPath(ctx, poly);
     ctx.stroke();
   });
@@ -577,12 +653,10 @@ function drawTrackRoad() {
     let poly;
     const safe = _safeKerbGeo && _safeKerbGeo[side] && _safeKerbGeo[side].kerbOffsets;
     if (safe && kerbSpline.length >= 2 && safe.length === kerbSpline.length - 1) {
-      // Geo arrays cover indices 0..n-2 (the closing duplicate is dropped).
-      // Pad to kerbSpline.length so the closed loop wraps cleanly.
       const padded = safe.concat([safe[0]]);
-      poly = buildOffsetScreenPolylineVarying(kerbSpline, side, padded);
+      poly = _getOffsetPolyVarying(kerbSpline, side, padded);
     } else {
-      poly = buildOffsetScreenPolyline(splinePts, side, kerbDefault);
+      poly = _getOffsetPoly(splinePts, side, kerbDefault);
     }
     if (fastDraw) {
       // Quick single-stroke kerb hint while interacting.
@@ -922,19 +996,11 @@ function _buildNormalsForBarrier(pts, sideNum) {
 }
 
 function drawBarrierLines() {
-  let geo;
-  try { geo = _getBarrierGeo(); } catch(e) { console.error('barrier geo error', e); return; }
-  if (!geo) return;
+  const screenPolys = _getBarrierScreenPolys();
+  if (!screenPolys) return;
 
   [-1, 1].forEach(side => {
-    const { innerWorld, outerWorld } = geo[side];
-
-    const innerRaw = innerWorld.map(p => worldToScreen(p.x, p.y));
-    innerRaw.push(innerRaw[0]);
-    const outerRaw = outerWorld.map(p => worldToScreen(p.x, p.y));
-    outerRaw.push(outerRaw[0]);
-    const inner = _clipSelfIntersections(innerRaw);
-    const outer = _clipSelfIntersections(outerRaw);
+    const { inner, outer } = screenPolys[side];
 
     ctx.save();
     ctx.lineCap = 'round'; ctx.lineJoin = 'round';
@@ -952,7 +1018,7 @@ function drawBarrierLines() {
     ctx.strokeStyle = 'rgba(235,245,255,0.7)';
     _polyPath(ctx, outer); ctx.stroke();
 
-    // Inner barrier — smoothly squeezed on tight sections, no hard kinks
+    // Inner barrier
     ctx.lineWidth = Math.max(2, 2.0 * cam.zoom);
     ctx.strokeStyle = 'rgba(20,20,20,0.35)';
     _polyPath(ctx, inner); ctx.stroke();
