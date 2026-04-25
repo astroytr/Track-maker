@@ -193,7 +193,7 @@ function _clipSelfIntersectionsWorld(poly) {
     return null;
   }
   function bridge(pBefore, ix, iy, pAfter) {
-    const radius = 8.0;
+    const radius = 40.0;
     const r = Math.min(radius,
       Math.hypot(pBefore.x-ix, pBefore.y-iy)*0.48,
       Math.hypot(pAfter.x-ix,  pAfter.y-iy)*0.48);
@@ -1098,22 +1098,17 @@ function _getBarrierGeo() {
     }
   }
 
-  // Pre-compute miter-corrected kerb world points (same normals as barrier
-  // so the kerb apex is smooth and consistent with the inner barrier line).
+  // Pre-compute kerb world points using plain normal offset (NO miter).
+  // Kerbs are thin stripes and don't need miter correction. At a tight
+  // hairpin the bisector at an acute angle overshoots far outside the track,
+  // creating the large red spike visible in Image 2. Simple normal offset
+  // stays correctly placed and never spikes.
   const kerbWorldL = new Array(loopLen);
   const kerbWorldR = new Array(loopLen);
   for (let i = 0; i < loopLen; i++) {
-    const p     = splinePts[i].pt;
-    const iPrev = (i - 1 + loopLen) % loopLen;
-    if (i === 0 || i === loopLen - 1) {
-      kerbWorldL[i] = { x: p.x + normalsL[i].x * kerbL[i], y: p.y + normalsL[i].y * kerbL[i] };
-      kerbWorldR[i] = { x: p.x + normalsR[i].x * kerbR[i], y: p.y + normalsR[i].y * kerbR[i] };
-    } else {
-      const mkL = miterOff(normalsL[iPrev], normalsL[i], kerbL[i]);
-      const mkR = miterOff(normalsR[iPrev], normalsR[i], kerbR[i]);
-      kerbWorldL[i] = { x: p.x + mkL.dx, y: p.y + mkL.dy };
-      kerbWorldR[i] = { x: p.x + mkR.dx, y: p.y + mkR.dy };
-    }
+    const p = splinePts[i].pt;
+    kerbWorldL[i] = { x: p.x + normalsL[i].x * kerbL[i], y: p.y + normalsL[i].y * kerbL[i] };
+    kerbWorldR[i] = { x: p.x + normalsR[i].x * kerbR[i], y: p.y + normalsR[i].y * kerbR[i] };
   }
 
   const geo = {
