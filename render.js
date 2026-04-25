@@ -193,7 +193,6 @@ function _clipSelfIntersectionsWorld(poly) {
     return null;
   }
   function bridge(pBefore, ix, iy, pAfter) {
-    // Larger arc radius in world units for smooth hairpin apex rounding
     const radius = 8.0;
     const r = Math.min(radius,
       Math.hypot(pBefore.x-ix, pBefore.y-iy)*0.48,
@@ -581,8 +580,6 @@ function _clipSelfIntersections(poly) {
     return null;
   }
 
-  // Quadratic bezier arc bridging the cut. Backs off along each arm so the
-  // sharp corner becomes a smooth curve. Radius is in screen pixels.
   function roundedBridge(pBefore, ix, iy, pAfter) {
     const radius = Math.max(40, 60 * cam.zoom);
     const r = Math.min(radius,
@@ -784,9 +781,12 @@ function drawTrackRoad() {
   ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
   [-1, 1].forEach(side => {
     let poly;
-    const safe = _safeKerbGeo && _safeKerbGeo[side] && _safeKerbGeo[side].kerbOffsets;
-    if (safe && kerbSpline.length >= 2 && safe.length === kerbSpline.length - 1) {
-      const padded = safe.concat([safe[0]]);
+    const safe = _safeKerbGeo && _safeKerbGeo[side];
+    if (safe && safe.kerbWorld && safe.kerbWorld.length === kerbSpline.length - 1) {
+      // Use pre-computed miter-corrected world points — smooth through hairpin apex
+      poly = safe.kerbWorld.concat([safe.kerbWorld[0]]);
+    } else if (safe && safe.kerbOffsets && kerbSpline.length >= 2 && safe.kerbOffsets.length === kerbSpline.length - 1) {
+      const padded = safe.kerbOffsets.concat([safe.kerbOffsets[0]]);
       poly = _getWorldOffsetPolyVarying(kerbSpline, side, padded);
     } else {
       poly = _getWorldOffsetPoly(splinePts, side, kerbDefault);
@@ -1057,12 +1057,9 @@ function _getBarrierGeo() {
     };
   }
 
-  // Miter-bisector helper: given two consecutive normals and a desired offset,
-  // returns the miter-corrected displacement vector {x,y} so barrier points sit
-  // on a smooth arc through corners instead of forming a sharp spike/arrow.
-  // MITER_LIMIT caps the extension on very acute angles; MIN_CLAMP ensures the
-  // point never falls *inside* the plain offset (prevents concave dip).
-  function miterOffset(nPrev, nCurr, off) {
+  // Miter-bisector offset: blends adjacent normals into a smooth bisector so
+  // barrier/kerb points arc through corners instead of spiking.
+  function miterOff(nPrev, nCurr, off) {
     const MITER_LIMIT = 2.8;
     const mx = nPrev.x + nCurr.x, my = nPrev.y + nCurr.y;
     const mlen = Math.hypot(mx, my) || 1;
@@ -1070,40 +1067,58 @@ function _getBarrierGeo() {
     const sc = mxn * nCurr.x + myn * nCurr.y;
     if (sc < 0.1) return { dx: nCurr.x * off, dy: nCurr.y * off };
     let ml = off / Math.max(1e-4, sc);
-    if (ml < off)            ml = off;               // never concave
+    if (ml < off) ml = off;
     if (ml > off * MITER_LIMIT) ml = off * MITER_LIMIT;
     return { dx: mxn * ml, dy: myn * ml };
   }
 
   for (let i = 0; i < loopLen; i++) {
-    const p  = splinePts[i].pt;
-    const oL = offsetsFor(smoothL[i]);
-    const oR = offsetsFor(smoothR[i]);
-    kerbL[i] = oL.kerb; kerbR[i] = oR.kerb;
+    const p    = splinePts[i].pt;
+    const oL   = offsetsFor(smoothL[i]);
+    const oR   = offsetsFor(smoothR[i]);
+    kerbL[i]   = oL.kerb;
+    kerbR[i]   = oR.kerb;
 
-    // Use miter bisector for all barrier lines so adjacent normals blend
-    // smoothly at corners instead of creating a sharp spike/arrow.
     const iPrev = (i - 1 + loopLen) % loopLen;
-    const iNext = (i + 1) % loopLen;
 
-    // For start/end of the open arc use plain normal to avoid wrap artefacts.
-    function applyOffset(normals, idx, off) {
-      const p2 = splinePts[idx].pt;
-      if (idx === 0 || idx === loopLen - 1)
-        return { x: p2.x + normals[idx].x * off, y: p2.y + normals[idx].y * off };
-      const m = miterOffset(normals[iPrev], normals[idx], off);
-      return { x: p2.x + m.dx, y: p2.y + m.dy };
+    if (i === 0 || i === loopLen - 1) {
+      innerL[i] = { x: p.x + normalsL[i].x * oL.inner, y: p.y + normalsL[i].y * oL.inner };
+      innerR[i] = { x: p.x + normalsR[i].x * oR.inner, y: p.y + normalsR[i].y * oR.inner };
+      outerL[i] = { x: p.x + normalsL[i].x * oL.outer, y: p.y + normalsL[i].y * oL.outer };
+      outerR[i] = { x: p.x + normalsR[i].x * oR.outer, y: p.y + normalsR[i].y * oR.outer };
+    } else {
+      const mLi  = miterOff(normalsL[iPrev], normalsL[i], oL.inner);
+      const mLo  = miterOff(normalsL[iPrev], normalsL[i], oL.outer);
+      const mRi  = miterOff(normalsR[iPrev], normalsR[i], oR.inner);
+      const mRo  = miterOff(normalsR[iPrev], normalsR[i], oR.outer);
+      innerL[i] = { x: p.x + mLi.dx, y: p.y + mLi.dy };
+      outerL[i] = { x: p.x + mLo.dx, y: p.y + mLo.dy };
+      innerR[i] = { x: p.x + mRi.dx, y: p.y + mRi.dy };
+      outerR[i] = { x: p.x + mRo.dx, y: p.y + mRo.dy };
     }
+  }
 
-    innerL[i] = applyOffset(normalsL, i, oL.inner);
-    innerR[i] = applyOffset(normalsR, i, oR.inner);
-    outerL[i] = applyOffset(normalsL, i, oL.outer);
-    outerR[i] = applyOffset(normalsR, i, oR.outer);
+  // Pre-compute miter-corrected kerb world points (same normals as barrier
+  // so the kerb apex is smooth and consistent with the inner barrier line).
+  const kerbWorldL = new Array(loopLen);
+  const kerbWorldR = new Array(loopLen);
+  for (let i = 0; i < loopLen; i++) {
+    const p     = splinePts[i].pt;
+    const iPrev = (i - 1 + loopLen) % loopLen;
+    if (i === 0 || i === loopLen - 1) {
+      kerbWorldL[i] = { x: p.x + normalsL[i].x * kerbL[i], y: p.y + normalsL[i].y * kerbL[i] };
+      kerbWorldR[i] = { x: p.x + normalsR[i].x * kerbR[i], y: p.y + normalsR[i].y * kerbR[i] };
+    } else {
+      const mkL = miterOff(normalsL[iPrev], normalsL[i], kerbL[i]);
+      const mkR = miterOff(normalsR[iPrev], normalsR[i], kerbR[i]);
+      kerbWorldL[i] = { x: p.x + mkL.dx, y: p.y + mkL.dy };
+      kerbWorldR[i] = { x: p.x + mkR.dx, y: p.y + mkR.dy };
+    }
   }
 
   const geo = {
-    '-1': { innerWorld: innerL, outerWorld: outerL, kerbOffsets: Array.from(kerbL) },
-     '1': { innerWorld: innerR, outerWorld: outerR, kerbOffsets: Array.from(kerbR) }
+    '-1': { innerWorld: innerL, outerWorld: outerL, kerbOffsets: Array.from(kerbL), kerbWorld: kerbWorldL },
+     '1': { innerWorld: innerR, outerWorld: outerR, kerbOffsets: Array.from(kerbR), kerbWorld: kerbWorldR }
   };
   _cachedBarrierWorldGeo = geo;
   return geo;
