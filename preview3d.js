@@ -103,9 +103,10 @@ function open3DPreview() {
   if (typeof THREE === 'undefined') { showToast('3D engine still loading — try again in a moment'); return; }
   preview3dActive = true;
   document.getElementById('preview3d-overlay').style.display = 'flex';
-  document.getElementById('btn-3d-toggle').classList.add('active-3d');
-  document.getElementById('btn-3d-toggle').textContent = '← 2D View';
-  document.getElementById('tool-hud').textContent = '3D Preview  ·  Left stick = look  ·  Right stick = move  ·  Q = exit';
+  const btn = document.getElementById('btn-3d-toggle');
+  if (btn) { btn.classList.add('active-3d'); btn.textContent = '← 2D View'; }
+  const hud = document.getElementById('tool-hud');
+  if (hud) hud.textContent = '3D Preview  ·  Left stick = look  ·  Right stick = move  ·  Q = exit';
   build3DScene();
 }
 
