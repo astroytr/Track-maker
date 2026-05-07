@@ -860,130 +860,178 @@ function build3DScene() {
     return s > 0 ? safeR[i] : safeL[i];
   }
 
+  // ── Pull render.js barrier geometry (the exact same polys as 2D view) ──
+  // _getBarrierGeo() returns world-space {x,y}[] arrays for inner/outer/kerb
+  // on both sides, built with the winding-aware miter-bisector pipeline.
+  // We convert y→z to get 3D world coords and use these as the ground truth
+  // for ALL barrier/surface placement — no separate recomputation needed.
+  const _rGeo = (typeof _getBarrierGeo === 'function') ? _getBarrierGeo() : null;
+
+  // Convert render.js 2D world poly {x,y}[] to 3D {x,z}[], recentred to
+  // match p3dGetScaledData()'s (cx,cy) offset.
+  function r2d3(poly2d) {
+    if (!poly2d) return null;
+    return poly2d.map(p => ({ x: p.x - cx, z: p.y - cy }));
+  }
+
+  // Per-side render.js polys in 3D coords (null-safe fallback to null)
+  const rInnerL = _rGeo ? r2d3(_rGeo['-1'].innerWorld) : null;
+  const rOuterL = _rGeo ? r2d3(_rGeo['-1'].outerWorld) : null;
+  const rKerbL  = _rGeo ? r2d3(_rGeo['-1'].kerbWorld)  : null;
+  const rInnerR = _rGeo ? r2d3(_rGeo['1'].innerWorld)  : null;
+  const rOuterR = _rGeo ? r2d3(_rGeo['1'].outerWorld)  : null;
+  const rKerbR  = _rGeo ? r2d3(_rGeo['1'].kerbWorld)   : null;
+
+  // Helper: build a flat ribbon mesh between two same-length world-poly arrays.
+  // ptsA and ptsB are {x,z}[] arrays of equal length — ribbon fills between them.
+  function p3dRibbonFromPolys(ptsA, ptsB, yBase) {
+    if (!ptsA || !ptsB || ptsA.length < 2) return null;
+    const n = Math.min(ptsA.length, ptsB.length);
+    const pos = [], idx = [];
+    for (let i = 0; i < n; i++) {
+      pos.push(ptsA[i].x, yBase, ptsA[i].z,  ptsB[i].x, yBase, ptsB[i].z);
+    }
+    for (let i = 0; i < n - 1; i++) {
+      const b = i * 2;
+      idx.push(b, b+1, b+2,  b+1, b+3, b+2);
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx); geo.computeVertexNormals();
+    return geo;
+  }
+
+  // Helper: build a wall mesh (vertical extrusion) from a {x,z}[] polyline.
+  // Produces a ribbon standing vertically: bottom=yBase, top=yBase+height.
+  function p3dWallFromPoly(pts3, yBase, height) {
+    if (!pts3 || pts3.length < 2) return null;
+    const n = pts3.length;
+    const pos = [], idx = [];
+    for (let i = 0; i < n; i++) {
+      pos.push(pts3[i].x, yBase,        pts3[i].z,
+               pts3[i].x, yBase+height, pts3[i].z);
+    }
+    for (let i = 0; i < n - 1; i++) {
+      const b = i * 2;
+      idx.push(b, b+2, b+1,  b+1, b+2, b+3);  // front face
+      idx.push(b, b+1, b+2,  b+1, b+3, b+2);  // back face (DoubleSide mat handles this, but explicit = no Z-fight)
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx); geo.computeVertexNormals();
+    return geo;
+  }
+
+  // Helper: per-point tangent direction for a {x,z}[] poly (for instanced asset rotation)
+  function p3dPolyTangent(pts3, i) {
+    const n = pts3.length;
+    const prev = pts3[Math.max(0, i-1)], next = pts3[Math.min(n-1, i+1)];
+    const dx = next.x - prev.x, dz = next.z - prev.z;
+    return Math.atan2(dx, dz);
+  }
+
   // Asphalt road surface
   preview3dScene.add(new THREE.Mesh(
     p3dRibbon(spPts, -TH, TH, P3D_ROAD_Y),
     new THREE.MeshLambertMaterial({ color: 0x333338, ...dblSide })
   ));
 
-  // Flat kerb — alternating red/white, exactly render.js width (7.0→8.1u)
-  // Kerb uses plain normal offset like render.js (no miter to avoid hairpin spike)
-  {
-    const KERB_INNER = TH;           // 7.0u — road edge
-    const KERB_OUTER_IDEAL = 8.1;   // matches render.js SURFACE_LANES.flat_kerb.outer
-    const KERB_MIN   = TH + 0.1;
-    const spl = spPts.length;
-    // Build per-point safe kerb outer using the same clamp as render.js
-    // kerbOff = clamp(safeCap, KERB_MIN, KERB_OUTER_IDEAL)
+  // ── Kerb band — from road edge (kerbWorld) to inner barrier (innerWorld) ──
+  // Uses render.js exact kerbWorld/innerWorld polys so it matches 2D precisely.
+  // Falls back to fixed-offset ribbon if render.js geo unavailable.
+  if (rKerbL && rInnerL && rKerbR && rInnerR) {
+    // Kerb = road edge → kerbWorld (alternating red/white)
+    // We build a simple coloured ribbon here; full alternating is handled via
+    // the spline-based p3dKerbRibbon below using kerbWorld as the inner edge.
+    const kerbMatR = new THREE.MeshLambertMaterial({ color: 0xe8392a, side: THREE.DoubleSide });
+    const kerbMatW = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide });
+
+    // Build alternating kerb segments along each side
+    [[rKerbL, rInnerL], [rKerbR, rInnerR]].forEach(([kPts, iPts]) => {
+      const n = Math.min(kPts.length, iPts.length);
+      const SEG = 6; // points per colour block
+      for (let s = 0; s < n - 1; s += SEG) {
+        const end = Math.min(s + SEG, n - 1);
+        const pos = [], idx = [];
+        for (let i = s; i <= end; i++) {
+          pos.push(kPts[i].x, P3D_ROAD_Y + 0.04, kPts[i].z,
+                   iPts[i].x, P3D_ROAD_Y + 0.04, iPts[i].z);
+        }
+        const cnt = end - s + 1;
+        for (let i = 0; i < cnt - 1; i++) {
+          const b = i * 2;
+          idx.push(b, b+1, b+2,  b+1, b+3, b+2);
+        }
+        const geo = new THREE.BufferGeometry();
+        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+        geo.setIndex(idx); geo.computeVertexNormals();
+        const blockIdx = Math.floor(s / SEG);
+        preview3dScene.add(new THREE.Mesh(geo, blockIdx % 2 === 0 ? kerbMatR : kerbMatW));
+      }
+    });
+
+    // Grass — innerWorld → outerWorld on each side (the full runoff zone)
+    const grassMat = new THREE.MeshLambertMaterial({ color: 0x2d5a1b, side: THREE.DoubleSide });
+    const geoGL = p3dRibbonFromPolys(rInnerL, rOuterL, 0.001);
+    const geoGR = p3dRibbonFromPolys(rInnerR, rOuterR, 0.001);
+    if (geoGL) preview3dScene.add(new THREE.Mesh(geoGL, grassMat));
+    if (geoGR) preview3dScene.add(new THREE.Mesh(geoGR, grassMat));
+
+  } else {
+    // Fallback: fixed-offset kerb + grass if render.js geo not available
     for (const s of [1, -1]) {
-      const kPts = spPts.map((p, i) => {
-        const cap = getSafeCap(i, s);
-        const ko = Math.max(KERB_MIN, Math.min(KERB_OUTER_IDEAL, cap));
-        const nm = s > 0 ? (safeNormR ? safeNormR[i] : { px:0, pz:0 })
-                         : (safeNormL ? safeNormL[i] : { px:0, pz:0 });
-        return p; // we pass spPts as-is and let p3dKerbRibbon use normals internally
-      });
-      const [gA, gB] = p3dKerbRibbon(spPts, KERB_INNER * s, KERB_OUTER_IDEAL * s, P3D_ROAD_Y + 0.05, 6);
+      const [gA, gB] = p3dKerbRibbon(spPts, TH * s, 8.1 * s, P3D_ROAD_Y + 0.05, 6);
       preview3dScene.add(new THREE.Mesh(gA, new THREE.MeshLambertMaterial({ color: 0xe8392a, ...dblSide })));
       preview3dScene.add(new THREE.Mesh(gB, new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })));
     }
-  }
-
-  // Full-track grass band — inner=8.1u, outer clamped per-point to safe cap
-  // (matches render.js drawPermanentGrassBand inner=8.1, outer=26u)
-  {
     const grassMat = new THREE.MeshLambertMaterial({ color: 0x2d5a1b, side: THREE.DoubleSide });
-    const GRASS_INNER = 8.1, GRASS_OUTER_IDEAL = 26.0, GRASS_FLOOR = 8.2;
-    for (const s of [1, -1]) {
-      // Build a varying-offset ribbon: each ring-pair uses per-point safe outer
-      const spl = spPts.length;
-      const pos = [], idx = [];
-      const nms = s > 0 ? safeNormR : safeNormL;
-      for (let i = 0; i < spl; i++) {
-        const i1 = (i + 1) % spl;
-        const cap0 = getSafeCap(i,  s), cap1 = getSafeCap(i1, s);
-        const go0 = Math.max(GRASS_FLOOR, Math.min(GRASS_OUTER_IDEAL, cap0));
-        const go1 = Math.max(GRASS_FLOOR, Math.min(GRASS_OUTER_IDEAL, cap1));
-        const nm0 = nms ? nms[i]  : { px: 0, pz: 0 };
-        const nm1 = nms ? nms[i1] : { px: 0, pz: 0 };
-        const p0 = spPts[i], p1 = spPts[i1];
-        const b = pos.length / 3;
-        pos.push(
-          p0.x + nm0.px * GRASS_INNER * s, 0.001, p0.z + nm0.pz * GRASS_INNER * s,
-          p0.x + nm0.px * go0          * s, 0.001, p0.z + nm0.pz * go0          * s,
-          p1.x + nm1.px * GRASS_INNER * s, 0.001, p1.z + nm1.pz * GRASS_INNER * s,
-          p1.x + nm1.px * go1          * s, 0.001, p1.z + nm1.pz * go1          * s
-        );
-        idx.push(b, b+1, b+2, b+1, b+3, b+2);
-      }
-      const geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      geo.setIndex(idx); geo.computeVertexNormals();
-      preview3dScene.add(new THREE.Mesh(geo, grassMat));
-    }
+    preview3dScene.add(new THREE.Mesh(p3dRibbon(spPts, 8.1, 26.0, 0.001), grassMat));
+    preview3dScene.add(new THREE.Mesh(p3dRibbon(spPts, -26.0, -8.1, 0.001), grassMat));
   }
 
-  // Full-track armco perimeter — placed at per-point safe outer offset
-  // (render.js BARRIER_OUTER ideal=26u, floors at TRACK_HALF_WIDTH+0.5)
+  // ── Perimeter armco wall — extruded from render.js outerWorld polys ──
+  // This is the primary barrier shape: matches 2D exactly.
+  // Rail: two W-beam ribbons at the outerWorld line. Posts instanced along it.
   {
-    const ARMCO_IDEAL = 26.0, ARMCO_FLOOR = TH + 0.5;
+    const armcoRailMat = new THREE.MeshLambertMaterial({ color: 0xd4dce6, side: THREE.DoubleSide });
+    const armcoDarkMat = new THREE.MeshLambertMaterial({ color: 0x9aaabb, side: THREE.DoubleSide });
     const armcoPostMat = new THREE.MeshLambertMaterial({ color: 0x778088, side: THREE.DoubleSide });
-    const postGeo = new THREE.BoxGeometry(0.08, 0.82, 0.08);
-    const dummy = new THREE.Object3D();
-    const spl = spPts.length;
-    for (const s of [1, -1]) {
-      const nms = s > 0 ? safeNormR : safeNormL;
-      // Build per-point safe armco positions and a ribbon at those offsets
-      const pos = [], idx2 = [];
-      for (let i = 0; i < spl; i++) {
-        const i1 = (i + 1) % spl;
-        const off0 = Math.max(ARMCO_FLOOR, Math.min(ARMCO_IDEAL, getSafeCap(i,  s)));
-        const off1 = Math.max(ARMCO_FLOOR, Math.min(ARMCO_IDEAL, getSafeCap(i1, s)));
-        const nm0 = nms ? nms[i]  : { px:0, pz:0 };
-        const nm1 = nms ? nms[i1] : { px:0, pz:0 };
-        const p0 = spPts[i], p1 = spPts[i1];
-        // Two rail heights per armco post
-        for (const yb of [0.06, 0.44]) {
-          const b = pos.length / 3;
-          pos.push(
-            p0.x + nm0.px*off0*s, yb,        p0.z + nm0.pz*off0*s,
-            p0.x + nm0.px*off0*s, yb + 0.28, p0.z + nm0.pz*off0*s,
-            p1.x + nm1.px*off1*s, yb,        p1.z + nm1.pz*off1*s,
-            p1.x + nm1.px*off1*s, yb + 0.28, p1.z + nm1.pz*off1*s
-          );
-          idx2.push(b, b+1, b+2, b+1, b+3, b+2);
-        }
-      }
-      for (const col of [0xd4dce6, 0x9aaabb]) {
-        const mat = new THREE.MeshLambertMaterial({ color: col, side: THREE.DoubleSide });
-        const geo = new THREE.BufferGeometry();
-        geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-        geo.setIndex(idx2); geo.computeVertexNormals();
-        preview3dScene.add(new THREE.Mesh(geo, mat));
-        break; // one ribbon with blended colour is fine; just use first
-      }
-      const railMat = new THREE.MeshLambertMaterial({ color: 0xd4dce6, side: THREE.DoubleSide });
-      const railGeo = new THREE.BufferGeometry();
-      railGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-      railGeo.setIndex(idx2); railGeo.computeVertexNormals();
-      preview3dScene.add(new THREE.Mesh(railGeo, railMat));
+    const postGeo3 = new THREE.BoxGeometry(0.08, 0.82, 0.08);
+    const dummy3 = new THREE.Object3D();
 
-      // Instanced posts every 3 spline points
-      const postCount = Math.ceil(spl / 3) + 1;
-      const postMesh  = new THREE.InstancedMesh(postGeo, armcoPostMat, postCount);
+    [[rOuterL, rInnerL], [rOuterR, rInnerR]].forEach(([oPts, iPts]) => {
+      const wallPts = oPts || null;
+      if (!wallPts || wallPts.length < 2) {
+        // Fallback: use spPts + safe offset
+        return;
+      }
+      const n = wallPts.length;
+
+      // Two W-beam rails as vertical wall ribbons at outerWorld line
+      for (const [yb, mat] of [[0.06, armcoRailMat], [0.44, armcoDarkMat]]) {
+        const wallGeo = p3dWallFromPoly(wallPts, yb, 0.28);
+        if (wallGeo) preview3dScene.add(new THREE.Mesh(wallGeo, mat));
+        // Thin highlight strip
+        const hiGeo = p3dWallFromPoly(wallPts, yb + 0.10, 0.08);
+        if (hiGeo) preview3dScene.add(new THREE.Mesh(hiGeo, armcoRailMat));
+      }
+
+      // Instanced posts every 3 points along outerWorld poly
+      const step = 3;
+      const postCount = Math.ceil(n / step) + 1;
+      const postMesh = new THREE.InstancedMesh(postGeo3, armcoPostMat, postCount);
       let pi = 0;
-      for (let i = 0; i < spl; i += 3) {
-        const off = Math.max(ARMCO_FLOOR, Math.min(ARMCO_IDEAL, getSafeCap(i, s)));
-        const nm  = nms ? nms[i] : { px: 0, pz: 0 };
-        const p   = spPts[i];
-        dummy.position.set(p.x + nm.px * off * s, P3D_ROAD_Y + 0.41, p.z + nm.pz * off * s);
-        dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
-        dummy.updateMatrix();
-        postMesh.setMatrixAt(pi++, dummy.matrix);
+      for (let i = 0; i < n; i += step) {
+        const p = wallPts[i];
+        const ang = p3dPolyTangent(wallPts, i);
+        dummy3.position.set(p.x, P3D_ROAD_Y + 0.41, p.z);
+        dummy3.rotation.set(0, ang, 0);
+        dummy3.updateMatrix();
+        postMesh.setMatrixAt(pi++, dummy3.matrix);
       }
       postMesh.count = pi; postMesh.instanceMatrix.needsUpdate = true;
       preview3dScene.add(postMesh);
-    }
+    });
   }
 
   // White edge lines (render.js: offset = TRACK_HALF_WIDTH - 0.4)
@@ -1212,74 +1260,39 @@ function build3DScene() {
     const dummy      = new THREE.Object3D();
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 1. PERIMETER ARMCO — both sides, full track
-    //    Offset clamped per-point by safeL/safeR so barriers
-    //    on tight back-to-back sections squeeze inward and
-    //    never cross into the opposing section's space.
-    //    Ideal = BARRIER_OUTER (26u), floor = TH+0.5.
+    // 1. INNER BARRIER RAIL — both sides, full track
+    //    Uses render.js innerWorld poly directly (same as
+    //    the silver inner line visible in 2D view).
+    //    Outer perimeter armco is already built above from
+    //    outerWorld — this adds the inner rail only.
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
-      const ARMCO_IDEAL = 26.0, ARMCO_FLOOR = TH + 0.5;
-      const postGeo = new THREE.BoxGeometry(0.08, 0.82, 0.08);
-      for (const s of [1, -1]) {
-        // Build a per-point position array for the rail ribbon
-        const railPos = [], railIdx = [];
-        for (let i = 0; i < spl; i++) {
-          const i1 = (i + 1) % spl;
-          const off0 = p3dSafeOff(ARMCO_IDEAL, getSafeCap(i,  s), ARMCO_FLOOR);
-          const off1 = p3dSafeOff(ARMCO_IDEAL, getSafeCap(i1, s), ARMCO_FLOOR);
-          const nm0 = autoNormals[i], nm1 = autoNormals[i1];
-          const p0 = spPts[i], p1 = spPts[i1];
-          for (const yb of [0.06, 0.44]) {
-            const b = railPos.length / 3;
-            railPos.push(
-              p0.x + nm0.px*off0*s, yb,        p0.z + nm0.pz*off0*s,
-              p0.x + nm0.px*off0*s, yb + 0.28, p0.z + nm0.pz*off0*s,
-              p1.x + nm1.px*off1*s, yb,        p1.z + nm1.pz*off1*s,
-              p1.x + nm1.px*off1*s, yb + 0.28, p1.z + nm1.pz*off1*s
-            );
-            railIdx.push(b, b+1, b+2, b+1, b+3, b+2);
-          }
+      [[rInnerL], [rInnerR]].forEach(([iPts]) => {
+        if (!iPts || iPts.length < 2) return;
+        for (const [yb, mat] of [[0.06, armRailMat], [0.38, armPostMat]]) {
+          const wallGeo = p3dWallFromPoly(iPts, yb, 0.22);
+          if (wallGeo) preview3dScene.add(new THREE.Mesh(wallGeo, mat));
         }
-        const railGeo = new THREE.BufferGeometry();
-        railGeo.setAttribute('position', new THREE.Float32BufferAttribute(railPos, 3));
-        railGeo.setIndex(railIdx); railGeo.computeVertexNormals();
-        preview3dScene.add(new THREE.Mesh(railGeo,
-          new THREE.MeshLambertMaterial({ color: 0xd4dce6, side: THREE.DoubleSide })));
-
-        // Instanced posts — each placed at its own per-point safe offset
-        const postCount = Math.ceil(spl / 3) + 1;
-        const postMesh  = new THREE.InstancedMesh(postGeo, armPostMat, postCount);
-        let pi = 0;
-        for (let i = 0; i < spl; i += 3) {
-          const off = p3dSafeOff(ARMCO_IDEAL, getSafeCap(i, s), ARMCO_FLOOR);
-          const nm  = autoNormals[i], p = spPts[i];
-          dummy.position.set(p.x + nm.px*off*s, P3D_ROAD_Y + 0.41, p.z + nm.pz*off*s);
-          dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
-          dummy.updateMatrix();
-          postMesh.setMatrixAt(pi++, dummy.matrix);
-        }
-        postMesh.count = pi; postMesh.instanceMatrix.needsUpdate = true;
-        preview3dScene.add(postMesh);
-      }
+      });
     }
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-    // 2. STRAIGHTS — TecPro in front of armco
-    //    Ideal at render.js tecpro.inner (24.9u), clamped per-point.
+    // 2. STRAIGHTS — TecPro in front of outer armco
+    //    Positioned at render.js outerWorld (the barrier
+    //    line), offset slightly inward by 1.5u.
     //    Two rows stacked (double-stack = 1.8m real).
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
       const straightRuns = collectRuns(i => !inCorner[i]);
       const BH = 0.90;
-      const TECPRO_IDEAL = P3D_SURFACE_LANES.tecpro.inner; // 24.9u
-      const TECPRO_FLOOR = TH + 0.5;
       const blockGeo  = new THREE.BoxGeometry(1.0, BH, 1.0);
       const stripeGeo = new THREE.BoxGeometry(1.02, 0.09, 1.02);
       straightRuns.forEach(run => {
         const pts = runPts(run);
         if (pts.length < 2) return;
         for (const s of [1, -1]) {
+          // Sample from render.js outerWorld at the run's spline indices
+          const oPts = s > 0 ? rOuterR : rOuterL;
           const step = 3, count = Math.ceil(pts.length / step) + 1;
           for (const [yOff, geo, mat] of [
             [P3D_ROAD_Y + BH*0.5, blockGeo,  tecBlueMat],
@@ -1292,10 +1305,22 @@ function build3DScene() {
             for (let j = 0; j < pts.length; j += step) {
               const splI = (run.from + j) % spl;
               if (p3dIsHairpin(autoNormals, splI)) continue;
-              const off = p3dSafeOff(TECPRO_IDEAL, getSafeCap(splI, s), TECPRO_FLOOR) * s;
-              const p = pts[j], nm = runNormal(run, j);
-              dummy.position.set(p.x + nm.px*off, yOff, p.z + nm.pz*off);
-              dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
+              // Use outerWorld point if available, else fall back to safe offset
+              let px, pz;
+              if (oPts && splI < oPts.length) {
+                // Step 1.5u inward from outerWorld toward centreline
+                const oP = oPts[splI];
+                const nm = autoNormals[splI];
+                px = oP.x - nm.px * 1.5 * s;
+                pz = oP.z - nm.pz * 1.5 * s;
+              } else {
+                const off = p3dSafeOff(P3D_SURFACE_LANES.tecpro.inner, getSafeCap(splI, s), TH + 0.5) * s;
+                const p = pts[j], nm = runNormal(run, j);
+                px = p.x + nm.px * off;
+                pz = p.z + nm.pz * off;
+              }
+              dummy.position.set(px, yOff, pz);
+              dummy.rotation.set(0, Math.atan2(autoNormals[splI].px, autoNormals[splI].pz), 0);
               dummy.updateMatrix();
               mesh.setMatrixAt(idx++, dummy.matrix);
             }
@@ -1308,49 +1333,72 @@ function build3DScene() {
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 3. HIGH-SPEED CORNERS — gravel runoff + TecPro
-    //    Gravel: 9.2u → safe outer (ideal 23u, clamped).
-    //    TecPro at render.js tecpro.inner (24.9u, clamped).
+    //    Gravel: innerWorld → outerWorld on outside of corner.
+    //    TecPro: just inside outerWorld.
     //    Only on OUTSIDE of corner (dominantSign side).
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
       const fastCornerRuns = collectRuns(i => inCorner[i] && !isSlow[i] && !userRunoffPts.has(i));
-      const GRAVEL_IDEAL = P3D_SURFACE_LANES.gravel.outer; // 23.0u
-      const GRAVEL_FLOOR = P3D_SURFACE_LANES.gravel.inner; // 9.2u
-      const TECPRO_IDEAL = P3D_SURFACE_LANES.tecpro.inner; // 24.9u
-      const TECPRO_FLOOR = TH + 0.5;
       const BH = 0.90;
       const blockGeo  = new THREE.BoxGeometry(1.0, BH, 1.0);
       const stripeGeo = new THREE.BoxGeometry(1.02, 0.09, 1.02);
       fastCornerRuns.forEach(run => {
         const pts = runPts(run);
         if (pts.length < 2) return;
-        const ds = dominantSign(run);
-        // Per-point gravel ribbon clamped to safe cap
-        const gPos = [], gIdx = [];
-        for (let j = 0; j < pts.length - 1; j++) {
-          const splI  = (run.from + j)     % spl;
-          const splI1 = (run.from + j + 1) % spl;
-          const gO0 = p3dSafeOff(GRAVEL_IDEAL, getSafeCap(splI,  ds), GRAVEL_FLOOR) * ds;
-          const gO1 = p3dSafeOff(GRAVEL_IDEAL, getSafeCap(splI1, ds), GRAVEL_FLOOR) * ds;
-          const gI  = GRAVEL_FLOOR * ds;
-          const nm0 = runNormal(run, j), nm1 = runNormal(run, j + 1);
-          const p0 = pts[j], p1 = pts[j + 1];
-          const b = gPos.length / 3;
-          gPos.push(
-            p0.x + nm0.px*gI,  P3D_ROAD_Y + 0.001, p0.z + nm0.pz*gI,
-            p0.x + nm0.px*gO0, P3D_ROAD_Y + 0.001, p0.z + nm0.pz*gO0,
-            p1.x + nm1.px*gI,  P3D_ROAD_Y + 0.001, p1.z + nm1.pz*gI,
-            p1.x + nm1.px*gO1, P3D_ROAD_Y + 0.001, p1.z + nm1.pz*gO1
-          );
-          gIdx.push(b, b+1, b+2, b+1, b+3, b+2);
+        const ds = dominantSign(run); // +1=left corner, outside=right
+        const oPts = ds > 0 ? rOuterR : rOuterL;
+        const iPts = ds > 0 ? rInnerR : rInnerL;
+
+        // Gravel ribbon: innerWorld → outerWorld for this run's spline indices
+        if (iPts && oPts) {
+          const gPos = [], gIdx = [];
+          for (let j = 0; j < pts.length - 1; j++) {
+            const splI  = (run.from + j)     % spl;
+            const splI1 = (run.from + j + 1) % spl;
+            if (splI >= iPts.length || splI1 >= iPts.length) continue;
+            const b = gPos.length / 3;
+            gPos.push(
+              iPts[splI].x,  P3D_ROAD_Y + 0.001, iPts[splI].z,
+              oPts[splI].x,  P3D_ROAD_Y + 0.001, oPts[splI].z,
+              iPts[splI1].x, P3D_ROAD_Y + 0.001, iPts[splI1].z,
+              oPts[splI1].x, P3D_ROAD_Y + 0.001, oPts[splI1].z
+            );
+            gIdx.push(b, b+1, b+2, b+1, b+3, b+2);
+          }
+          if (gPos.length) {
+            const gg = new THREE.BufferGeometry();
+            gg.setAttribute('position', new THREE.Float32BufferAttribute(gPos, 3));
+            gg.setIndex(gIdx); gg.computeVertexNormals();
+            preview3dScene.add(new THREE.Mesh(gg, gravelMat));
+          }
+        } else {
+          // Fallback
+          const GRAVEL_IDEAL = P3D_SURFACE_LANES.gravel.outer;
+          const GRAVEL_FLOOR = P3D_SURFACE_LANES.gravel.inner;
+          const gPos = [], gIdx = [];
+          for (let j = 0; j < pts.length - 1; j++) {
+            const splI  = (run.from + j) % spl, splI1 = (run.from + j + 1) % spl;
+            const gO0 = p3dSafeOff(GRAVEL_IDEAL, getSafeCap(splI,  ds), GRAVEL_FLOOR) * ds;
+            const gO1 = p3dSafeOff(GRAVEL_IDEAL, getSafeCap(splI1, ds), GRAVEL_FLOOR) * ds;
+            const gI = GRAVEL_FLOOR * ds;
+            const nm0 = runNormal(run, j), nm1 = runNormal(run, j + 1);
+            const p0 = pts[j], p1 = pts[j + 1];
+            const b = gPos.length / 3;
+            gPos.push(p0.x+nm0.px*gI, P3D_ROAD_Y+0.001, p0.z+nm0.pz*gI,
+                      p0.x+nm0.px*gO0,P3D_ROAD_Y+0.001, p0.z+nm0.pz*gO0,
+                      p1.x+nm1.px*gI, P3D_ROAD_Y+0.001, p1.z+nm1.pz*gI,
+                      p1.x+nm1.px*gO1,P3D_ROAD_Y+0.001, p1.z+nm1.pz*gO1);
+            gIdx.push(b, b+1, b+2, b+1, b+3, b+2);
+          }
+          if (gPos.length) {
+            const gg = new THREE.BufferGeometry();
+            gg.setAttribute('position', new THREE.Float32BufferAttribute(gPos, 3));
+            gg.setIndex(gIdx); gg.computeVertexNormals();
+            preview3dScene.add(new THREE.Mesh(gg, gravelMat));
+          }
         }
-        if (gPos.length) {
-          const gg = new THREE.BufferGeometry();
-          gg.setAttribute('position', new THREE.Float32BufferAttribute(gPos, 3));
-          gg.setIndex(gIdx); gg.computeVertexNormals();
-          preview3dScene.add(new THREE.Mesh(gg, gravelMat));
-        }
-        // TecPro — single row, per-point safe offset
+
+        // TecPro — just inside outerWorld
         const step = 3, count = Math.ceil(pts.length / step) + 1;
         for (const [yOff, geo, mat] of [
           [P3D_ROAD_Y + BH*0.5, blockGeo,  tecBlueMat],
@@ -1361,10 +1409,19 @@ function build3DScene() {
           for (let j = 0; j < pts.length; j += step) {
             const splI = (run.from + j) % spl;
             if (p3dIsHairpin(autoNormals, splI)) continue;
-            const off = p3dSafeOff(TECPRO_IDEAL, getSafeCap(splI, ds), TECPRO_FLOOR) * ds;
-            const p = pts[j], nm = runNormal(run, j);
-            dummy.position.set(p.x + nm.px*off, yOff, p.z + nm.pz*off);
-            dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
+            let px, pz;
+            if (oPts && splI < oPts.length) {
+              const oP = oPts[splI];
+              const nm = autoNormals[splI];
+              px = oP.x - nm.px * 1.5 * ds;
+              pz = oP.z - nm.pz * 1.5 * ds;
+            } else {
+              const off = p3dSafeOff(P3D_SURFACE_LANES.tecpro.inner, getSafeCap(splI, ds), TH + 0.5) * ds;
+              const p = pts[j], nm = runNormal(run, j);
+              px = p.x + nm.px * off; pz = p.z + nm.pz * off;
+            }
+            dummy.position.set(px, yOff, pz);
+            dummy.rotation.set(0, Math.atan2(autoNormals[splI].px, autoNormals[splI].pz), 0);
             dummy.updateMatrix();
             mesh.setMatrixAt(idx++, dummy.matrix);
           }
@@ -1376,16 +1433,12 @@ function build3DScene() {
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 4. SLOW/TIGHT CORNERS — sand runoff + tyre wall
-    //    Sand: 9.2u → safe outer (ideal 23u, clamped).
-    //    Tyre wall at tyrewall.inner (23u, clamped).
-    //    Inside of slow corner: sausage kerb at TH+0.6.
+    //    Sand: innerWorld → outerWorld on outside of corner.
+    //    Tyre wall: just inside outerWorld.
+    //    Inside of slow corner: sausage kerb at kerbWorld.
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
       const slowCornerRuns = collectRuns(i => isSlow[i] && !userRunoffPts.has(i));
-      const SAND_IDEAL  = P3D_SURFACE_LANES.sand.outer;     // 23.0u
-      const SAND_FLOOR  = P3D_SURFACE_LANES.sand.inner;     // 9.2u
-      const TYR_IDEAL   = P3D_SURFACE_LANES.tyrewall.inner; // 23.0u
-      const TYR_FLOOR   = TH + 0.5;
       const tyrGeo = new THREE.CylinderGeometry(0.46, 0.46, 0.48, 10, 1);
       const swGeo  = new THREE.CylinderGeometry(0.47, 0.47, 0.05, 10, 1);
 
@@ -1393,32 +1446,58 @@ function build3DScene() {
         const pts = runPts(run);
         if (pts.length < 2) return;
         const ds = dominantSign(run);
-        // Per-point sand ribbon clamped to safe cap
-        const sPos = [], sIdx = [];
-        for (let j = 0; j < pts.length - 1; j++) {
-          const splI  = (run.from + j)     % spl;
-          const splI1 = (run.from + j + 1) % spl;
-          const sO0 = p3dSafeOff(SAND_IDEAL, getSafeCap(splI,  ds), SAND_FLOOR) * ds;
-          const sO1 = p3dSafeOff(SAND_IDEAL, getSafeCap(splI1, ds), SAND_FLOOR) * ds;
-          const sI  = SAND_FLOOR * ds;
-          const nm0 = runNormal(run, j), nm1 = runNormal(run, j + 1);
-          const p0 = pts[j], p1 = pts[j + 1];
-          const b = sPos.length / 3;
-          sPos.push(
-            p0.x + nm0.px*sI,  P3D_ROAD_Y + 0.01, p0.z + nm0.pz*sI,
-            p0.x + nm0.px*sO0, P3D_ROAD_Y + 0.01, p0.z + nm0.pz*sO0,
-            p1.x + nm1.px*sI,  P3D_ROAD_Y + 0.01, p1.z + nm1.pz*sI,
-            p1.x + nm1.px*sO1, P3D_ROAD_Y + 0.01, p1.z + nm1.pz*sO1
-          );
-          sIdx.push(b, b+1, b+2, b+1, b+3, b+2);
+        const oPts = ds > 0 ? rOuterR : rOuterL;
+        const iPts = ds > 0 ? rInnerR : rInnerL;
+
+        // Sand ribbon: innerWorld → outerWorld
+        if (iPts && oPts) {
+          const sPos = [], sIdx = [];
+          for (let j = 0; j < pts.length - 1; j++) {
+            const splI  = (run.from + j)     % spl;
+            const splI1 = (run.from + j + 1) % spl;
+            if (splI >= iPts.length || splI1 >= iPts.length) continue;
+            const b = sPos.length / 3;
+            sPos.push(
+              iPts[splI].x,  P3D_ROAD_Y + 0.01, iPts[splI].z,
+              oPts[splI].x,  P3D_ROAD_Y + 0.01, oPts[splI].z,
+              iPts[splI1].x, P3D_ROAD_Y + 0.01, iPts[splI1].z,
+              oPts[splI1].x, P3D_ROAD_Y + 0.01, oPts[splI1].z
+            );
+            sIdx.push(b, b+1, b+2, b+1, b+3, b+2);
+          }
+          if (sPos.length) {
+            const sg = new THREE.BufferGeometry();
+            sg.setAttribute('position', new THREE.Float32BufferAttribute(sPos, 3));
+            sg.setIndex(sIdx); sg.computeVertexNormals();
+            preview3dScene.add(new THREE.Mesh(sg, sandMat));
+          }
+        } else {
+          // Fallback
+          const SAND_IDEAL = P3D_SURFACE_LANES.sand.outer, SAND_FLOOR = P3D_SURFACE_LANES.sand.inner;
+          const sPos = [], sIdx = [];
+          for (let j = 0; j < pts.length - 1; j++) {
+            const splI  = (run.from + j) % spl, splI1 = (run.from + j + 1) % spl;
+            const sO0 = p3dSafeOff(SAND_IDEAL, getSafeCap(splI,  ds), SAND_FLOOR) * ds;
+            const sO1 = p3dSafeOff(SAND_IDEAL, getSafeCap(splI1, ds), SAND_FLOOR) * ds;
+            const sI = SAND_FLOOR * ds;
+            const nm0 = runNormal(run, j), nm1 = runNormal(run, j + 1);
+            const p0 = pts[j], p1 = pts[j + 1];
+            const b = sPos.length / 3;
+            sPos.push(p0.x+nm0.px*sI, P3D_ROAD_Y+0.01, p0.z+nm0.pz*sI,
+                      p0.x+nm0.px*sO0,P3D_ROAD_Y+0.01, p0.z+nm0.pz*sO0,
+                      p1.x+nm1.px*sI, P3D_ROAD_Y+0.01, p1.z+nm1.pz*sI,
+                      p1.x+nm1.px*sO1,P3D_ROAD_Y+0.01, p1.z+nm1.pz*sO1);
+            sIdx.push(b, b+1, b+2, b+1, b+3, b+2);
+          }
+          if (sPos.length) {
+            const sg = new THREE.BufferGeometry();
+            sg.setAttribute('position', new THREE.Float32BufferAttribute(sPos, 3));
+            sg.setIndex(sIdx); sg.computeVertexNormals();
+            preview3dScene.add(new THREE.Mesh(sg, sandMat));
+          }
         }
-        if (sPos.length) {
-          const sg = new THREE.BufferGeometry();
-          sg.setAttribute('position', new THREE.Float32BufferAttribute(sPos, 3));
-          sg.setIndex(sIdx); sg.computeVertexNormals();
-          preview3dScene.add(new THREE.Mesh(sg, sandMat));
-        }
-        // Tyre wall — per-point safe offset, two stacked rows
+
+        // Tyre wall — just inside outerWorld
         const step = 4, count = Math.ceil(pts.length / step) + 1;
         for (const [yOff, geo, mat] of [
           [P3D_ROAD_Y + 0.24, tyrGeo, tyreMat],
@@ -1431,22 +1510,35 @@ function build3DScene() {
           for (let j = 0; j < pts.length; j += step) {
             const splI = (run.from + j) % spl;
             if (p3dIsHairpin(autoNormals, splI)) continue;
-            const off = p3dSafeOff(TYR_IDEAL, getSafeCap(splI, ds), TYR_FLOOR) * ds;
-            const p = pts[j], nm = runNormal(run, j);
-            dummy.position.set(p.x + nm.px*off, yOff, p.z + nm.pz*off);
-            dummy.rotation.set(0, Math.atan2(nm.px, nm.pz), 0);
+            let px, pz;
+            if (oPts && splI < oPts.length) {
+              const oP = oPts[splI];
+              const nm = autoNormals[splI];
+              px = oP.x - nm.px * 1.0 * ds;
+              pz = oP.z - nm.pz * 1.0 * ds;
+            } else {
+              const off = p3dSafeOff(P3D_SURFACE_LANES.tyrewall.inner, getSafeCap(splI, ds), TH + 0.5) * ds;
+              const p = pts[j], nm = runNormal(run, j);
+              px = p.x + nm.px * off; pz = p.z + nm.pz * off;
+            }
+            dummy.position.set(px, yOff, pz);
+            dummy.rotation.set(0, Math.atan2(autoNormals[splI].px, autoNormals[splI].pz), 0);
             dummy.updateMatrix();
             mesh.setMatrixAt(idx++, dummy.matrix);
           }
           mesh.count = idx; mesh.instanceMatrix.needsUpdate = true;
           preview3dScene.add(mesh);
         }
-        // Sausage kerb on inside of slow corner — at TH+0.6, clamped to safe inner cap
-        const sausIdeal = TH + 0.6;
+
+        // Sausage kerb on inside of slow corner — at kerbWorld inward side
+        const kPts = ds > 0 ? rKerbL : rKerbR; // inside = opposite of outside
         const curve3 = new THREE.CatmullRomCurve3(
           pts.map((p, j) => {
             const splI = (run.from + j) % spl;
-            const sausOff = p3dSafeOff(sausIdeal, getSafeCap(splI, -ds), TH + 0.1) * (-ds);
+            if (kPts && splI < kPts.length) {
+              return new THREE.Vector3(kPts[splI].x, P3D_ROAD_Y + 0.18, kPts[splI].z);
+            }
+            const sausOff = p3dSafeOff(TH + 0.6, getSafeCap(splI, -ds), TH + 0.1) * (-ds);
             const nm = runNormal(run, j);
             return new THREE.Vector3(p.x + nm.px*sausOff, P3D_ROAD_Y + 0.18, p.z + nm.pz*sausOff);
           })
