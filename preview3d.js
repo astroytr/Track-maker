@@ -721,9 +721,8 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       ));
 
     } else if (surface === 'flat_kerb') {
-      const inner = lane.inner * s, outer = lane.outer * s;
-      const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
-      const [geoA, geoB] = p3dKerbRibbon(spPts, lo, hi, lane.y, 6);
+      const innerOff = lane.inner * s, outerOff = lane.outer * s;
+      const [geoA, geoB] = p3dKerbRibbon(spPts, innerOff, outerOff, lane.y, 6);
       scene.add(new THREE.Mesh(geoA, new THREE.MeshLambertMaterial({ color: 0xe8392a, side: dblSide })));
       scene.add(new THREE.Mesh(geoB, new THREE.MeshLambertMaterial({ color: 0xffffff, side: dblSide })));
 
@@ -732,8 +731,8 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       const redMat   = new THREE.MeshLambertMaterial({ color: 0xdd3333, side: dblSide });
       const whiteMat = new THREE.MeshLambertMaterial({ color: 0xffffff, side: dblSide });
       const inner = lane.inner * s, outer = lane.outer * s;
-      const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
-      const W = Math.abs(hi - lo), peakH = 0.04, radSegs = 6, humpEvery = 4;
+      const lInner = inner, lOuter = outer;
+      const W = Math.abs(lOuter - lInner), peakH = 0.04, radSegs = 6, humpEvery = 4;
       const totalHumps = Math.floor(n / humpEvery);
       for (let h = 0; h < totalHumps; h++) {
         const i0 = h * humpEvery;
@@ -746,7 +745,7 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
         for (const [pi, nm] of [[p0, nm0], [p1, nm1]]) {
           for (let r = 0; r <= radSegs; r++) {
             const t = r / radSegs;
-            const lateralOff = lo + t * W;
+            const lateralOff = lInner + (lOuter - lInner) * t;
             const archY = Math.sin(Math.PI * t) * peakH + 0.02;
             pos.push(pi.x + nm.px*lateralOff, archY, pi.z + nm.pz*lateralOff);
           }
@@ -763,21 +762,18 @@ function p3dPlaceBarrier(scene, surface, spPts, TH, side, laneIndex) {
       }
 
     } else if (surface === 'gravel') {
-      const inner = lane.inner * s, outer = lane.outer * s;
-      const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, lo, hi, lane.y, true),
+      const innerOff = lane.inner * s, outerOff = lane.outer * s;
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, innerOff, outerOff, lane.y, true),
         new THREE.MeshLambertMaterial({ color: 0x9a8a78, side: dblSide })));
 
     } else if (surface === 'sand') {
-      const inner = lane.inner * s, outer = lane.outer * s;
-      const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, lo, hi, lane.y + 0.02, true),
+      const innerOff = lane.inner * s, outerOff = lane.outer * s;
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, innerOff, outerOff, lane.y + 0.02, true),
         new THREE.MeshLambertMaterial({ color: 0xe8c87a, side: dblSide })));
 
     } else if (surface === 'grass') {
-      const inner = lane.inner * s, outer = lane.outer * s;
-      const lo = Math.min(inner, outer), hi = Math.max(inner, outer);
-      scene.add(new THREE.Mesh(p3dRibbon(spPts, lo, hi, lane.y, true),
+      const innerOff = lane.inner * s, outerOff = lane.outer * s;
+      scene.add(new THREE.Mesh(p3dRibbon(spPts, innerOff, outerOff, lane.y, true),
         new THREE.MeshLambertMaterial({ color: 0x3a7a3a, side: dblSide })));
     }
   });
@@ -883,13 +879,16 @@ function build3DScene() {
   const rKerbR  = _rGeo ? r2d3(_rGeo['1'].kerbWorld)   : null;
 
   // Helper: build a flat ribbon mesh between two same-length world-poly arrays.
-  // ptsA and ptsB are {x,z}[] arrays of equal length — ribbon fills between them.
-  function p3dRibbonFromPolys(ptsA, ptsB, yBase) {
+  // ptsA and ptsB are {x,z}[] arrays — ribbon fills between them.
+  // closedLoop=true appends the first point to seal the seam.
+  function p3dRibbonFromPolys(ptsA, ptsB, yBase, closedLoop = true) {
     if (!ptsA || !ptsB || ptsA.length < 2) return null;
-    const n = Math.min(ptsA.length, ptsB.length);
+    const aArr = closedLoop ? [...ptsA, ptsA[0]] : ptsA;
+    const bArr = closedLoop ? [...ptsB, ptsB[0]] : ptsB;
+    const n = Math.min(aArr.length, bArr.length);
     const pos = [], idx = [];
     for (let i = 0; i < n; i++) {
-      pos.push(ptsA[i].x, yBase, ptsA[i].z,  ptsB[i].x, yBase, ptsB[i].z);
+      pos.push(aArr[i].x, yBase, aArr[i].z,  bArr[i].x, yBase, bArr[i].z);
     }
     for (let i = 0; i < n - 1; i++) {
       const b = i * 2;
@@ -901,20 +900,21 @@ function build3DScene() {
     return geo;
   }
 
-  // Helper: build a wall mesh (vertical extrusion) from a {x,z}[] polyline.
-  // Produces a ribbon standing vertically: bottom=yBase, top=yBase+height.
-  function p3dWallFromPoly(pts3, yBase, height) {
+  // Helper: build a vertical wall from a {x,z}[] polyline.
+  // closedLoop=true appends the first point to seal the seam.
+  function p3dWallFromPoly(pts3, yBase, height, closedLoop = true) {
     if (!pts3 || pts3.length < 2) return null;
-    const n = pts3.length;
+    const arr = closedLoop ? [...pts3, pts3[0]] : pts3;
+    const n = arr.length;
     const pos = [], idx = [];
     for (let i = 0; i < n; i++) {
-      pos.push(pts3[i].x, yBase,        pts3[i].z,
-               pts3[i].x, yBase+height, pts3[i].z);
+      pos.push(arr[i].x, yBase,        arr[i].z,
+               arr[i].x, yBase+height, arr[i].z);
     }
     for (let i = 0; i < n - 1; i++) {
       const b = i * 2;
-      idx.push(b, b+2, b+1,  b+1, b+2, b+3);  // front face
-      idx.push(b, b+1, b+2,  b+1, b+3, b+2);  // back face (DoubleSide mat handles this, but explicit = no Z-fight)
+      idx.push(b, b+2, b+1,  b+1, b+2, b+3);  // front
+      idx.push(b, b+1, b+2,  b+1, b+3, b+2);  // back
     }
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
@@ -946,16 +946,18 @@ function build3DScene() {
     const kerbMatR = new THREE.MeshLambertMaterial({ color: 0xe8392a, side: THREE.DoubleSide });
     const kerbMatW = new THREE.MeshLambertMaterial({ color: 0xffffff, side: THREE.DoubleSide });
 
-    // Build alternating kerb segments along each side
+    // Build alternating kerb segments along each side (closed loop)
     [[rKerbL, rInnerL], [rKerbR, rInnerR]].forEach(([kPts, iPts]) => {
-      const n = Math.min(kPts.length, iPts.length);
+      const kArr = [...kPts, kPts[0]];
+      const iArr = [...iPts, iPts[0]];
+      const n = Math.min(kArr.length, iArr.length);
       const SEG = 6; // points per colour block
       for (let s = 0; s < n - 1; s += SEG) {
         const end = Math.min(s + SEG, n - 1);
         const pos = [], idx = [];
         for (let i = s; i <= end; i++) {
-          pos.push(kPts[i].x, P3D_ROAD_Y + 0.04, kPts[i].z,
-                   iPts[i].x, P3D_ROAD_Y + 0.04, iPts[i].z);
+          pos.push(kArr[i].x, P3D_ROAD_Y + 0.04, kArr[i].z,
+                   iArr[i].x, P3D_ROAD_Y + 0.04, iArr[i].z);
         }
         const cnt = end - s + 1;
         for (let i = 0; i < cnt - 1; i++) {
@@ -989,43 +991,94 @@ function build3DScene() {
     preview3dScene.add(new THREE.Mesh(p3dRibbon(spPts, -26.0, -8.1, 0.001), grassMat));
   }
 
-  // ── Perimeter armco wall — extruded from render.js outerWorld polys ──
-  // This is the primary barrier shape: matches 2D exactly.
-  // Rail: two W-beam ribbons at the outerWorld line. Posts instanced along it.
+  // ── Perimeter armco — extruded from render.js outerWorld polys ──
+  // Two W-beam rails (asset-viewer: top rail 0.48–0.76u, bottom 0.08–0.36u).
+  // Each rail has a face wall + a shallow 0.15u depth face toward the track
+  // to simulate the corrugated W-beam profile.
+  // Posts: I-beam section (0.08×0.14), H=0.82u, every ~4m real (≈3.6u),
+  // set 0.20u back from the rail face (behind the beam).
   {
-    const armcoRailMat = new THREE.MeshLambertMaterial({ color: 0xd4dce6, side: THREE.DoubleSide });
-    const armcoDarkMat = new THREE.MeshLambertMaterial({ color: 0x9aaabb, side: THREE.DoubleSide });
-    const armcoPostMat = new THREE.MeshLambertMaterial({ color: 0x778088, side: THREE.DoubleSide });
-    const postGeo3 = new THREE.BoxGeometry(0.08, 0.82, 0.08);
-    const dummy3 = new THREE.Object3D();
+    const railFaceMat = new THREE.MeshLambertMaterial({ color: 0xc8d2dc, side: THREE.DoubleSide });
+    const railDepthMat= new THREE.MeshLambertMaterial({ color: 0xa8b4c0, side: THREE.DoubleSide });
+    const postMat3    = new THREE.MeshLambertMaterial({ color: 0x6e7c88, side: THREE.DoubleSide });
+    // Post: thin I-beam profile — narrow Z depth, wider X face
+    const postGeo3    = new THREE.BoxGeometry(0.10, 0.82, 0.06);
+    const dummy3      = new THREE.Object3D();
 
-    [[rOuterL, rInnerL], [rOuterR, rInnerR]].forEach(([oPts, iPts]) => {
-      const wallPts = oPts || null;
-      if (!wallPts || wallPts.length < 2) {
-        // Fallback: use spPts + safe offset
-        return;
+    // Helper: build a shallow-depth W-beam face ribbon.
+    // wallPts = outerWorld {x,z}[]. Builds front face + top cap.
+    // depth pushes inward (toward track centre) using per-point inward normal.
+    function armcoRailGeo(wallPts, yBase, railH, depth) {
+      // We need per-point inward normals along the outerWorld poly.
+      // Inward = toward next innerWorld point. Approximate with tangent perp.
+      const arr = [...wallPts, wallPts[0]];
+      const n = arr.length;
+      const pos = [], idx = [];
+      for (let i = 0; i < n; i++) {
+        const prev = arr[Math.max(0, i - 1)];
+        const next = arr[Math.min(n - 1, i + 1)];
+        const tx = next.x - prev.x, tz = next.z - prev.z;
+        const tl = Math.sqrt(tx*tx + tz*tz) || 1;
+        // Perpendicular inward (toward track): rotate tangent 90°, then pick
+        // the direction that points toward origin (track centre).
+        let nx = -tz / tl, nz = tx / tl;
+        // Flip if pointing outward (dot with toward-origin vector < 0)
+        if (nx * (-arr[i].x) + nz * (-arr[i].z) < 0) { nx = -nx; nz = -nz; }
+        // Front face point (at outerWorld line)
+        const fx = arr[i].x, fz = arr[i].z;
+        // Depth face point (inward by depth)
+        const dx = fx + nx * depth, dz = fz + nz * depth;
+        // 4 verts per point: front-bottom, front-top, depth-bottom, depth-top
+        pos.push(
+          fx, yBase,        fz,   // 0 front bottom
+          fx, yBase+railH,  fz,   // 1 front top
+          dx, yBase,        dz,   // 2 depth bottom
+          dx, yBase+railH,  dz    // 3 depth top
+        );
       }
-      const n = wallPts.length;
-
-      // Two W-beam rails as vertical wall ribbons at outerWorld line
-      for (const [yb, mat] of [[0.06, armcoRailMat], [0.44, armcoDarkMat]]) {
-        const wallGeo = p3dWallFromPoly(wallPts, yb, 0.28);
-        if (wallGeo) preview3dScene.add(new THREE.Mesh(wallGeo, mat));
-        // Thin highlight strip
-        const hiGeo = p3dWallFromPoly(wallPts, yb + 0.10, 0.08);
-        if (hiGeo) preview3dScene.add(new THREE.Mesh(hiGeo, armcoRailMat));
+      for (let i = 0; i < n - 1; i++) {
+        const b = i * 4;
+        // Front face
+        idx.push(b,   b+1,  b+4,  b+1,  b+5,  b+4);
+        // Top cap
+        idx.push(b+1, b+3,  b+5,  b+3,  b+7,  b+5);
+        // Depth face (facing track)
+        idx.push(b+2, b+6,  b+3,  b+3,  b+6,  b+7);
       }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+      geo.setIndex(idx); geo.computeVertexNormals();
+      return geo;
+    }
 
-      // Instanced posts every 3 points along outerWorld poly
+    [rOuterL, rOuterR].forEach(oPts => {
+      if (!oPts || oPts.length < 2) return;
+      const n = oPts.length;
+
+      // Bottom rail: 0.08–0.36u (H=0.28u)
+      preview3dScene.add(new THREE.Mesh(armcoRailGeo(oPts, 0.08, 0.28, 0.14), railFaceMat));
+      // Top rail: 0.48–0.76u (H=0.28u)
+      preview3dScene.add(new THREE.Mesh(armcoRailGeo(oPts, 0.48, 0.28, 0.14), railDepthMat));
+
+      // Posts: every 3 points, set 0.20u behind the rail face
       const step = 3;
-      const postCount = Math.ceil(n / step) + 1;
-      const postMesh = new THREE.InstancedMesh(postGeo3, armcoPostMat, postCount);
+      const postCount = Math.ceil(n / step) + 2;
+      const postMesh = new THREE.InstancedMesh(postGeo3, postMat3, postCount);
       let pi = 0;
+      const arr = [...oPts, oPts[0]];
       for (let i = 0; i < n; i += step) {
-        const p = wallPts[i];
-        const ang = p3dPolyTangent(wallPts, i);
-        dummy3.position.set(p.x, P3D_ROAD_Y + 0.41, p.z);
-        dummy3.rotation.set(0, ang, 0);
+        const prev = arr[Math.max(0, i - 1)], next = arr[Math.min(n - 1, i + 1)];
+        const tx = next.x - prev.x, tz = next.z - prev.z;
+        const tl = Math.sqrt(tx*tx + tz*tz) || 1;
+        let nx = -tz / tl, nz = tx / tl;
+        if (nx * (-arr[i].x) + nz * (-arr[i].z) < 0) { nx = -nx; nz = -nz; }
+        // Set back 0.20u inward from rail face
+        dummy3.position.set(
+          oPts[i].x + nx * 0.20,
+          P3D_ROAD_Y + 0.41,   // post centre height = 0.82/2
+          oPts[i].z + nz * 0.20
+        );
+        dummy3.rotation.set(0, p3dPolyTangent(arr, i), 0);
         dummy3.updateMatrix();
         postMesh.setMatrixAt(pi++, dummy3.matrix);
       }
@@ -1044,22 +1097,23 @@ function build3DScene() {
     new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide })
   ));
 
-  const sfSegLen = Math.min(6, Math.floor(spPts.length * 0.01)) || 3;
-  const sfSeg = spPts.slice(0, sfSegLen + 1);
-  const chkW = TH / 4;
-  for (let c = 0; c < 4; c++) {
-    const inner = -TH + c * chkW * 2;
-    const outer = inner + chkW;
-    const colorA = c % 2 === 0 ? 0xffffff : 0x111111;
-    const colorB = c % 2 === 0 ? 0x111111 : 0xffffff;
-    preview3dScene.add(new THREE.Mesh(
-      p3dRibbon(sfSeg, inner, outer, P3D_ROAD_Y + 0.02),
-      new THREE.MeshLambertMaterial({ color: colorA, ...dblSide })
-    ));
-    preview3dScene.add(new THREE.Mesh(
-      p3dRibbon(sfSeg, -inner, -outer, P3D_ROAD_Y + 0.02),
-      new THREE.MeshLambertMaterial({ color: colorB, ...dblSide })
-    ));
+  // S/F checkerboard — 8 equal columns spanning full road width (-TH to +TH)
+  {
+    const sfSegLen = Math.min(6, Math.floor(spPts.length * 0.01)) || 3;
+    const sfSeg = spPts.slice(0, sfSegLen + 1);
+    const cols = 8;
+    const chkW = (TH * 2) / cols;
+    const chkMatW = new THREE.MeshLambertMaterial({ color: 0xffffff, ...dblSide });
+    const chkMatB = new THREE.MeshLambertMaterial({ color: 0x111111, ...dblSide });
+    for (let c = 0; c < cols; c++) {
+      const inner = -TH + c * chkW;
+      const outer = inner + chkW;
+      const mat = c % 2 === 0 ? chkMatW : chkMatB;
+      preview3dScene.add(new THREE.Mesh(
+        p3dRibbon(sfSeg, inner, outer, P3D_ROAD_Y + 0.02, true),
+        mat
+      ));
+    }
   }
 
   const sfPt   = spPts[0];
@@ -1128,29 +1182,39 @@ function build3DScene() {
     preview3dScene.add(sfGroup);
   }
 
-  // ── Distance boards (200 / 100 / 50 m) — right side, just before S/F ──
+  // ── Start/Finish approach distance boards — 300/200/100/50m ──────
+  // Placed along the spline approaching spPts[0] from behind, right side.
   {
-    const boardData = [
-      { z: -3.5, color: 0x111111 },
-      { z:  0.0, color: 0xe8392a },
-      { z:  3.5, color: 0x111111 },
-    ];
+    const spl0 = spPts.length;
     const postH = 2.8, boardW = 0.52, boardH = 0.78;
-    const sideX = TH + 1.0;
-    const postMat2 = new THREE.MeshLambertMaterial({ color: 0xaaaaaa });
-    const postGeoD = new THREE.CylinderGeometry(0.04, 0.04, postH, 8);
-    const sfGroup2 = new THREE.Group();
-    boardData.forEach(b => {
-      const bMat  = new THREE.MeshLambertMaterial({ color: b.color });
-      const post  = new THREE.Mesh(postGeoD, postMat2);
+    const postGeoSF = new THREE.CylinderGeometry(0.04, 0.04, postH, 8);
+    const postMatSF = new THREE.MeshLambertMaterial({ color: 0xaaaaaa });
+    const sfBoards = [
+      { dist: 42, color: 0xffffff },  // 300m
+      { dist: 28, color: 0x111111 },  // 200m
+      { dist: 14, color: 0xe8392a },  // 100m
+      { dist:  7, color: 0x111111 },  //  50m
+    ];
+    const sfNormals = p3dComputeNormals(spPts);
+    sfBoards.forEach(b => {
+      const idx = ((0 - b.dist) + spl0) % spl0;
+      const p = spPts[idx];
+      const fwd = spPts[(idx + 1) % spl0];
+      const ang = Math.atan2(fwd.x - p.x, fwd.z - p.z);
+      const nm = sfNormals[idx];
+      // Right of travel: +nm direction (winding-aware normal points left, so right = -nm)
+      const rx = p.x - nm.px * (TH + 1.5);
+      const rz = p.z - nm.pz * (TH + 1.5);
+      const bMat = new THREE.MeshLambertMaterial({ color: b.color });
+      const post  = new THREE.Mesh(postGeoSF, postMatSF);
       const board = new THREE.Mesh(new THREE.BoxGeometry(0.06, boardH, boardW), bMat);
-      post.position.set(sideX, postH / 2, b.z);
-      board.position.set(sideX - 0.05, postH - boardH / 2 - 0.08, b.z);
-      sfGroup2.add(post, board);
+      post.position.set(rx, P3D_ROAD_Y + postH / 2, rz);
+      post.rotation.y = ang;
+      board.position.set(rx + nm.px * 0.1, P3D_ROAD_Y + postH - boardH / 2 - 0.08, rz + nm.pz * 0.1);
+      board.rotation.y = ang;
+      preview3dScene.add(post);
+      preview3dScene.add(board);
     });
-    sfGroup2.position.set(sfPt.x, P3D_ROAD_Y, sfPt.z);
-    sfGroup2.rotation.y = sfYaw;
-    preview3dScene.add(sfGroup2);
   }
 
   // ── FIA/WEC auto-surface placement ──────────────────────────────────────────
@@ -1267,12 +1331,30 @@ function build3DScene() {
     //    outerWorld — this adds the inner rail only.
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
+      const innerPostMat = new THREE.MeshLambertMaterial({ color: 0x6a7a88, side: THREE.DoubleSide });
+      const innerPostGeo = new THREE.BoxGeometry(0.08, 0.82, 0.08);
+      const innerDummy   = new THREE.Object3D();
       [[rInnerL], [rInnerR]].forEach(([iPts]) => {
         if (!iPts || iPts.length < 2) return;
+        // Bottom rail: 0.06–0.28u, Top rail: 0.38–0.60u
         for (const [yb, mat] of [[0.06, armRailMat], [0.38, armPostMat]]) {
           const wallGeo = p3dWallFromPoly(iPts, yb, 0.22);
           if (wallGeo) preview3dScene.add(new THREE.Mesh(wallGeo, mat));
         }
+        // Posts every 4 points
+        const nI = iPts.length;
+        const postMeshI = new THREE.InstancedMesh(innerPostGeo, innerPostMat, Math.ceil(nI / 4) + 1);
+        let pi = 0;
+        for (let i = 0; i < nI; i += 4) {
+          const a = iPts[Math.max(0, i - 1)], b = iPts[Math.min(nI - 1, i + 1)];
+          const ang = Math.atan2(b.x - a.x, b.z - a.z);
+          innerDummy.position.set(iPts[i].x, P3D_ROAD_Y + 0.41, iPts[i].z);
+          innerDummy.rotation.set(0, ang, 0);
+          innerDummy.updateMatrix();
+          postMeshI.setMatrixAt(pi++, innerDummy.matrix);
+        }
+        postMeshI.count = pi; postMeshI.instanceMatrix.needsUpdate = true;
+        preview3dScene.add(postMeshI);
       });
     }
 
@@ -1311,8 +1393,9 @@ function build3DScene() {
                 // Step 1.5u inward from outerWorld toward centreline
                 const oP = oPts[splI];
                 const nm = autoNormals[splI];
-                px = oP.x - nm.px * 1.5 * s;
-                pz = oP.z - nm.pz * 1.5 * s;
+                // nm points left; s>0=right side → inward = +nm direction
+                px = oP.x + nm.px * 1.5 * s;
+                pz = oP.z + nm.pz * 1.5 * s;
               } else {
                 const off = p3dSafeOff(P3D_SURFACE_LANES.tecpro.inner, getSafeCap(splI, s), TH + 0.5) * s;
                 const p = pts[j], nm = runNormal(run, j);
@@ -1413,8 +1496,9 @@ function build3DScene() {
             if (oPts && splI < oPts.length) {
               const oP = oPts[splI];
               const nm = autoNormals[splI];
-              px = oP.x - nm.px * 1.5 * ds;
-              pz = oP.z - nm.pz * 1.5 * ds;
+              // nm points left; ds>0=right/outside corner → inward = +nm direction
+              px = oP.x + nm.px * 1.5 * ds;
+              pz = oP.z + nm.pz * 1.5 * ds;
             } else {
               const off = p3dSafeOff(P3D_SURFACE_LANES.tecpro.inner, getSafeCap(splI, ds), TH + 0.5) * ds;
               const p = pts[j], nm = runNormal(run, j);
@@ -1514,8 +1598,9 @@ function build3DScene() {
             if (oPts && splI < oPts.length) {
               const oP = oPts[splI];
               const nm = autoNormals[splI];
-              px = oP.x - nm.px * 1.0 * ds;
-              pz = oP.z - nm.pz * 1.0 * ds;
+              // nm points left; ds>0=right side → inward = +nm direction
+              px = oP.x + nm.px * 1.0 * ds;
+              pz = oP.z + nm.pz * 1.0 * ds;
             } else {
               const off = p3dSafeOff(P3D_SURFACE_LANES.tyrewall.inner, getSafeCap(splI, ds), TH + 0.5) * ds;
               const p = pts[j], nm = runNormal(run, j);
@@ -1562,8 +1647,8 @@ function build3DScene() {
         const outer = P3D_SURFACE_LANES.rumble.outer;
         const W = outer - inner, peakH = 0.04, radSegs = 6, humpEvery = 4;
         for (const s of [1, -1]) {
-          const lo = inner * s, hi = outer * s;
-          const lLo = Math.min(lo, hi), lHi = Math.max(lo, hi);
+          // signed: inner/outer both have same sign as s
+          const lInner = inner * s, lOuter = outer * s;
           const totalHumps = Math.floor(pts.length / humpEvery);
           for (let h = 0; h < totalHumps; h++) {
             const i0 = h * humpEvery, i1 = Math.min(i0 + humpEvery, pts.length - 1);
@@ -1575,8 +1660,9 @@ function build3DScene() {
             for (const [pi, nm] of [[p0, nm0], [p1, nm1]]) {
               for (let r = 0; r <= radSegs; r++) {
                 const t = r / radSegs;
-                const latOff = lLo + t * W;
-                pos.push(pi.x + nm.px*latOff, Math.sin(Math.PI*t)*peakH + 0.02, pi.z + nm.pz*latOff);
+                // lerp from lInner to lOuter along the signed direction
+                const latOff = lInner + (lOuter - lInner) * t;
+                pos.push(pi.x + nm.px * latOff, Math.sin(Math.PI * t) * peakH + 0.02, pi.z + nm.pz * latOff);
               }
             }
             for (let r = 0; r < radSegs; r++) {
@@ -1594,22 +1680,22 @@ function build3DScene() {
 
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     // 6. DISTANCE BOARDS — right side approaching every
-    //    significant braking zone (corner entry).
-    //    FIA/circuit design: 300, 200, 100, 50m boards on
-    //    right (outside of turn), 1u outside track edge.
-    //    Placed at the spline point just BEFORE each corner.
+    //    braking zone. Each board at its own spline index
+    //    so they are physically spaced apart.
+    //    300m=white, 200m=black, 100m=red, 50m=black.
+    //    dist values = spline points back from corner entry
+    //    (SPP=14 pts/wp; 1u≈1.1m → ~300m≈42pts, etc.)
     // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
     {
       const postH = 2.8, boardW = 0.52, boardH = 0.78;
-      const sideOff = TH + 1.2; // just outside track edge
       const postGeoD = new THREE.CylinderGeometry(0.04, 0.04, postH, 8);
       const postMatD = new THREE.MeshLambertMaterial({ color: 0xaaaaaa });
-      // Boards: 300m=white, 200m=black, 100m=red, 50m=black (real FIA spec)
+      // Each board is placed at a DIFFERENT spline index back from the corner
       const boards = [
-        { dist: 42, color: 0xffffff, textColor: 0x111111, label: '300' }, // ~300m at 1u≈1.1m
-        { dist: 28, color: 0x111111, textColor: 0xffffff, label: '200' },
-        { dist: 14, color: 0xe8392a, textColor: 0xffffff, label: '100' },
-        { dist:  7, color: 0x111111, textColor: 0xffffff, label:  '50' },
+        { dist: 42, color: 0xffffff, label: '300' },
+        { dist: 28, color: 0x111111, label: '200' },
+        { dist: 14, color: 0xe8392a, label: '100' },
+        { dist:  7, color: 0x111111, label:  '50' },
       ];
 
       // Find corner entries: first point of each corner run
@@ -1620,25 +1706,37 @@ function build3DScene() {
         wasCorner = !!inCorner[i];
       }
 
+      // Use render.js outerWorld poly for board placement (just outside barrier)
       cornerEntries.forEach(entryIdx => {
-        // Corner outside sign at entry
-        const ds = -cornerSign[entryIdx] || 1; // boards on right of travel
+        const ds = -cornerSign[entryIdx] || 1; // right of travel
+        const oPts = ds > 0 ? rOuterR : rOuterL;
+
         boards.forEach(b => {
-          // Walk back along spline by b.dist points from corner entry
+          // Each board placed at its own spline index — they are genuinely spaced
           const boardIdx = ((entryIdx - b.dist) + spl) % spl;
-          const p   = spPts[boardIdx];
-          const nm  = autoNormals[boardIdx];
+          const p = spPts[boardIdx];
+          const fwd = spPts[(boardIdx + 1) % spl];
+          const ang = Math.atan2(fwd.x - p.x, fwd.z - p.z);
+          const nm = autoNormals[boardIdx];
+
+          // X position: just outside outerWorld (or fallback to fixed offset)
+          let bx, bz;
+          if (oPts && boardIdx < oPts.length) {
+            // nm points left; ds>0=right side → outboard is -nm direction
+            bx = oPts[boardIdx].x - nm.px * 0.8 * ds;
+            bz = oPts[boardIdx].z - nm.pz * 0.8 * ds;
+          } else {
+            // fallback: fixed offset from centreline
+            bx = p.x - nm.px * (TH + 2.0) * ds;
+            bz = p.z - nm.pz * (TH + 2.0) * ds;
+          }
+
           const bMat = new THREE.MeshLambertMaterial({ color: b.color });
           const post  = new THREE.Mesh(postGeoD, postMatD);
           const board = new THREE.Mesh(new THREE.BoxGeometry(0.06, boardH, boardW), bMat);
-          const fwd   = spPts[(boardIdx + 1) % spl];
-          const ang   = Math.atan2(fwd.x - p.x, fwd.z - p.z);
-          // Place on track-right side
-          const px = p.x + nm.px * sideOff * ds;
-          const pz = p.z + nm.pz * sideOff * ds;
-          post.position.set(px, P3D_ROAD_Y + postH/2, pz);
+          post.position.set(bx, P3D_ROAD_Y + postH / 2, bz);
           post.rotation.y = ang;
-          board.position.set(px - nm.px*ds*0.1, P3D_ROAD_Y + postH - boardH/2 - 0.08, pz - nm.pz*ds*0.1);
+          board.position.set(bx + nm.px * ds * 0.1, P3D_ROAD_Y + postH - boardH / 2 - 0.08, bz + nm.pz * ds * 0.1);
           board.rotation.y = ang;
           preview3dScene.add(post);
           preview3dScene.add(board);
@@ -1883,59 +1981,40 @@ function setupP3DControls(cnv) {
   window._p3dJoystickLook = makeJoystick('left',  'LOOK');
   window._p3dJoystickMove = makeJoystick('right', 'MOVE');
 
-  // ── Joystick sensitivity control ───────────────────────────────────
-  // A button on the HUD opens a small slider that scales BOTH joysticks
-  // at once. Default is reduced from the old hard-coded 2.5× rate.
-  if (typeof window._p3dSensitivity !== 'number') window._p3dSensitivity = 0.65;
+  // ── Joystick sensitivity — always-visible top bar slider ──────────
+  if (typeof window._p3dSensitivity !== 'number') window._p3dSensitivity = 0.30;
 
-  const sensBtn = document.createElement('button');
-  sensBtn.className = 'preview3d-exit-btn';
-  sensBtn.style.cssText += ';right:auto;left:12px;top:92px;background:rgba(0,0,0,0.55);' +
-    'font-size:11px;padding:6px 10px;';
-  sensBtn.textContent = '🎚 Sensitivity';
-
-  const sensPanel = document.createElement('div');
-  sensPanel.style.cssText = 'position:absolute;left:12px;top:128px;z-index:201;display:none;' +
-    'background:rgba(0,0,0,0.78);border:1px solid rgba(255,255,255,0.35);border-radius:8px;' +
-    'padding:10px 12px;color:#fff;font-size:12px;min-width:200px;font-family:sans-serif;';
-  const sensLabel = document.createElement('div');
-  sensLabel.style.cssText = 'margin-bottom:6px;display:flex;justify-content:space-between;';
-  const sensTitle = document.createElement('span');
-  sensTitle.textContent = 'Joystick sensitivity';
-  const sensValue = document.createElement('span');
-  sensValue.style.cssText = 'opacity:0.85;';
-  sensLabel.appendChild(sensTitle);
-  sensLabel.appendChild(sensValue);
-  sensPanel.appendChild(sensLabel);
+  const sensBar = document.createElement('div');
+  sensBar.style.cssText = 'position:absolute;top:10px;left:50%;transform:translateX(-50%);' +
+    'z-index:201;display:flex;align-items:center;gap:8px;' +
+    'background:rgba(0,0,0,0.55);border:1px solid rgba(255,255,255,0.25);border-radius:20px;' +
+    'padding:6px 14px;font-family:sans-serif;color:#fff;font-size:12px;white-space:nowrap;' +
+    'touch-action:none;user-select:none;';
+  const sensLbl = document.createElement('span');
+  sensLbl.textContent = '🎚';
+  sensLbl.style.cssText = 'font-size:14px;';
   const sensSlider = document.createElement('input');
   sensSlider.type = 'range';
-  sensSlider.min = '5';   // 0.05×
-  sensSlider.max = '300'; // 3.00×
+  sensSlider.min = '5';
+  sensSlider.max = '200';
   sensSlider.step = '5';
   sensSlider.value = String(Math.round(window._p3dSensitivity * 100));
-  sensSlider.style.cssText = 'width:100%;touch-action:none;';
-  sensPanel.appendChild(sensSlider);
-  const sensHint = document.createElement('div');
-  sensHint.style.cssText = 'margin-top:6px;opacity:0.6;font-size:10px;';
-  sensHint.textContent = 'Affects both LOOK and MOVE joysticks';
-  sensPanel.appendChild(sensHint);
+  sensSlider.style.cssText = 'width:110px;touch-action:none;accent-color:#a78bfa;';
+  const sensVal = document.createElement('span');
+  sensVal.style.cssText = 'min-width:34px;text-align:right;opacity:0.85;font-size:11px;';
 
   function paintSens() {
-    sensValue.textContent = window._p3dSensitivity.toFixed(2) + '×';
+    sensVal.textContent = window._p3dSensitivity.toFixed(2) + '×';
   }
   paintSens();
   sensSlider.addEventListener('input', () => {
     window._p3dSensitivity = Math.max(0.05, parseInt(sensSlider.value, 10) / 100);
     paintSens();
   });
-  sensBtn.onclick = () => {
-    const open = sensPanel.style.display !== 'none';
-    sensPanel.style.display = open ? 'none' : 'block';
-    sensBtn.style.borderColor = open ? '' : '#a78bfa';
-    sensBtn.style.color       = open ? '' : '#a78bfa';
-  };
-  joyOl.appendChild(sensBtn);
-  joyOl.appendChild(sensPanel);
+  sensBar.appendChild(sensLbl);
+  sensBar.appendChild(sensSlider);
+  sensBar.appendChild(sensVal);
+  joyOl.appendChild(sensBar);
 
   // ▲▼ buttons for Y-axis (altitude)
   const udWrap = document.createElement('div');
